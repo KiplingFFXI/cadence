@@ -1,0 +1,13 @@
+# Python's caches, in any folder.
+__pycache__/
+*.pyc
+
+# The tests' Python environment and the renders. tests\.gitignore lists them too.
+/tests/.venv/
+/tests/out/
+
+# The fonts the preview pulls out of Ashita.dll. They're Ashita's, so they don't get published here.
+/tests/preview/fonts/
+
+# The release zips tools\build_release.py writes.
+/dist/
