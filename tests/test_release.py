@@ -313,6 +313,10 @@ def test_bump(scratch):
           others)
 
     copy = copy_project(os.path.join(scratch, 'bump'))
+    # Exercise both newline styles regardless of how Git checked out this host's files.
+    for name in ('CHANGELOG.md', 'cadence/cadence.lua'):
+        path = os.path.join(copy, name)
+        write(path, read(path).replace('\r\n', '\n'))
     before = tree(copy)
     bullets = os.path.join(scratch, 'bullets.txt')
     write(bullets, '- One.\n\n- Two.  \n')
@@ -345,12 +349,12 @@ def test_bump(scratch):
     # Files with Windows line endings keep them.
     crlf = copy_project(os.path.join(scratch, 'crlf'))
     for name in ('CHANGELOG.md', 'cadence/cadence.lua'):
-        write(os.path.join(crlf, name), read(os.path.join(ROOT, name)).replace('\n', '\r\n'))
+        write(os.path.join(crlf, name), read(os.path.join(ROOT, name)).replace('\r\n', '\n').replace('\n', '\r\n'))
     python(crlf, 'bump_version.py', 'Fixed a thing.', bullets)
     text = read(os.path.join(crlf, 'CHANGELOG.md'))
     check('a CHANGELOG.md with Windows line endings keeps them in the new section',
           ('## %s\r\n\r\nFixed a thing.\r\n\r\n- One.\r\n- Two.\r\n\r\n' % new) in text
-          and text.count('\n') == text.count('\r\n'))
+          and text.count('\n') == text.count('\r\n') and '\r\r' not in text)
     check('and so does cadence.lua', version_of(crlf) == new
           and read(os.path.join(crlf, 'cadence', 'cadence.lua')).count('\n')
           == read(os.path.join(crlf, 'cadence', 'cadence.lua')).count('\r\n'))
