@@ -1,7 +1,6 @@
 -- The settings window's font and font size. The fonts load once on the load event, the window draws in
 -- the one you have at your size, and a font that didn't load leaves it in Ashita's font with a note.
--- Its layout grows with a bigger font, its smallest size has room for one column and every tab, its tabs
--- take less padding, and it moves to another character's spot when they log in. Presets leave the font
+-- Its layout grows with a bigger font, its smallest size has room for one column with wrapping tabs, and it moves to another character's spot when they log in. Presets leave the font
 -- alone, Reset look puts it back, Undo takes that back, and the settings check keeps it sane.
 local out, fails = {}, 0;
 local function check(name, cond, detail)
@@ -221,7 +220,7 @@ frames(2);
 face, size = pushed_font();
 check('a missing font draws in Ashita\'s font at your size', face == 'default_font' and size == 22, tostring(face));
 check('and says so', said('Verdana isn\'t in C:\\Windows\\Fonts\\ or won\'t load, so this window uses Ashita\'s font.'));
--- The note sits on the Window tab, between Font size and the SHAPE heading, not above the tabs.
+-- The note sits on the Window section, between Font size and the SHAPE heading, not above the tabs.
 local note_at, size_at, shape_at, bar_at = nil, nil, nil, nil;
 for i, c in ipairs(MOCK.imgui_calls) do
     if (c[1] == 'TextUnformatted' and tostring(c[2]):find('Verdana isn\'t in', 1, true)) then note_at = i; end
@@ -229,7 +228,7 @@ for i, c in ipairs(MOCK.imgui_calls) do
     if (c[1] == 'TextColored' and c[3] == 'SHAPE') then shape_at = i; end
     if (c[1] == 'BeginTabBar') then bar_at = i; end
 end
-check('under Font size on the Window tab', note_at and size_at and shape_at and bar_at and bar_at < size_at
+check('under Font size on the Window section', note_at and size_at and shape_at and bar_at and bar_at < size_at
     and size_at < note_at and note_at < shape_at, ('%s %s %s %s'):format(tostring(bar_at), tostring(size_at),
     tostring(note_at), tostring(shape_at)));
 check('with no error', drawing_error() == nil, drawing_error());
@@ -303,14 +302,14 @@ local function show(t)
 end
 
 local at18 = layout(18);
-check('at 18 px the layout has its base sizes', show(at18) == '190 52 228 740 300', show(at18));
+check('at 18 px controls keep base sizes and readouts have their own rows', show(at18) == '190 52 nil 740 300', show(at18));
 local at24 = layout(24);
-check('at 24 px the controls, chips, second column and tips are a third wider', show(at24) == '253 69 304 723 400',
+check('at 24 px controls, chips and tips are a third wider', show(at24) == '253 69 nil 723 400',
     show(at24));
 local at12 = layout(12);
 check('at 12 px they keep their 18 px sizes, so nothing runs into the next thing', show(at12) == show(at18), show(at12));
 local at21 = layout(21);
-check('at 21 px they round to whole pixels', show(at21) == '222 61 266 731 350', show(at21));
+check('at 21 px they round to whole pixels', show(at21) == '222 61 nil 731 350', show(at21));
 
 local function constraints()
     local c = calls('SetNextWindowSizeConstraints')[1];
@@ -318,31 +317,30 @@ local function constraints()
 end
 s.window_style.font_size = 18;
 frames(1);
-check('the smallest window is one column wide and 240 tall at 18 px', constraints() == '464x240', constraints());
+check('the smallest window fits one column with wrapping tabs at 18 px', constraints() == '464x440', constraints());
 s.window_style.font_size = 24;
 frames(1);
-check('and grows with a bigger font', constraints() == '604x320', constraints());
+check('and grows with a bigger font', constraints() == '604x587', constraints());
 s.window_style.font_size = 12;
 frames(1);
-check('but not smaller than at 18 px', constraints() == '464x240', constraints());
+check('but not smaller than at 18 px', constraints() == '464x440', constraints());
 s.window_style.font_size = 24;
 MOCK.screen = { 500, 300 };
 frames(1);
 check('on a screen too small for it, it\'s cut down to the screen', constraints() == '500x300', constraints());
 MOCK.screen = nil;
--- Tab names wide enough to need more than one column. ImGui gives each tab its name, 5 either side and 1
--- more, with 4 between tabs.
+-- Wide tab names wrap without forcing a window wider than its controls.
 s.window_style.font_size = 18;
+MOCK.screen = { 2200, 1200 };
 MOCK.measure = function (words) return #words * 30; end
 frames(1);
 MOCK.measure = nil;
-local tabs = (6 + 5 + 4 + 6 + 13 + 8) * 30 + 6 * 11 + 5 * 4;
-check('it\'s wide enough for every tab\'s name in full', constraints() == (tabs + 44) .. 'x240',
-    constraints() .. ' for tabs ' .. tabs);
+check('wide tab names do not widen the minimum window', constraints() == '464x440', constraints());
 MOCK.measure = function (words) return #words * 30 - 0.5; end
 frames(1);
 MOCK.measure = nil;
-check('rounding a name\'s width up', constraints() == (tabs + 44) .. 'x240', constraints());
+check('fractional tab widths keep the same column minimum', constraints() == '464x440', constraints());
+MOCK.screen = nil;
 
 local function columns()
     local c = calls('BeginTable', function (c) return c[2] == '##timer_sections'; end)[1];
@@ -398,7 +396,7 @@ local wide_layout = layout(18);
 check('Ashita\'s font at 18 px keeps the 18 px layout', show(ashita_layout) == show(at18), show(ashita_layout));
 check('so does a narrower font', show(narrow_layout) == show(at18), show(narrow_layout));
 check('Consolas draws a ninth wider at 18 px, so its layout is a ninth wider', show(wide_layout)
-    == '211 58 253 734 333', show(wide_layout));
+    == '211 58 nil 734 333', show(wide_layout));
 MOCK.window_size = { 920, 680 };
 frames(1);
 check('and the default window stacks its sections, like Ashita\'s font at 20 px', columns() == 1, columns());
@@ -422,29 +420,16 @@ s.window_style.font_size = 18;
 frames(1);
 check('with every font as wide, Consolas has the 18 px layout', width_before('Scale') == 190, width_before('Scale'));
 
--- The tabs take less padding ----------------------------------------------------------------------------
+-- Pages keep a separate scrolling region below navigation.
 frames(1);
-local function padding_after(i)
-    local c = MOCK.imgui_calls[i];
-    return c and c[1] == 'PushStyleVar' and c[2] == ImGuiStyleVar_FramePadding and type(c[3]) == 'table'
-        and (c[3][1] .. ',' .. c[3][2]);
-end
-local bar, tab_pads, tabs_seen = nil, 0, 0;
-for i, c in ipairs(MOCK.imgui_calls) do
-    if (c[1] == 'BeginTabBar') then bar = i; end
-    if (c[1] == 'BeginTabItem') then
-        tabs_seen = tabs_seen + 1;
-        if (padding_after(i + 1) == '8,4') then tab_pads = tab_pads + 1; end
+local pages, all_usable = 0, true;
+for _, call in ipairs(MOCK.imgui_calls) do
+    if (call[1] == 'BeginChild' and tostring(call[2]):find('##page_', 1, true)) then
+        pages = pages + 1;
+        all_usable = all_usable and call[3][1] == 0 and call[3][2] > 0;
     end
 end
-check('the tab bar takes 5 either side of each name', bar and padding_after(bar - 1) == '5,4',
-    bar and padding_after(bar - 1));
-check('and each tab\'s page puts the usual 8 back', tabs_seen == 6 and tab_pads == 6, tab_pads .. ' of ' .. tabs_seen);
-local pops_after_bar = 0;
-for i, c in ipairs(MOCK.imgui_calls) do
-    if (c[1] == 'EndTabBar' and MOCK.imgui_calls[i + 1][1] == 'PopStyleVar') then pops_after_bar = pops_after_bar + 1; end
-end
-check('the tab padding goes once the bar ends', pops_after_bar == 1);
+check('every settings page has its own usable scrolling region', pages == 6 and all_usable, pages);
 
 -- Another character logging in moves the open window ----------------------------------------------------------
 -- Where ImGui has the settings window, or a blank one when it wasn't drawn.
@@ -496,6 +481,7 @@ check('with Window matches the look off too', s.window_style.font == 'segoeui' a
 s.style.window_matches_look = true;
 presets.undo(s);
 check('and Undo of a preset leaves it', s.window_style.font == 'segoeui' and s.window_style.font_size == 22);
+MOCK.settings.callbacks.cadence_settings_update(s);
 MOCK.fire('command', { command = '/cadence reset look' });
 check('Reset look puts Ashita\'s font back at 18 px', s.window_style.font == 'ashita' and s.window_style.font_size == 18,
     s.window_style.font .. ' ' .. s.window_style.font_size);

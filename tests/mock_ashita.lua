@@ -179,12 +179,12 @@ local function inventory()
     return {
         GetEquippedItem = function (_, slot)
             local id = MOCK.player.equipment[slot];
-            if (id == nil) then return nil; end
+            if (id == nil) then return { Slot = slot, Index = 0 }; end
             return { Slot = slot, Index = 0 * 256 + (slot + 10) };
         end,
         GetContainerItem = function (_, container, index)
             local slot = index - 10;
-            return { Id = MOCK.player.equipment[slot] or 0 };
+            return { Id = MOCK.player.equipment[slot] or 0, Extra = string.rep('\0', 24) };
         end,
     };
 end
@@ -280,8 +280,17 @@ local winmm = {
 
 -- ffi stand-in so tests can press Shift and hear nothing. cadence uses cdef, GetAsyncKeyState and winmm.
 package.loaded['ffi'] = {
+    os = 'Windows',
     cdef = function () end,
-    C = { GetAsyncKeyState = function (vk) if (vk == 0x10 and MOCK.key_shift) then return -32768; end return 0; end },
+    C = {
+        GetAsyncKeyState = function (vk) if (vk == 0x10 and MOCK.key_shift) then return -32768; end return 0; end,
+        GetCurrentProcessId = function () return 1234; end,
+        MoveFileExA = function (temp, path)
+            if (MOCK.file_replace_error) then return 0; end
+            os.remove(path);
+            return os.rename(temp, path) and 1 or 0;
+        end,
+    },
     load = function (name)
         if (name ~= 'winmm' or MOCK.no_winmm) then error('cannot load module ' .. tostring(name)); end
         return winmm;
@@ -343,8 +352,8 @@ local function font_size()
 end
 
 local window_stack = {};
-local draw_list = setmetatable({}, { __index = function (_, name)
-    return function (self, ...)
+local draw_list = setmetatable({}, { __index = function (list, name)
+    local method = function (self, ...)
         if (MOCK.record_imgui) then
             local args = { 'dl:' .. name };
             for _, v in ipairs({ ... }) do
@@ -354,6 +363,8 @@ local draw_list = setmetatable({}, { __index = function (_, name)
             table.insert(MOCK.imgui_calls, args);
         end
     end;
+    rawset(list, name, method);
+    return method;
 end });
 local specials = {
     Begin = function (name)
@@ -388,6 +399,14 @@ local specials = {
     IsMouseDown = function () return MOCK.mouse_down; end,
     IsWindowHovered = function () return false; end,
     IsItemDeactivatedAfterEdit = function () return false; end,
+    BeginTooltip = function () return true; end,
+    BeginChild = function () return true; end,
+    CollapsingHeader = function () return true; end,
+    GetItemRectMin = function () return 0, 0; end,
+    GetItemRectMax = function () return 100, 24; end,
+    GetMousePos = function () return (MOCK.mouse or {})[1] or -1, (MOCK.mouse or {})[2] or -1; end,
+    IsAnyMouseDown = function () return MOCK.mouse_down; end,
+    SetClipboardText = function (value) MOCK.clipboard = value; end,
     BeginTabBar = function () return true; end,
     BeginTabItem = function () return true; end,
     Button = function () return false; end,
@@ -422,13 +441,30 @@ setmetatable(imgui, { __index = function (_, name)
 end });
 MOCK.font_stack = {};
 package.preload['imgui'] = function () return imgui; end
+package.preload['ui.navigation'] = function ()
+    local module = assert(package.loaders[2]('ui.navigation'))('ui.navigation');
+    MOCK.real_navigation_draw = module.draw;
+    module.draw = function (tabs, look, matches, draw_page)
+        imgui.BeginTabBar('##cadence_tabs');
+        for _, tab in ipairs(tabs) do
+            if (matches[tab[1]] and imgui.BeginTabItem(tab[1])) then
+                module.select(tab[1]);
+                draw_page(tab);
+                imgui.EndTabItem();
+            end
+        end
+        imgui.EndTabBar();
+    end;
+    return module;
+end
+
 
 -- ImGui constants cadence references. Real values don't matter to the tests.
 local constant_names = {
     'ImGuiWindowFlags_NoDecoration', 'ImGuiWindowFlags_NoBackground', 'ImGuiWindowFlags_NoSavedSettings',
     'ImGuiWindowFlags_NoFocusOnAppearing', 'ImGuiWindowFlags_NoBringToFrontOnFocus', 'ImGuiWindowFlags_NoNav',
     'ImGuiWindowFlags_NoDocking', 'ImGuiWindowFlags_NoInputs', 'ImGuiWindowFlags_NoMove',
-    'ImGuiHoveredFlags_AllowWhenBlockedByActiveItem',
+    'ImGuiHoveredFlags_AllowWhenBlockedByActiveItem', 'ImGuiFocusedFlags_RootAndChildWindows',
     'ImGuiWindowFlags_NoCollapse', 'ImGuiCond_Always',
     'ImGuiStyleVar_WindowPadding', 'ImGuiStyleVar_WindowMinSize', 'ImGuiStyleVar_WindowBorderSize',
     'ImGuiStyleVar_WindowRounding', 'ImGuiStyleVar_ChildRounding', 'ImGuiStyleVar_FrameRounding',
@@ -520,14 +556,15 @@ function MOCK.action_packet_multi(actor, category, param, targets)
             o = MOCK.pack_bits(b, o, 1, r.add_effect and 1 or 0);
             if (r.add_effect) then
                 o = MOCK.pack_bits(b, o, 6, 5); o = MOCK.pack_bits(b, o, 4, 1);
-                o = MOCK.pack_bits(b, o, 17, 9999); o = MOCK.pack_bits(b, o, 10, 163);
+                o = MOCK.pack_bits(b, o, 17, r.added_param or 9999); o = MOCK.pack_bits(b, o, 10, r.added_message or 163);
             end
             -- `reaction` is the reaction's kind, like 63 for a counter. True means 1, which is Blaze Spikes.
             o = MOCK.pack_bits(b, o, 1, r.reaction and 1 or 0);
             if (r.reaction) then
                 local kind = (r.reaction == true) and 1 or r.reaction;
                 o = MOCK.pack_bits(b, o, 6, kind); o = MOCK.pack_bits(b, o, 4, 1);
-                o = MOCK.pack_bits(b, o, 14, 1234); o = MOCK.pack_bits(b, o, 10, (kind == 63) and 33 or 44);
+                o = MOCK.pack_bits(b, o, 14, r.reaction_param or 1234);
+                o = MOCK.pack_bits(b, o, 10, r.reaction_message or ((kind == 63) and 33 or 44));
             end
         end
     end

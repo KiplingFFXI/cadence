@@ -110,9 +110,9 @@ end
 s.attack.show_tp = false;
 check('the auto attack row goes', row_goes('attack', { 'show_value', 'show_delay' }));
 check('the resting row goes', row_goes('resting', { 'show_value', 'show_gains', 'show_until_full' }));
-check('the enemy row goes', row_goes('enemy', { 'show_value', 'show_name', 'show_delay', 'show_effects' }));
+check('the enemy row goes', row_goes('enemy', { 'show_value', 'show_name', 'show_delay', 'show_effects', 'show_holds' }));
 s.enemy.attached = true;
-check('the strip\'s row goes too', row_goes('enemy', { 'show_value', 'show_name', 'show_delay', 'show_effects' }));
+check('the strip\'s row goes too', row_goes('enemy', { 'show_value', 'show_name', 'show_delay', 'show_effects', 'show_holds' }));
 s.enemy.attached = false;
 s.attack.numbers_only, s.attack.show_value, s.attack.show_delay = true, false, false;
 local with_name = height('attack');
@@ -188,9 +188,9 @@ for _, line in ipairs(LINES) do
     check(line[3] .. '\'s box is live', switch and not greyed(calls, switch));
 end
 s.resting.show_label = true;
-local look_tab, enemy_tab = index_of(calls, 'BeginTabItem', 'Look'), index_of(calls, 'BeginTabItem', 'Enemy');
+local look_tab, enemy_tab = index_of(calls, 'BeginTabItem', 'Appearance'), index_of(calls, 'BeginTabItem', 'Enemy');
 local enemy_name, enemy_switch = index_of(calls, 'Checkbox', 'Enemy name'), index_of(calls, 'Checkbox', '##show_label_enemy');
-check('the enemy one is on the Look tab, away from Enemy name', look_tab and enemy_tab and enemy_name and enemy_switch
+check('the enemy one is on the Appearance tab, away from Enemy name', look_tab and enemy_tab and enemy_name and enemy_switch
     and enemy_name > enemy_tab and enemy_name < look_tab and enemy_switch > look_tab);
 
 s.style.show_labels = false;

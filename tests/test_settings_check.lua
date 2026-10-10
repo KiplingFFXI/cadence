@@ -315,10 +315,13 @@ local function through_the_addon()
 
     local SLIDERS = {
         ['Width##attack'] = R.attack.width, ['Bar height##attack'] = R.attack.bar_height,
+        ['Height##attack'] = R.attack.height_scale,
         ['Almost ready at##attack'] = R.attack.almost_seconds,
         ['Width##resting'] = R.resting.width, ['Bar height##resting'] = R.resting.bar_height,
+        ['Height##resting'] = R.resting.height_scale,
         ['Flash length'] = R.resting.flash_seconds, ['Volume##sound'] = R.resting.sound_volume,
         ['Width##enemy'] = R.enemy.width, ['Bar height##enemy'] = R.enemy.bar_height,
+        ['Height##enemy'] = R.enemy.height_scale,
         ['Almost ready at##enemy'] = R.enemy.almost_seconds,
         ['Scale'] = R.style.scale, ['Text size'] = R.style.font_size, ['Detail size'] = R.style.detail_size,
         ['Label size'] = R.style.label_size, ['Corner roundness'] = R.style.rounding,
@@ -332,6 +335,8 @@ local function through_the_addon()
     local listed = 0;
     for _ in pairs(SLIDERS) do listed = listed + 1; end
     check('every range has its slider', count == listed, count .. ' vs ' .. listed);
+    -- Recovery has a mode-dependent range instead of one fixed defaults.RANGES entry.
+    SLIDERS['Goal##recovery'] = defaults.GOAL_PERCENT;
 
     local drawn, wrong, boxes, names = {}, nil, {}, {};
     for _, c in ipairs(MOCK.imgui_calls) do

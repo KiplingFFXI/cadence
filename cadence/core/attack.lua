@@ -14,7 +14,7 @@
     Nothing resets it. Switching targets keeps it running.
 
     cadence starts from a delay worked out from your gear, job and buffs. Then it learns the real
-    one from your own attacks. That also catches gear haste the client can't see.
+    one from your own attacks. That also catches bonuses whose strength is still unknown.
 ]]
 
 local delay = require('core.delay');
@@ -53,6 +53,11 @@ local state = {
     hold_ended     = nil,   -- When the last spell, item or ranged attack ended.
     disabled_since = nil,   -- Set while sleep, stun or the like stops the timer.
     disabled_by    = nil,   -- The buff id of what stops it.
+    accepted       = 0,
+    rejected       = 0,
+    last_rejection = nil,
+    sample_at      = nil,
+    reused         = false,
     joined_late    = false, -- True when the fight started before cadence saw it, until your first round.
 };
 
@@ -82,12 +87,13 @@ local function gaps_for(loadout_key)
     return gaps;
 end
 
--- The key leaves out armor. Gaps kept from before an armor change stay until new ones roll them out.
+-- The key includes the known gear and effects that change attack speed. Other gear keeps its gaps.
 -- A key with March, Slow or Elegy starts over each time. The new one can be a different strength.
 local function use_loadout(loadout_key)
     if (loadout_key == state.loadout_key) then
         return;
     end
+    state.accepted, state.rejected, state.last_rejection, state.sample_at = 0, 0, nil, nil;
     state.loadout_key = loadout_key;
     state.intervals   = gaps_for(loadout_key);
     state.guessed     = not delay.exact(loadout_key);
@@ -95,6 +101,7 @@ local function use_loadout(loadout_key)
         state.intervals = {};
         gaps_by_key[loadout_key] = state.intervals;
     end
+    state.reused = #state.intervals >= INTERVALS_TO_TRUST;
 end
 
 local function learned_delay(gaps)
@@ -110,11 +117,19 @@ local function learned_delay(gaps)
     return total / count;
 end
 
-local function remember_interval(interval)
+local function remember_interval(interval, now)
+    if (interval <= 0) then
+        state.rejected = state.rejected + 1;
+        state.last_rejection = 'rounds arrived together';
+        return;
+    end
     if (interval > state.estimate * LONGEST_CLEAN_RATIO) then
+        state.rejected = state.rejected + 1;
+        state.last_rejection = 'gap too long for an uninterrupted round';
         return;
     end
 
+    state.accepted, state.sample_at, state.last_rejection, state.reused = state.accepted + 1, now, nil, false;
     table.insert(state.intervals, interval);
     if (#state.intervals > INTERVALS_KEPT) then
         table.remove(state.intervals, 1);
@@ -139,6 +154,7 @@ end
 -- isn't known until it lands.
 function attack.engage(now, estimate, loadout_key, joined_late)
     use_loadout(loadout_key);
+    state.reused         = learned_delay(state.intervals) ~= nil;
     state.active         = true;
     state.joined_late    = joined_late == true;
     state.last_attack    = now;
@@ -169,7 +185,10 @@ function attack.on_round(now, estimate, loadout_key)
     if (loadout_key ~= state.loadout_key) then
         use_loadout(loadout_key);
     elseif (state.clean) then
-        remember_interval(now - state.last_attack);
+        remember_interval(now - state.last_attack, now);
+    else
+        state.rejected = state.rejected + 1;
+        state.last_rejection = 'first round or interrupted timing';
     end
 
     state.estimate       = estimate;
@@ -387,6 +406,38 @@ function attack.forget_learned()
     gaps_by_key, keys_by_use = {}, {};
     state.loadout_key = nil;
     state.intervals   = {};
+end
+
+-- Start this loadout's measurements again without moving an attack already scheduled.
+function attack.relearn()
+    if (state.loadout_key == nil) then return false; end
+    for i = #state.intervals, 1, -1 do state.intervals[i] = nil; end
+    gaps_by_key[state.loadout_key] = state.intervals;
+    state.accepted, state.rejected, state.last_rejection, state.sample_at = 0, 0, nil, nil;
+    state.reused, state.clean = false, false;
+    state.delay = state.estimate;
+    return true;
+end
+
+function attack.info(now, next_estimate, next_key)
+    local minimum, maximum = nil, nil;
+    for _, gap in ipairs(state.intervals) do
+        minimum = minimum and math.min(minimum, gap) or gap;
+        maximum = maximum and math.max(maximum, gap) or gap;
+    end
+    return {
+        active = state.active, delay = state.delay, modeled_delay = state.estimate,
+        next_interval_model = next_estimate, next_interval_changed = next_key ~= nil and next_key ~= state.loadout_key,
+        source = attack.is_learned() and (state.reused and 'remembered' or 'observed') or 'estimated',
+        samples = #state.intervals, accepted = state.accepted, rejected = state.rejected,
+        sample_age = state.sample_at and math.max(0, now - state.sample_at) or nil,
+        sample_min = minimum, sample_max = maximum, last_rejection = state.last_rejection,
+        holding = state.held_since and state.held_by or nil,
+        disabled = state.disabled_since and state.disabled_by or nil, reason = state.reason,
+        stalled = state.stalled, joined_late = state.joined_late,
+        overdue = state.active and state.next_attack ~= nil and now > state.next_attack,
+        next_in = state.next_attack and math.max(0, state.next_attack - now) or nil,
+    };
 end
 
 return attack;

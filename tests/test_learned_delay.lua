@@ -20,6 +20,15 @@ local function rounds(t, n, gap, key, estimate)
 end
 local function delay_in_use(t) local _, _, d = attack.progress(t); return d; end
 
+attack.reset(); attack.forget_learned();
+attack.engage(0, 4, 'batch');
+for _ = 1, 4 do attack.on_round(4, 4, 'batch'); end
+check('batched player rounds cannot teach zero delay', not attack.is_learned() and delay_in_use(4) == 4
+    and attack.info(4).samples == 0 and attack.info(4).last_rejection == 'rounds arrived together');
+for _, at in ipairs({ 8, 12, 16 }) do attack.on_round(at, 4, 'batch'); end
+check('clean player gaps still learn after a packet batch', attack.is_learned() and delay_in_use(16) == 4);
+attack.forget_learned();
+
 -- Haste lands and wears off. Each key keeps its own gaps.
 attack.reset();
 attack.engage(0, 4.0, 'plain');

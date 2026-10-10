@@ -117,9 +117,9 @@ class Bridge:
 
     def __init__(self, select_tab=None, window_filter=None, forced_size=None):
         self.select_tab = select_tab.lower() if select_tab else None
-        self.tab_applied = False        # SetSelected was sent and the tab came back selected
-        self.tabs_seen = []             # visible labels of every BeginTabItem call
-        self.tab_open = []              # tabs whose BeginTabItem returned true this frame
+        self.tab_applied = False        # The requested tab or page opened.
+        self.tabs_seen = []             # Visible navigation labels.
+        self.tab_open = []              # Pages drawn this frame.
         self.window_filter = window_filter
         self.forced_size = forced_size
         self.window_stack = []
@@ -190,6 +190,11 @@ class Bridge:
                 raise BridgeError('BeginChild: child_flags must be ImGuiChildFlags_* (a number). Passing a '
                                   'boolean is untested with the 1.92 binding.')
             sid = str_id if isinstance(str_id, (int, float)) and not isinstance(str_id, bool) else _str(str_id, 'BeginChild id')
+            if isinstance(sid, str) and sid.startswith('##page_'):
+                visible = sid[len('##page_'):]
+                B.tab_open.append(visible)
+                if B.select_tab and visible.lower() == B.select_tab:
+                    B.tab_applied = True
             B.window_stack.append('<child>')
             return imgui.begin_child(sid if isinstance(sid, str) else int(sid), vec2(size, 'size', imgui.ImVec2(0, 0)),
                                      _flags(child_flags), _flags(window_flags))
@@ -511,7 +516,11 @@ class Bridge:
         # Main widgets ------------------------------------------------------------------------------
         @fn
         def Button(label, size=None):
-            return imgui.button(_str(label), vec2(size, 'size', imgui.ImVec2(0, 0)))
+            label = _str(label)
+            if label.endswith('##cadence_tab'):
+                visible = label.split('##')[0]
+                B.tabs_seen.append(visible)
+            return imgui.button(label, vec2(size, 'size', imgui.ImVec2(0, 0)))
 
         @fn
         def SmallButton(label):

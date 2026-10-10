@@ -50,8 +50,8 @@ chat_colors.PALETTE = {
     { code = 105, name = 'Plum',              swatch = 'dda0dd' },
 };
 
--- The parts of a line you can color, in the order the Window tab shows them. `key` is the part's name
--- in your chat settings and the word /cadence chatcolor takes. `name` is what the Window tab calls it.
+-- The parts of a line you can color, in the order the Window section shows them. `key` is the part's name
+-- in your chat settings and the word /cadence chatcolor takes. `name` is what the Window section calls it.
 chat_colors.PARTS = {
     { key = 'tag_brackets', name = 'Tag brackets' },
     { key = 'tag_word',     name = 'Tag word' },

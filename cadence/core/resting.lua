@@ -49,9 +49,12 @@ local HP_STEP_SLACK = 2;
 
 -- Regen and Refresh add HP and MP on the same 3 s effect pass that runs the ticks.
 local EFFECT_PASS = 3.0;
+local PASS_WINDOW = 0.6;
+local ACTION_WINDOW = 0.5;
 
 -- Disease (8), plague (31) and the curse that stops healing (20). The first one found is the one named.
 local CANT_HEAL = { 8, 31, 20 };
+local STATS = { 'hp', 'mp' };
 
 -- A change made while one of them is on gets decided at the next buff read, about 0.2 s later. A slow
 -- frame can make that read late. A change this old can still be the tick the effect wore off on.
@@ -77,8 +80,22 @@ local state = {
     regen_mp       = 0,
     pass_hp        = nil,    -- The last gain seen between ticks.
     pass_mp        = nil,
+    pass_at_hp     = nil,
+    pass_at_mp     = nil,
+    pending_pass_hp = nil,
+    pending_pass_mp = nil,
+    pending_pass_at_hp = nil,
+    pending_pass_at_mp = nil,
+    direct_hp      = nil,
+    direct_mp      = nil,
+    direct_tp      = nil,
     gap_regen_hp   = 0,      -- Regen and Refresh seen so far in the current gap.
     gap_regen_mp   = 0,
+    regen_at       = nil,
+    regen_observed_hp = false,
+    regen_observed_mp = false,
+    gap_regen_known_hp = false,
+    gap_regen_known_mp = false,
     seen_at        = nil,    -- When the last seen tick landed.
     hp             = nil,    -- Your last known HP, MP and TP, and your max HP and MP.
     mp             = nil,
@@ -96,7 +113,106 @@ local state = {
     held_mp        = 0,
     held_tp        = 0,
     held_missing   = 0,
+    held_train_hp  = false,
+    held_train_mp  = false,
+    model          = nil,
+    model_pending  = false, -- The next packet may cross a gear or effect change.
+    recovery_changed = false,
+    sample_hp      = nil,   -- Uncapped resting gains under the current model.
+    sample_mp      = nil,
+    accepted       = 0,
+    rejected       = 0,
+    last_decision  = nil,
 };
+local passive_rate;
+local last_change = {};
+local phase_before = {};
+local PHASE_FIELDS = { 'last_tick', 'last_evidence', 'next_tick', 'next_gap', 'gap_last', 'gap_before',
+    'ticks', 'seen_at', 'hidden', 'lost', 'skipped', 'gained_hp', 'gained_mp', 'accepted' };
+
+local function finite(value)
+    return type(value) == 'number' and value == value and math.abs(value) < math.huge;
+end
+
+local function forget_recovery()
+    last_change.at = nil;
+    state.heal_hp, state.heal_mp = 0, 0;
+    state.heal_before_hp, state.heal_before_mp = 0, 0;
+    state.regen_hp, state.regen_mp = 0, 0;
+    state.pass_hp, state.pass_mp = nil, nil;
+    state.pass_at_hp, state.pass_at_mp = nil, nil;
+    state.pending_pass_hp, state.pending_pass_mp = nil, nil;
+    state.pending_pass_at_hp, state.pending_pass_at_mp = nil, nil;
+    state.gap_regen_hp, state.gap_regen_mp = 0, 0;
+    state.regen_at = nil;
+    state.regen_observed_hp, state.regen_observed_mp = false, false;
+    state.gap_regen_known_hp, state.gap_regen_known_mp = false, false;
+    state.sample_hp, state.sample_mp = nil, nil;
+    state.held_at = nil;
+end
+
+-- A changed amount starts fresh samples without moving the resting clock.
+function resting.on_model(model)
+    local next_model = nil;
+    if (type(model) == 'table') then
+        next_model = {
+            resting_key = model.resting_key,
+            hp_known = model.hp_known == true,
+            mp_known = model.mp_known == true,
+            unknown = model.unknown,
+            transition = model.transition == true,
+            regen = model.regen or 0, refresh = model.refresh or 0,
+            regen_down = model.regen_down or 0, refresh_down = model.refresh_down or 0,
+            regen_known = model.regen_known ~= false, refresh_known = model.refresh_known ~= false,
+        };
+        for _, stat in ipairs(STATS) do
+            local base, step = model[stat .. '_base'], model[stat .. '_step'];
+            if (finite(base) and base >= 0 and finite(step) and step >= 0) then
+                next_model[stat .. '_base'], next_model[stat .. '_step'] = base, step;
+            end
+        end
+    end
+    local before = state.model;
+    local changed = (before == nil) ~= (next_model == nil);
+    if (before ~= nil and next_model ~= nil) then
+        for _, key in ipairs({ 'resting_key', 'hp_base', 'hp_step', 'mp_base', 'mp_step',
+            'regen', 'refresh', 'regen_down', 'refresh_down' }) do
+            if (before[key] ~= next_model[key]) then changed = true; end
+        end
+    end
+    state.model = next_model;
+    if (changed) then
+        forget_recovery();
+        state.recovery_changed = true;
+        state.model_pending = state.active and (before ~= nil or state.last_tick ~= nil);
+    end
+end
+
+-- Observations replace the modeled amount. The model is never added to a gain we already saw.
+local function modeled_gain(stat, tick)
+    local model = state.model;
+    if (model == nil or model[stat .. '_base'] == nil) then return nil; end
+    local step = model[stat .. '_step'];
+    local sample = state['sample_' .. stat];
+    if (sample ~= nil) then
+        step = sample.step or step;
+        local confidence = (sample.step ~= nil or model[stat .. '_known']) and 'observed' or 'estimated';
+        return math.max(0, sample.gain + (tick - sample.tick) * step), step, confidence;
+    end
+    return model[stat .. '_base'] + (tick - 1) * step, step,
+        model[stat .. '_known'] and 'known' or 'estimated';
+end
+
+local function learn_gain(stat, gain)
+    if (state.model == nil or state.model[stat .. '_base'] == nil or gain <= 0) then return; end
+    local before = state['sample_' .. stat];
+    local step = nil;
+    if (before ~= nil and state.ticks > before.tick) then
+        local increase = (gain - before.gain) / (state.ticks - before.tick);
+        if (increase > 0) then step = increase; end
+    end
+    state['sample_' .. stat] = { gain = gain, tick = state.ticks, step = step };
+end
 
 -- True once the last two gaps are known, so the next one comes from the 9, 9, 12 pattern.
 function resting.pattern_known()
@@ -169,20 +285,24 @@ end
     same. A 'maybe' only counts near the predicted time.
 ]]
 local function tick_evidence(hp_gain, mp_gain, tp_gain, mp_missing, hp_max)
-    if (mp_gain >= TICK_MP or tp_gain < 0) then
+    if ((mp_gain ~= nil and mp_gain >= TICK_MP) or (tp_gain ~= nil and tp_gain < 0)) then
         return 'sure';
     end
     -- With 12 or more MP missing, a real tick would have restored at least 12 MP.
-    if (mp_missing >= TICK_MP) then
+    if (mp_gain ~= nil and mp_missing >= TICK_MP) then
         return nil;
     end
     -- Each tick restores a little more HP than the one before. The step is 1 HP, or 1 + max HP / 300
     -- under Signet. A tick that healed nothing still counts a step. A much bigger jump is a cure.
     local steps = (1 + math.floor(hp_max / 300)) * (1 + state.skipped);
-    if (state.gained_hp > 0 and hp_gain > state.gained_hp + steps + HP_STEP_SLACK) then
+    local hp_limit = state.gained_hp + steps + HP_STEP_SLACK;
+    local predicted = modeled_gain('hp', state.ticks + 1);
+    if (predicted ~= nil) then hp_limit = math.max(hp_limit, predicted + state.regen_hp + HP_STEP_SLACK); end
+    if (hp_gain ~= nil and not state.recovery_changed and state.gained_hp > 0 and hp_gain > hp_limit) then
         return nil;
     end
-    if (hp_gain >= TICK_HP or (hp_gain == 0 and mp_gain == 0 and tp_gain == 0)) then
+    -- Duplicate vitals and passive-only gains do not show a resting tick.
+    if (hp_gain ~= nil and hp_gain >= TICK_HP) then
         return 'maybe';
     end
     return nil;
@@ -229,12 +349,13 @@ function resting.start(now)
     state.next_tick     = now + FIRST_TICK_SECONDS;
     state.next_gap      = nil;
     state.ticks         = 0;
+    state.accepted, state.rejected, state.last_decision = 0, 0, nil;
     state.gained_hp, state.gained_mp = 0, 0;
-    state.heal_hp, state.heal_mp = 0, 0;
-    state.heal_before_hp, state.heal_before_mp = 0, 0;
-    state.regen_hp, state.regen_mp = 0, 0;
-    state.pass_hp, state.pass_mp = nil, nil;
-    state.gap_regen_hp, state.gap_regen_mp = 0, 0;
+    forget_recovery();
+    state.direct_hp, state.direct_mp, state.direct_tp = nil, nil, nil;
+    last_change.at = nil;
+    state.model_pending = false;
+    state.recovery_changed = false;
     state.seen_at       = nil;
     state.hidden        = false;
     state.lost          = false;
@@ -247,51 +368,154 @@ function resting.stop()
     state.active = false;
 end
 
---[[
-    Regen and Refresh add the same amount on every 3 s pass. A cure lands once. A gain between ticks
-    that matches the one before it is Regen or Refresh.
-]]
-local function note_pass(hp_gain, mp_gain)
-    if (hp_gain > 0) then
-        if (hp_gain == state.pass_hp) then
-            state.gap_regen_hp = hp_gain;
-        end
-        state.pass_hp = hp_gain;
+local function clear_pass(stat)
+    state['pass_' .. stat], state['pass_at_' .. stat] = nil, nil;
+    state['pending_pass_' .. stat], state['pending_pass_at_' .. stat] = nil, nil;
+end
+
+-- Wait for the action packet too, since it may follow the vitals it changed.
+local function settle_pass(when, stat)
+    local at = state['pending_pass_at_' .. stat];
+    if (at == nil or when - at <= ACTION_WINDOW) then return; end
+    state['gap_regen_' .. stat] = state['pending_pass_' .. stat];
+    state['gap_regen_known_' .. stat] = true;
+    state.regen_at = at;
+    state['pending_pass_' .. stat], state['pending_pass_at_' .. stat] = nil, nil;
+end
+
+local function note_stat_pass(when, stat, gain, allowed)
+    if (not allowed) then clear_pass(stat); return; end
+    if (gain == 0) then return; end
+    local at = state['pass_at_' .. stat];
+    if (gain == state['pass_' .. stat] and at ~= nil and math.abs(when - at - EFFECT_PASS) <= PASS_WINDOW) then
+        state['pending_pass_' .. stat], state['pending_pass_at_' .. stat] = gain, when;
     end
-    if (mp_gain > 0) then
-        if (mp_gain == state.pass_mp) then
-            state.gap_regen_mp = mp_gain;
-        end
-        state.pass_mp = mp_gain;
+    state['pass_' .. stat], state['pass_at_' .. stat] = gain, when;
+end
+
+-- Only uncapped, consecutive three-second changes can teach a passive rate.
+local function note_pass(when, hp_gain, mp_gain, hp_allowed, mp_allowed)
+    note_stat_pass(when, 'hp', hp_gain, hp_allowed);
+    note_stat_pass(when, 'mp', mp_gain, mp_allowed);
+end
+
+-- A direct cure, drain or transfer cannot teach Regen, Refresh or resting potency.
+function resting.on_direct_change(now, hp, mp, tp)
+    if (not state.active or not finite(now) or not (hp or mp or tp)) then return; end
+    if (hp) then state.direct_hp = now; clear_pass('hp'); end
+    if (mp) then state.direct_mp = now; clear_pass('mp'); end
+    if (tp) then state.direct_tp = now; end
+    if (state.held_at ~= nil and now >= state.held_at and now - state.held_at <= ACTION_WINDOW) then
+        state.held_direct_hp = state.held_direct_hp or hp;
+        state.held_direct_mp = state.held_direct_mp or mp;
+        state.held_direct_tp = state.held_direct_tp or tp;
     end
+    if (last_change.at ~= nil and now >= last_change.at and now - last_change.at <= ACTION_WINDOW) then
+        last_change.direct_hp = last_change.direct_hp or hp;
+        last_change.direct_mp = last_change.direct_mp or mp;
+        last_change.direct_tp = last_change.direct_tp or tp;
+        if (hp and last_change.hp ~= 0) then
+            state.sample_hp = last_change.sample_hp;
+            state.heal_hp, state.heal_before_hp, state.gained_hp = 0, 0, 0;
+        end
+        if (mp and last_change.mp ~= 0) then
+            state.sample_mp = last_change.sample_mp;
+            state.heal_mp, state.heal_before_mp, state.gained_mp = 0, 0, 0;
+        end
+        local changed = (hp and last_change.hp ~= 0) or (mp and last_change.mp ~= 0)
+            or (tp and last_change.tp ~= 0);
+        if (last_change.accepted and changed) then
+            local independent = (not last_change.direct_mp and last_change.mp_evidence >= TICK_MP)
+                or (not last_change.direct_tp and last_change.tp < 0)
+                or (not last_change.direct_hp and last_change.hp_tick);
+            if (not independent) then
+                -- The only evidence was the direct action. Keep the countdown that preceded it.
+                for _, key in ipairs(PHASE_FIELDS) do state[key] = phase_before[key]; end
+                state.sample_hp, state.sample_mp = last_change.sample_hp, last_change.sample_mp;
+                state.heal_hp, state.heal_mp = 0, 0;
+                state.heal_before_hp, state.heal_before_mp = 0, 0;
+                state.rejected = state.rejected + 1;
+                last_change.accepted = false;
+            end
+            state.last_decision = 'direct action';
+        end
+    end
+end
+
+passive_rate = function (stat)
+    if (state['gap_regen_known_' .. stat]) then return state['gap_regen_' .. stat], true; end
+    if (state['regen_observed_' .. stat]) then return state['regen_' .. stat], true; end
+    local model = state.model;
+    if (model == nil) then return 0, false; end
+    local name = stat == 'hp' and 'regen' or 'refresh';
+    return math.max(model[name], 0) - model[name .. '_down'], false;
 end
 
 -- A tick landed. Its packet also carries one pass of Regen or Refresh. Taking that off leaves the
 -- resting part.
-local function remember_heal(hp_gain, mp_gain)
-    state.regen_hp, state.regen_mp = state.gap_regen_hp, state.gap_regen_mp;
+local function remember_heal(when, hp_gain, mp_gain)
+    state.regen_hp, state.regen_observed_hp = passive_rate('hp');
+    state.regen_mp, state.regen_observed_mp = passive_rate('mp');
     state.gap_regen_hp, state.gap_regen_mp = 0, 0;
-    state.pass_hp, state.pass_mp = nil, nil;
+    state.gap_regen_known_hp, state.gap_regen_known_mp = false, false;
+    clear_pass('hp'); clear_pass('mp');
+    if (state.regen_hp ~= 0 or state.regen_mp ~= 0) then state.regen_at = when; end
 
     state.heal_before_hp, state.heal_before_mp = state.heal_hp, state.heal_mp;
-    state.heal_hp = math.max(hp_gain - state.regen_hp, 0);
-    state.heal_mp = math.max(mp_gain - state.regen_mp, 0);
+    state.heal_hp = hp_gain ~= nil and math.max(hp_gain - state.regen_hp, 0) or 0;
+    state.heal_mp = mp_gain ~= nil and math.max(mp_gain - state.regen_mp, 0) or 0;
+    if (hp_gain == nil) then state.heal_before_hp = 0; end
+    if (mp_gain == nil) then state.heal_before_mp = 0; end
 end
 
 -- What a change in your HP, MP or TP at `when` was. It's a resting tick, or something between ticks.
-local function take_change(when, hp_gain, mp_gain, tp_gain, mp_missing)
-    local evidence = tick_evidence(hp_gain, mp_gain, tp_gain, mp_missing, state.hp_max);
+local function take_change(when, hp_gain, mp_gain, tp_gain, mp_missing, train_hp, train_mp,
+    direct_hp, direct_mp, direct_tp, pass_hp, pass_mp)
+    last_change.at, last_change.hp, last_change.mp, last_change.tp = when, hp_gain, mp_gain, tp_gain;
+    last_change.mp_evidence = mp_gain - passive_rate('mp');
+    last_change.hp_tick = is_tick(when, tick_evidence(hp_gain - passive_rate('hp'), nil, nil, 0, state.hp_max));
+    last_change.direct_hp, last_change.direct_mp, last_change.direct_tp = direct_hp, direct_mp, direct_tp;
+    last_change.accepted = false;
+    last_change.sample_hp, last_change.sample_mp = state.sample_hp, state.sample_mp;
+    local crossing = state.model_pending or (state.model ~= nil and state.model.transition);
+    state.model_pending = false;
+    local evidence = tick_evidence(not direct_hp and hp_gain - passive_rate('hp') or nil,
+        not direct_mp and mp_gain - passive_rate('mp') or nil,
+        not direct_tp and tp_gain or nil, mp_missing, state.hp_max);
+    if (crossing) then
+        -- A weapon swap can remove TP. Only a positive gain near the expected tick keeps its time.
+        if (hp_gain <= 0 and mp_gain <= 0) then
+            state.rejected, state.last_decision = state.rejected + 1, 'loadout changed';
+            return;
+        end
+        evidence = evidence ~= nil and 'maybe' or nil;
+    end
     if (is_tick(when, evidence)) then
-        state.gained_hp = math.max(hp_gain, 0);
-        state.gained_mp = math.max(mp_gain, 0);
+        for _, key in ipairs(PHASE_FIELDS) do phase_before[key] = state[key]; end
+        last_change.accepted = true;
+        local was_lost = state.lost;
+        state.gained_hp = not direct_hp and math.max(hp_gain, 0) or 0;
+        state.gained_mp = not direct_mp and math.max(mp_gain, 0) or 0;
         state.seen_at   = when;
-        remember_heal(state.gained_hp, state.gained_mp);
+        remember_heal(when, not direct_hp and hp_gain or nil, not direct_mp and mp_gain or nil);
         state.hidden    = false;
         state.lost      = false;
         state.skipped   = 0;
         record_tick(when, evidence);
+        state.recovery_changed = false;
+        state.accepted = state.accepted + 1;
+        state.last_decision = crossing and 'tick timing only during loadout change' or 'recovery tick';
+        if (not crossing and not was_lost) then
+            if (train_hp and not direct_hp) then learn_gain('hp', state.heal_hp); end
+            if (train_mp and not direct_mp) then learn_gain('mp', state.heal_mp); end
+        end
     else
-        note_pass(hp_gain, mp_gain);
+        if (hp_gain ~= 0 or mp_gain ~= 0 or tp_gain ~= 0) then
+            state.rejected = state.rejected + 1;
+            state.last_decision = crossing and 'loadout changed'
+                or ((direct_hp or direct_mp or direct_tp) and 'direct action' or 'between recovery ticks');
+        end
+        if (not crossing) then note_pass(when, hp_gain, mp_gain, pass_hp and not direct_hp, pass_mp and not direct_mp); end
     end
 end
 
@@ -309,19 +533,24 @@ local function settle_held(now)
     -- The effect going away sends your HP and MP with nothing changed, and plague's drain only takes.
     -- Neither one is a tick. A tick that heals always gains HP or MP.
     if (state.blocked == nil and now - at <= BUFF_LAG and (state.held_hp > 0 or state.held_mp > 0)) then
-        take_change(at, state.held_hp, state.held_mp, state.held_tp, state.held_missing);
+        take_change(at, state.held_hp, state.held_mp, state.held_tp, state.held_missing,
+            state.held_train_hp, state.held_train_mp, state.held_direct_hp, state.held_direct_mp,
+            state.held_direct_tp, state.held_pass_hp, state.held_pass_mp);
     else
-        note_pass(state.held_hp, state.held_mp);
+        note_pass(at, state.held_hp, state.held_mp, state.held_pass_hp and not state.held_direct_hp,
+            state.held_pass_mp and not state.held_direct_mp);
     end
 end
 
 -- Your HP, MP or TP changed. The server sends this for you every time one of them moves.
 function resting.on_vitals(now, hp, mp, tp, hp_max, mp_max)
+    settle_pass(now, 'hp'); settle_pass(now, 'mp');
     local known = state.hp ~= nil;
     local hp_gain = known and (hp - state.hp) or 0;
     local mp_gain = known and (mp - state.mp) or 0;
     local tp_gain = known and (tp - state.tp) or 0;
     local mp_missing = known and math.max(mp_max - state.mp, 0) or 0;
+    local maxima_changed = known and (hp_max ~= state.hp_max or mp_max ~= state.mp_max);
 
     state.hp, state.mp, state.tp = hp, mp, tp;
     state.hp_max, state.mp_max = hp_max, mp_max;
@@ -330,15 +559,36 @@ function resting.on_vitals(now, hp, mp, tp, hp_max, mp_max)
     if (not state.active or not known) then
         return;
     end
+    if (maxima_changed) then
+        -- Recalculating maximum vitals may also clamp HP or MP. That packet cannot train a gain.
+        forget_recovery();
+        state.recovery_changed = true;
+        state.model_pending = false;
+        return;
+    end
+    -- A duplicate vitals packet must not hide the gain whose action is still arriving.
+    if (hp_gain == 0 and mp_gain == 0 and tp_gain == 0 and last_change.at ~= nil
+        and now >= last_change.at and now - last_change.at <= ACTION_WINDOW) then return; end
+
+    local train_hp, train_mp = hp < hp_max, mp < mp_max;
+    local direct_hp = state.direct_hp ~= nil and now >= state.direct_hp and now - state.direct_hp <= ACTION_WINDOW;
+    local direct_mp = state.direct_mp ~= nil and now >= state.direct_mp and now - state.direct_mp <= ACTION_WINDOW;
+    local direct_tp = state.direct_tp ~= nil and now >= state.direct_tp and now - state.direct_tp <= ACTION_WINDOW;
+    local pass_hp = hp_gain == 0 or (hp_gain > 0 and hp < hp_max) or (hp_gain < 0 and hp > 0);
+    local pass_mp = mp_gain == 0 or (mp_gain > 0 and mp < mp_max) or (mp_gain < 0 and mp > 0);
 
     -- Ticks heal nothing now, but plague drains TP and MP like a tick. The next buff check decides.
     if (state.blocked ~= nil) then
         settle_held(now);
         state.held_at = now;
         state.held_hp, state.held_mp, state.held_tp, state.held_missing = hp_gain, mp_gain, tp_gain, mp_missing;
+        state.held_train_hp, state.held_train_mp = train_hp, train_mp;
+        state.held_direct_hp, state.held_direct_mp, state.held_direct_tp = direct_hp, direct_mp, direct_tp;
+        state.held_pass_hp, state.held_pass_mp = pass_hp, pass_mp;
         return;
     end
-    take_change(now, hp_gain, mp_gain, tp_gain, mp_missing);
+    take_change(now, hp_gain, mp_gain, tp_gain, mp_missing, train_hp, train_mp,
+        direct_hp, direct_mp, direct_tp, pass_hp, pass_mp);
 end
 
 -- Your buffs, read five times a second. Notes whether disease, plague or the curse is on you.
@@ -364,6 +614,7 @@ function resting.update(now)
     if (not state.active) then
         return;
     end
+    settle_pass(now, 'hp'); settle_pass(now, 'mp');
 
     -- Under disease, plague or the curse no tick can show up, so each one is taken to land on time. It
     -- healed nothing, so the step between the ticks before it says nothing about the next one.
@@ -450,78 +701,190 @@ local function step_between(last, before)
     return nil;
 end
 
---[[
-    Ticks needed to restore `missing`. The last tick's resting part was `last`. Each tick adds `step`
-    more. Regen or Refresh adds `regen` on top every 3 s pass.
-]]
-local function ticks_to_restore(missing, last, step, regen)
-    if (missing <= 0) then
-        return 0;
-    end
-    if (last <= 0 or step == nil) then
-        return nil;
-    end
-
-    local regen_per_tick = regen * TICK_INTERVAL / EFFECT_PASS;
-    local ticks, restored, gain = 0, 0, last;
-    while (restored < missing and ticks < 99) do
-        gain = gain + step;
-        restored = restored + gain + regen_per_tick;
-        ticks = ticks + 1;
-    end
-    return ticks;
+local function next_gain(stat)
+    local gain, step, confidence = modeled_gain(stat, state.ticks + 1);
+    if (gain ~= nil) then return gain, step, confidence; end
+    local last = state['heal_' .. stat];
+    step = step_between(last, state['heal_before_' .. stat]);
+    if (last > 0 and step ~= nil) then return last + step, step, 'observed'; end
+    return nil, nil, 'unknown';
 end
 
--- Ticks until HP and until MP are full. Either is nil when it can't be worked out yet.
-local function ticks_until_full()
-    local hp_ticks = ticks_to_restore(state.hp_max - state.hp, state.heal_hp,
-        step_between(state.heal_hp, state.heal_before_hp), state.regen_hp);
-    local mp_ticks = ticks_to_restore(state.mp_max - state.mp, state.heal_mp,
-        step_between(state.heal_mp, state.heal_before_mp), state.regen_mp);
-    return hp_ticks, mp_ticks;
+-- The next resting gain, capped by missing vitals. Regen and Refresh stay separate.
+function resting.next_gains()
+    if (not state.active or state.hp == nil) then return nil; end
+    local hp, hp_step, hp_confidence = next_gain('hp');
+    local mp, mp_step, mp_confidence = next_gain('mp');
+    local confidence = {
+        hp = hp_confidence,
+        mp = mp_confidence,
+        hp_uncapped = hp,
+        mp_uncapped = mp,
+        hp_step = hp_step,
+        mp_step = mp_step,
+        tick = state.ticks + 1,
+        unknown = state.model and state.model.unknown or nil,
+        transition = state.model ~= nil and state.model.transition,
+    };
+    if (state.blocked ~= nil) then
+        confidence.hp, confidence.mp = 'blocked', 'blocked';
+        return 0, 0, confidence;
+    end
+    local hp_missing = math.max(0, state.hp_max - state.hp);
+    local mp_missing = math.max(0, state.mp_max - state.mp);
+    if (hp_missing == 0) then hp = 0;
+    elseif (hp ~= nil) then hp = math.min(hp, hp_missing); end
+    if (mp_missing == 0) then mp = 0;
+    elseif (mp ~= nil) then mp = math.min(mp, mp_missing); end
+    return hp, mp, confidence;
 end
 
--- Seconds for that many ticks. The first is the one already counting down. The others average 10 s
--- apart. A tick running late is still owed. This is only 0 when nothing is left.
-local function seconds_for(ticks, now)
-    if (ticks == nil) then
-        return nil;
+-- Recovery and Regen/Refresh run on separate schedules. Simulate them together so a full stat
+-- that drains cannot be treated as still full when the other one catches up.
+local recovery_stats = { hp = {}, mp = {} };
+local function full_estimate(now, targets)
+    if (not state.active or state.hp == nil) then return nil; end
+    local meta, stats = {}, recovery_stats;
+    local phase_known = resting.pattern_known() and not state.lost;
+    local model = state.model;
+    local stopped = state.blocked ~= nil or (model and model.regen_down > 0);
+    local blocked_confidence = state.blocked and 'blocked' or 'unknown';
+    local rates = false;
+    for _, stat in ipairs(STATS) do
+        local gain, step, confidence = next_gain(stat);
+        local rate, observed = passive_rate(stat);
+        local name = stat == 'hp' and 'regen' or 'refresh';
+        if (not phase_known or (model and model.transition)
+            or (model and not model[name .. '_known'] and not observed)) then confidence = 'estimated'; end
+        if (rate ~= 0 and state.regen_at == nil and state.seen_at == nil) then confidence = 'estimated'; end
+        local current, maximum = state[stat], state[stat .. '_max'];
+        local target = targets and targets[stat] or maximum;
+        local full = current >= target;
+        if (target == 0) then gain, step, rate, confidence = 0, 0, 0, 'known'; end
+        if (full and rate >= 0) then
+            gain, step, confidence = gain or 0, step or 0, 'known';
+        end
+        local predictable = gain ~= nil and step ~= nil;
+        if (not predictable and rate > 0) then
+            -- A known passive gain can fill this stat even before resting potency is known.
+            gain, step, confidence, predictable = 0, 0, 'estimated', true;
+        end
+        if (not predictable) then confidence = 'unknown'; end
+        local record = stats[stat];
+        record.value, record.maximum, record.target = current, maximum, target;
+        record.gain, record.step, record.rate = gain, step, rate;
+        record.confidence, record.full_at, record.predictable = confidence, full and 0 or nil, predictable;
+        meta[stat .. '_ticks'] = full and 0 or nil;
+        meta[stat .. '_confidence'] = full and 'known' or (stopped and blocked_confidence or confidence);
+        rates = rates or rate ~= 0;
     end
-    if (ticks == 0) then
-        return 0;
+    local hp, mp = stats.hp, stats.mp;
+    if (hp.value >= hp.target and mp.value >= mp.target) then
+        meta.full_in, meta.ticks, meta.confidence = 0, 0, 'known';
+        return 0, 0, meta;
     end
-    return math.max(state.next_tick - now, 0.1) + (ticks - 1) * TICK_INTERVAL;
+    if (stopped) then
+        meta.confidence = blocked_confidence;
+        return hp.full_at, mp.full_at, meta;
+    end
+    local unknown = not hp.predictable or not mp.predictable;
+    if (unknown and (not hp.predictable or hp.full_at ~= nil) and (not mp.predictable or mp.full_at ~= nil)) then
+        meta.confidence = 'unknown';
+        return hp.full_at, mp.full_at, meta;
+    end
+    local confidence = (hp.confidence == 'estimated' or mp.confidence == 'estimated') and 'estimated'
+        or ((hp.confidence == 'observed' or mp.confidence == 'observed') and 'observed' or 'known');
+    local rest_at = now + math.max(state.next_tick - now, 0.1);
+    local last_gap, before_gap = state.next_gap, state.gap_last;
+    local anchor = state.regen_at or state.seen_at or state.started_at or now;
+    local pass_at = rates and (anchor + (math.floor(math.max(now - anchor, 0) / EFFECT_PASS) + 1) * EFFECT_PASS)
+        or math.huge;
+    local ticks = 0;
+    for _ = 1, 500 do
+        local at = math.min(rest_at, pass_at);
+        if (math.abs(at - pass_at) < 0.01) then
+            for _, stat in pairs(stats) do
+                if (stat.predictable) then
+                    stat.value = math.max(0, math.min(stat.maximum, stat.value + stat.rate));
+                end
+            end
+            pass_at = pass_at + EFFECT_PASS;
+        end
+        if (math.abs(at - rest_at) < 0.01) then
+            for _, stat in pairs(stats) do
+                if (stat.predictable) then
+                    stat.value = math.min(stat.maximum, stat.value + stat.gain);
+                    stat.gain = stat.gain + stat.step;
+                end
+            end
+            ticks = ticks + 1;
+            local gap = TICK_INTERVAL;
+            if (phase_known) then gap = (last_gap == SHORT_GAP and before_gap == SHORT_GAP) and LONG_GAP or SHORT_GAP; end
+            before_gap, last_gap = last_gap, gap;
+            rest_at = rest_at + gap;
+        end
+        for name, stat in pairs(stats) do
+            if (stat.full_at == nil and stat.value >= stat.target) then
+                stat.full_at = at - now;
+                meta[name .. '_ticks'] = ticks;
+            end
+        end
+        if (not unknown and hp.value >= hp.target and mp.value >= mp.target) then
+            meta.full_in, meta.ticks, meta.confidence = at - now, ticks, confidence;
+            return hp.full_at, mp.full_at, meta;
+        end
+        if (unknown and (not hp.predictable or hp.full_at ~= nil) and (not mp.predictable or mp.full_at ~= nil)) then
+            break;
+        end
+        if (ticks >= 99) then break; end
+    end
+    meta.confidence = 'unknown';
+    return hp.full_at, mp.full_at, meta;
 end
 
--- Seconds until HP and MP are both full, or nil when it can't be worked out yet.
+-- Existing seconds stay first. The extra metadata explains confidence and remaining resting ticks.
 function resting.until_full(now)
-    if (not state.active or state.full or state.hp == nil) then
-        return nil;
-    end
-
-    local hp_ticks, mp_ticks = ticks_until_full();
-    if (hp_ticks == nil or mp_ticks == nil) then
-        return nil;
-    end
-
-    local ticks = math.max(hp_ticks, mp_ticks);
-    if (ticks == 0) then
-        return nil;
-    end
-    return seconds_for(ticks, now);
+    if (not state.active or state.hp == nil) then return nil; end
+    local hp, mp, meta = full_estimate(now);
+    if (state.full or hp == nil or mp == nil) then return nil, meta; end
+    return meta.full_in, meta;
 end
 
---[[
-    Seconds until HP is full and until MP is full. Each is 0 once it's full, or nil when it can't be
-    worked out yet. The third value is false for a job with no MP. Returns nothing when you are not
-    resting.
-]]
 function resting.until_each_full(now)
-    if (not state.active or state.hp == nil) then
-        return nil;
+    if (not state.active or state.hp == nil) then return nil; end
+    local hp, mp, meta = full_estimate(now);
+    return hp, mp, state.mp_max > 0, meta;
+end
+
+-- Goals share the full-recovery simulation without changing the full-HP/MP state.
+function resting.goal_progress(now, stat, mode, value)
+    if (not finite(now) or not finite(value) or state.hp == nil
+        or (stat ~= 'hp' and stat ~= 'mp' and stat ~= 'both')
+        or (mode ~= 'percent' and mode ~= 'amount')) then return nil; end
+    local targets = {};
+    for _, name in ipairs(STATS) do
+        local maximum = state[name .. '_max'];
+        local amount = mode == 'percent' and maximum * math.max(0, math.min(100, value)) / 100 or value;
+        targets[name] = (stat == name or stat == 'both') and math.max(0, math.min(maximum, math.ceil(amount))) or 0;
     end
-    local hp_ticks, mp_ticks = ticks_until_full();
-    return seconds_for(hp_ticks, now), seconds_for(mp_ticks, now), state.mp_max > 0;
+    local reached = state.hp >= targets.hp and state.mp >= targets.mp;
+    local result = { reached = reached, target_hp = targets.hp, target_mp = targets.mp,
+        confidence = reached and 'known' or 'unknown' };
+    if (reached) then result.seconds, result.ticks = 0, 0; return result; end
+    if (not state.active) then return result; end
+    local _, _, meta = full_estimate(now, targets);
+    result.seconds, result.ticks, result.confidence = meta.full_in, meta.ticks, meta.confidence;
+    return result;
+end
+
+function resting.info(now)
+    local seconds, meta = resting.until_full(now);
+    local hp, mp, confidence = resting.next_gains();
+    return { active = state.active, ticks = state.ticks, pattern_known = resting.pattern_known(),
+        last_tick = state.seen_at, next_tick = state.next_tick, blocked = state.blocked,
+        accepted = state.accepted, rejected = state.rejected, last_decision = state.last_decision,
+        next_hp = hp, next_mp = mp, gain_confidence = confidence, full_in = seconds, full = meta,
+        regen_hp = passive_rate('hp'), regen_mp = passive_rate('mp') };
 end
 
 -- True at full HP and MP.
@@ -538,6 +901,12 @@ end
 function resting.reset()
     state.active = false;
     state.hp, state.mp, state.tp = nil, nil, nil;
+    state.model = nil;
+    state.model_pending = false;
+    state.direct_hp, state.direct_mp, state.direct_tp = nil, nil, nil;
+    last_change.at = nil;
+    state.recovery_changed = false;
+    forget_recovery();
 end
 
 return resting;

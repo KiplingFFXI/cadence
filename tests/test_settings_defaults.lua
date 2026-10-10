@@ -25,6 +25,10 @@ check('a missing color is filled', type(s.attack.tp_color) == 'table' and s.atta
 check('a missing color gets its own table', not rawequal(s.attack.tp_color, kept.attack.tp_color));
 check('a missing section gets its own table', not rawequal(s.resting, kept.resting));
 check('colors inside a missing section get their own tables', not rawequal(s.resting.fill_start, kept.resting.fill_start));
+check('new goals and alignment guides start off in older files', not s.attack.show_tp_time and not s.resting.show_goal and not s.style.layout_guides);
+check('older settings keep the original timer heights', s.attack.height_scale == 1 and s.resting.height_scale == 1
+    and s.enemy.height_scale == 1);
+check('the recovery goal starts at full MP', s.resting.goal_stat == 'mp' and s.resting.goal_mode == 'percent' and s.resting.goal_value == 100);
 
 -- Edits the way the color picker and Shift+drag make them, in place.
 s.attack.tp_color[1] = 0.123;

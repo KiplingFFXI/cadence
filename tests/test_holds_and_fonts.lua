@@ -73,6 +73,25 @@ check('and the seconds otherwise', enemy_value(nil) == '2.3');
 s.enemy.show_holds = false;
 check('turned off, it keeps the seconds', enemy_value('tp_move') == '2.3');
 s.enemy.show_holds = true;
+
+-- Holds still show when every other part of the text row is off.
+local saved = {};
+for _, key in ipairs({ 'show_label', 'show_value', 'show_name', 'show_delay', 'show_effects' }) do
+    saved[key] = s.enemy[key];
+    s.enemy[key] = false;
+end
+check('TP move can show by itself', enemy_value('tp_move') == 'TP move');
+local _, holding_height = hud.element_size('enemy');
+check('casting can show by itself', enemy_value('spell') == 'casting');
+check('no seconds with only holds on', enemy_value(nil) == nil);
+local _, quiet_height = hud.element_size('enemy');
+check('the hold row keeps its height', holding_height == quiet_height);
+s.enemy.show_holds = false;
+check('holds off leaves just the bar', enemy_value('spell') == nil);
+local _, bar_height = hud.element_size('enemy');
+check('holds alone reserve the text row', holding_height > bar_height);
+for key, value in pairs(saved) do s.enemy[key] = value; end
+s.enemy.show_holds = true;
 s.enemy.enabled = false;
 
 -- Fonts -----------------------------------------------------------------------------------------------

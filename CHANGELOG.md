@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.2.0
+
+More accurate TP, attack and recovery estimates, with clearer explanations, more ways to arrange the timers and safer settings changes.
+
+- TP estimates include known Store TP traits, merits, equipment, augments, food and effects, plus Dual Wield and Martial Arts gear. Your actual gains still refine the estimate.
+- Choose a TP goal of 1000, 2000 or 3000. Successful hits shows how many of your own hits remain, separately from rounds. Time to TP goal can show approximate seconds once enough timing and hit information is available.
+- Resting predictions include Clear Mind, eligible Signet bonuses, equipment, augments, food and known effects. Time until full can appear before your first tick. Optional Next tick gains and Ticks until full readouts mark uncertain estimates.
+- Recovery estimates count Regen, Refresh and drains on their separate three-second passes. Full times follow the learned resting pattern. Recovery goals show time to a chosen HP/MP amount or percentage without changing the full recovery sound. Finishing between ticks says "full before next tick".
+- Attack estimates count gear haste and slow, flat and percentage delay changes, and known conditional bonuses. Relevant gear swaps update the next interval. Percentage delay uses Phoenix's haste limit, and Hundred Fists starts from the correct delay with staves and clubs too.
+- Blue Magic spells contribute their stat bonuses and relevant traits. Changing spells updates the estimate, and Details shows spell names, trait tiers and whether the set is confirmed. Known Assault conditions also count; missing information stays estimated.
+- Refreshing a speed effect starts fresh timing observations even when its icon stays. A new target or an accuracy or extra-attack gear change restarts recent hit-rate estimates while keeping valid TP per hit.
+- The Details tab explains each estimate, its sources, observations and missing bonuses. Speed details separates raw and applied bonuses and shows the caps. Search, collapsible groups, Copy shown, Copy all and separate relearn buttons help you find and share what you need.
+- Hover over a timer for a short explanation. `/cadence info` lists known bonuses and remaining estimates. `/cadence info details` adds their contributions and timing evidence. Optional recording and `/cadence report` save a local timing report.
+- The enemy timer keeps following slow attackers through their expected round and shows "waiting" when an attack is overdue. Longer Elegy effects no longer teach a slowed speed as normal. The "TP move" and "casting" row stays visible when other text is hidden.
+- Observed Sleep, Stun, Petrification and Terror hold the enemy timer. Interrupted gaps do not teach a new attack speed, and old observations clear when a monster leaves sight.
+- Supported spells you cast keep the gear, buffs and merits from when they landed for their duration estimates. An estimated expiration never claims an exact next attack. Expired speed effects are cleared before timing resumes after paralysis or an instant action.
+- Direct heals, drains and spikes no longer teach false Regen or Refresh. Late healing messages can still correct a mistaken sample. Attacks arriving together no longer teach a zero-length delay, and incomplete action messages cannot change the timers.
+- Unchanged vitals and Regen-only updates no longer restart the resting timer or erase the last HP gain on jobs without MP.
+- HP and MP full times stay independent when one recovery amount is unknown. Timing reports can save live buff, equipment and merit lists.
+- Fixed dropped game updates that left resting gains and full times blank and attack timers without new observations.
+- Hold Shift and drag a timer's bottom edge to shrink or grow its whole height, including text and spacing. The corner changes width and height together, and Text only can resize vertically too. Each timer also has a Height slider; Bar height still sets just the colored bar's thickness.
+- Character and zone changes clear pending TP samples and old fight evidence while keeping eligible learned gains through zoning.
+- Added Mint and Lavender skins for the timers, settings window and chat colors. Ready, almost ready, full and enemy warning colors stay distinct.
+- Appearance replaces the Look tab and brings Window and Window colors into separate collapsible sections. You can fold each window color group. Existing settings and commands still work.
+- Find settings highlights matching controls, with Previous and Next match buttons and a counter. Tabs wrap above scrolling pages, and search opens matching folded sections while keeping your usual folds for afterward. Search controls fit narrow windows, and a blank search leaves your folds alone.
+- Hide unused tabs in Appearance or restore them all. Their features keep running, and search or a Details shortcut can reveal a hidden tab. Appearance stays available. Tab choices stay with each character, including while sharing a layout.
+- Minimal, Melee / TP, Resting and Enemy tracking starter layouts explain their changes and can be previewed before applying. They keep your colors, fonts, labels, positions, goals, sounds and saved profiles.
+- Appearance has an embedded timer and chat sample. The Preview tab has selectable sample states, pause and optional alignment guides for arranging timers. Samples leave live observations and sounds alone.
+- Timer readouts have an Enabled only filter and expandable options. Details shortcuts open the matching timing explanation. Text only is the clearer name for hiding a bar while keeping its text.
+- Undo keeps the last eight settings changes, including timer moves, resizing, profile loads and starter layouts. Commands finish a pending control edit as its own step, and repeating layout sharing keeps your history. Reset one section without resetting the rest. Interrupted drags cannot carry an Undo layout to another character or survive Reset all.
+- Profiles show Using or Modified from so you can see which setup you started with. Undo overwrite restores the previous saved version only if nobody changed it again. Undo delete restores the last deleted profile without replacing newer names or job links.
+- Profile and shared-layout saves keep the previous file if writing fails. Failed profile loads report the problem. Closing settings or changing characters finishes pending shared edits. A failed character-switch save keeps the shared edit available to retry, and each character keeps their own tab choices and job links.
+- Editing settings stays solid under Shift, including controls on scrolling pages. Timer drawing, search highlights, profile status and estimates do less repeated work while continuing to watch for changes. Resting readouts share one full-recovery forecast, and stat polling and Undo use less memory.
+
 ## 1.0.0
 
 First release.

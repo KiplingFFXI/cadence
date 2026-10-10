@@ -167,10 +167,13 @@ local lines, blocked = info();
 check('before anything, every line', table.concat(lines, '|') == table.concat({
     FIRST,
     'Your auto attack delay is 4.00 s est. It isn\'t learned from your attacks yet.',
-    'Your weapons, job and buffs alone say 4.00 s.',
+    'Your weapons, known gear, job and buffs say 4.00 s.',
     'cadence has no learned delays saved yet.',
     'Your TP per hit is 64. It isn\'t locked in yet.',
     NOT_RESTING,
+    'Known modifiers: Store TP +0, resting HP +0, resting MP +0.',
+    'Before other recovery, resting starts at 10 HP and 12 MP, increasing by 1 HP and 1 MP per tick.',
+    'Still estimated: attack merits unavailable. Your actual gains fill in what is missing.',
 }, '|'), table.concat(lines, '|'));
 check('the command is blocked', blocked == true);
 
@@ -188,19 +191,19 @@ round(1.6);
 for _ = 1, 4 do round(3.6); end
 lines = info();
 check('a learned delay', lines[2] == 'Your auto attack delay is 3.60 s, learned from your attacks.', lines[2]);
-check('with what the weapon says', lines[3] == 'Your weapons, job and buffs alone say 4.00 s.', lines[3]);
+check('with what the weapon says', lines[3] == 'Your weapons, known gear, job and buffs say 4.00 s.', lines[3]);
 check('one mix', lines[4] == 'cadence has a learned delay saved for 1 mix of weapons, jobs and buffs.', lines[4]);
 check('TP per hit is the first guess', lines[5] == 'Your TP per hit is 64. It isn\'t locked in yet.', lines[5]);
 
--- A weapon swapped mid-fight counts from the next round. Until then the bar and info keep the old one.
+-- A weapon swap preserves the scheduled gap; info also shows the new next-interval model.
 MOCK.player.equipment[0] = 16540;
 lines = info();
 check('mid-fight, the delay in use until the next round', lines[2] == 'Your auto attack delay is 3.60 s, learned from '
-    .. 'your attacks.' and lines[3] == 'Your weapons, job and buffs alone say 4.00 s.', lines[2] .. ' ' .. lines[3]);
+    .. 'your attacks.' and lines[3] == 'Your weapons, known gear, job and buffs say 4.40 s.', lines[2] .. ' ' .. lines[3]);
 status(0);
 lines = info();
 check('out of the fight it\'s the weapon you hold', lines[2] == 'Your auto attack delay is 4.40 s est. It isn\'t '
-    .. 'learned from your attacks yet.' and lines[3] == 'Your weapons, job and buffs alone say 4.40 s.',
+    .. 'learned from your attacks yet.' and lines[3] == 'Your weapons, known gear, job and buffs say 4.40 s.',
     lines[2] .. ' ' .. lines[3]);
 check('and TP per hit for it too', lines[5] == 'Your TP per hit is 70. It isn\'t locked in yet.', lines[5]);
 MOCK.player.equipment[0] = 16535;
@@ -216,7 +219,7 @@ MOCK.player.buffs = { HASTE_BUFF };
 round(3.6);
 lines = info();
 check('Haste starts on its estimate', lines[2] == 'Your auto attack delay is 3.41 s est. It isn\'t learned from '
-    .. 'your attacks yet.' and lines[3] == 'Your weapons, job and buffs alone say 3.41 s.', lines[2] .. ' ' .. lines[3]);
+    .. 'your attacks yet.' and lines[3] == 'Your weapons, known gear, job and buffs say 3.41 s.', lines[2] .. ' ' .. lines[3]);
 for _ = 1, 3 do round(3.1); end
 lines = info();
 check('Haste learned', lines[2] == 'Your auto attack delay is 3.10 s, learned from your attacks.', lines[2]);
@@ -237,7 +240,7 @@ check('two agreeing samples are', lines[5] == 'Your TP per hit is 70 and it\'s l
 local value, locked, first = tp.per_hit();
 check('tp.per_hit gives the first guess third', value == 70 and locked and first == 64,
     tostring(value) .. ' ' .. tostring(locked) .. ' ' .. tostring(first));
-check('nothing has come from being hit, so there\'s no line for it', #lines == 6, #lines);
+check('nothing has come from being hit, so there\'s no line for it', #lines == 9, #lines);
 
 -- In a fight it says how much more TP a round has lately come from other things, once that's 1 or more.
 -- 21 TP your hits don't explain moves it a third of the way, to 7. Five rounds that only get their own
@@ -255,7 +258,7 @@ lines = info();
 check('it fades with nothing more', lines[6] == from_others(1), lines[6]);
 hit_round();
 lines = info();
-check('and goes once it\'s under 1', #lines == 6 and lines[6] == NOT_RESTING, lines[6]);
+check('and goes once it\'s under 1', #lines == 9 and lines[6] == NOT_RESTING, lines[6]);
 vitals(nil, nil, tp_now + 21);
 round(3.6);
 lines = info();
@@ -263,14 +266,14 @@ check('7.6 says about 8', lines[6] == from_others(8), lines[6]);
 s.attack.show_tp = false;
 lines = info();
 s.attack.show_tp = true;
-check('with the TP line off it isn\'t said', #lines == 6, #lines);
+check('with the TP line off it isn\'t said', #lines == 9, #lines);
 
 -- Resting. The pattern is known after the third tick.
 status(33);
 local sat = MOCK.now;
 vitals(sat + 1, 500);
 lines = info();
-check('out of a fight TP from being hit isn\'t said', #lines == 6, #lines);
+check('out of a fight TP from being hit isn\'t said', #lines == 10, #lines);
 check('resting, not known yet', lines[6] == 'The resting timer hasn\'t seen enough ticks to know the 9, 9, 12 '
     .. 'pattern yet.', lines[6]);
 vitals(sat + 21.4, 520);
@@ -317,13 +320,13 @@ for _, line in ipairs(lines) do
     local lower = line:lower();
     if (lower:find('monster', 1, true) or lower:find('enemy', 1, true)) then about_monsters = line; end
 end
-check('six lines and nothing about monsters', #lines == 6 and about_monsters == nil, about_monsters or #lines);
+check('nine lines and nothing about monsters', #lines == 9 and about_monsters == nil, about_monsters or #lines);
 
 -- Help lists it, and stays short.
 local help = said('/cadence help');
 local listed = false;
 for _, line in ipairs(help) do
-    if (line == '/cadence info  says what cadence has worked out about you, like your delay and TP per hit.') then
+    if (line == '/cadence info [details]  explains your timing and bonuses. /cadence report saves a local timing report.') then
         listed = true;
     end
 end
@@ -339,6 +342,17 @@ for _, line in ipairs(MOCK.printed) do
     end
 end
 check('no semicolons, dashes, unknown words or drawing errors', odd == nil, odd);
+
+attack.forget_learned();
+attack.engage(100, 4, 'scheduled');
+attack.on_round(103, 4, 'scheduled');
+local pending = attack.info(104, 3.8, 'new-gear');
+check('new gear report separates the next model from the scheduled gap', pending.next_interval_model == 3.8
+    and pending.next_interval_changed and pending.delay == 4 and pending.next_in == 3);
+attack.on_round(107, 3.8, 'new-gear');
+local following = attack.info(107, 3.8, 'new-gear');
+check('the following interval uses new gear without learning the crossed gap', following.delay == 3.8
+    and not following.next_interval_changed and following.samples == 0);
 
 table.insert(out, (fails == 0) and 'ALL PASSED' or (fails .. ' FAILED'));
 return table.concat(out, '\n');

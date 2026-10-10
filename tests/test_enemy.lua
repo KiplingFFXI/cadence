@@ -52,6 +52,13 @@ do
     _, _, delay = enemy.progress(30, MOB);
     check('a long pause is not learned', near(delay, 4.0), delay);
 
+    enemy.reset();
+    for _ = 1, 4 do enemy.on_round(4, MOB, ME); end
+    local batched = enemy.info(4, MOB);
+    check('batched enemy rounds cannot teach zero delay', batched.delay == 4 and batched.samples == 0 and not batched.learned);
+    for _, at in ipairs({ 8, 12, 16 }) do enemy.on_round(at, MOB, ME); end
+    check('clean enemy gaps still learn after a packet batch', enemy.info(16, MOB).learned and enemy.info(16, MOB).delay == 4);
+
     -- A TP move readied 1 s in and finished 2 s later. The timer runs again 2 s after that.
     enemy.reset();
     enemy.on_round(0, MOB, ME);
@@ -119,6 +126,16 @@ do
     for _, t in ipairs({ 0, 12, 24, 36 }) do enemy.on_round(t, MOB, ME); end
     _, _, delay, learned = enemy.progress(36, MOB);
     check('a slowed 12 s monster is learned', near(delay, 12.0) and learned, delay);
+
+    check('a learned slow attacker stays followed after10s', enemy.attacking(47, ME, MOB) == MOB);
+    check('a slow attacker is released after its delay-scaled quiet window', enemy.attacking(55, ME, MOB) == nil);
+    enemy.on_hold_begin(40, MOB, 'spell');
+    check('an active casting hold keeps the attacker through a long spell', enemy.attacking(80, ME, MOB) == MOB);
+    enemy.on_hold_end(81, MOB, false);
+    check('a completed hold gets its own fresh activity window', enemy.attacking(92, ME, MOB) == MOB);
+    local info = enemy.info(92, MOB);
+    check('enemy diagnostics expose learned delay and bounded sample count',
+        info.delay == 12 and info.samples == 3 and info.source == 'observed');
 
     -- An interrupted spell still waits out its 2 s, and a paralyzed spell's interrupt adds nothing more.
     enemy.reset();

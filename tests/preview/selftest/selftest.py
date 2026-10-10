@@ -45,7 +45,7 @@ return M
 CASES = [
     # name, window source, extra args, expected exit, substrings expected in the summary / stderr
     ('fixture', None, ['--tab', 'Timers'], 0, ["window='selftest##cadence_settings'", 'tab=Timers', 'size=780x430']),
-    ('fixture_look', None, ['--tab', 'Look'], 0, ['tab=Look']),
+    ('fixture_look', None, ['--tab', 'Appearance'], 0, ['tab=Appearance']),
     ('fixture_resized', None, ['--tab', 'Timers', '--window-size', '1000', '360'], 0, ['size=1000x360']),
     ('fixture_min', None, ['--tab', 'Timers', '--window-size', '300', '200'], 0, ['size=560x300']),
     ('unknown_function', "imgui.NotARealFunction('x')", [], 1, ['imgui.NotARealFunction is not implemented']),

@@ -1,9 +1,9 @@
 --[[
     Works out your auto attack delay the way the server does in LSB CBattleEntity::GetWeaponDelay.
-    It only uses what the client can see. That's your weapons, job traits and haste buffs.
+    It starts from your weapons, known gear modifiers, job traits and haste buffs.
 
-    The client can't see gear haste or the exact strength of March, Slow and Elegy. The auto attack
-    timer learns those from your real attacks. This only has to be a good first guess.
+    Known gear includes haste and slow, delay changes and conditional bonuses. Unidentified effects
+    still start from a guess. Your real attacks teach the timer what those gaps actually are.
 ]]
 
 local delay = {};
@@ -63,6 +63,9 @@ local HUNDRED_FISTS = 46;
 
 local MAGIC_HASTE_CAP   = 0.4375;
 local ABILITY_HASTE_CAP = 0.25;
+-- Phoenix sets main.DELAY_REDUCTION_CAP to 0.93; the source default is 0.80.
+-- The separate final weapon-delay floor still applies after percentage delay.
+local PHOENIX_HASTE_CAP = 0.93;
 
 local function to_ms(delay_units)
     return math.floor(delay_units * 1000 / 60);
@@ -91,6 +94,16 @@ local function best_trait(ranks_by_job, loadout)
         trait(ranks_by_job, loadout.sub_job, loadout.sub_level));
 end
 
+-- Known equipment and trait totals come from the current modifier model. A caller without one
+-- still gets the job-only estimate.
+local function modifier(loadout, name, traits)
+    local model = loadout.modifiers;
+    if (model ~= nil and model[name] ~= nil) then
+        return model[name];
+    end
+    return traits and best_trait(traits, loadout) or 0;
+end
+
 -- True when both hands hold weapons that can be dual wielded. `skill` is the main weapon's skill.
 local function dual_wielding(loadout, skill)
     return (DUAL_WIELDABLE[skill] and loadout.sub ~= nil and DUAL_WIELDABLE[loadout.sub.skill]) == true;
@@ -107,48 +120,104 @@ end
         buffs = { [buff id] = true, ... },
     }
 ]]
-function delay.estimate(loadout)
+local SPEED_FIELDS = { haste_magic = true, haste_ability = true, twohand_haste_ability = true,
+    haste_gear = true, delay_flat = true, delay_percent = true, martial_arts = true, dual_wield = true,
+    desperate_blows = true };
+
+-- The details and the timer use the same arithmetic. Ordinary timer reads make no extra tables.
+local function calculate(loadout, details)
     local main = loadout.main;
     local skill = main and main.skill or SKILL_HAND_TO_HAND;
     local is_h2h = skill == SKILL_HAND_TO_HAND;
-
     local main_units = main and main.delay or UNARMED_DELAY;
-    if (main ~= nil and is_h2h) then
-        main_units = main_units + H2H_CLIENT_OFFSET;
+    if (main ~= nil and is_h2h) then main_units = main_units + H2H_CLIENT_OFFSET; end
+
+    local flat = modifier(loadout, 'delay_flat');
+    local percent = modifier(loadout, 'delay_percent');
+    local weapon_ms = to_ms(main_units) + flat;
+    local martial = is_h2h and modifier(loadout, 'martial_arts', MARTIAL_ARTS) or 0;
+    local martial_ms, dual = to_ms(martial), 0;
+    if (not is_h2h and dual_wielding(loadout, skill)) then
+        weapon_ms = weapon_ms + to_ms(loadout.sub.delay);
+        dual = modifier(loadout, 'dual_wield', DUAL_WIELD);
     end
 
-    local weapon_ms  = to_ms(main_units);
-    local martial_ms = 0;
-    local dual_wield = 1;
-
-    if (is_h2h) then
-        martial_ms = to_ms(best_trait(MARTIAL_ARTS, loadout));
-    elseif (dual_wielding(loadout, skill)) then
-        weapon_ms  = weapon_ms + to_ms(loadout.sub.delay);
-        dual_wield = 1 - best_trait(DUAL_WIELD, loadout) / 100;
-    end
-
-    -- Hundred Fists ignores haste.
-    if (is_h2h and loadout.buffs[HUNDRED_FISTS]) then
-        return clamp(weapon_ms - martial_ms, 1600, 8000) * 0.25 / 1000;
-    end
-
-    local magic, ability = 0, 0;
-    for buff, haste in pairs(HASTE_BUFFS) do
-        if (loadout.buffs[buff] and (not haste.two_handed_only or TWO_HANDED[skill])) then
-            magic   = magic + (haste.magic or 0);
-            ability = ability + (haste.ability or 0);
+    local magic, ability, gear = 0, 0, 0;
+    local model = loadout.modifiers;
+    if (model ~= nil and model.haste_magic ~= nil) then
+        magic = modifier(loadout, 'haste_magic') / 10000;
+        ability = modifier(loadout, 'haste_ability') / 10000;
+        if (TWO_HANDED[skill]) then ability = ability + modifier(loadout, 'twohand_haste_ability') / 10000; end
+        gear = modifier(loadout, 'haste_gear') / 10000;
+    else
+        for buff, haste in pairs(HASTE_BUFFS) do
+            if (loadout.buffs[buff] and (not haste.two_handed_only or TWO_HANDED[skill])) then
+                magic = magic + (haste.magic or 0);
+                ability = ability + (haste.ability or 0);
+            end
         end
     end
-    magic   = clamp(magic, -1.0, MAGIC_HASTE_CAP);
+    local raw_magic, raw_ability, raw_gear = magic, ability, gear;
+    magic = clamp(magic, -1.0, MAGIC_HASTE_CAP);
     ability = clamp(ability, -ABILITY_HASTE_CAP, ABILITY_HASTE_CAP);
+    gear = math.min(0.25, gear);
+    local haste = clamp(1 - magic - ability - gear, 1 - PHOENIX_HASTE_CAP, 2.0);
+    local fists = loadout.buffs[HUNDRED_FISTS] == true;
+    local final_ms, before_limit, minimum, maximum;
+    if (fists) then
+        -- Hundred Fists also works with a staff or club. Other multipliers do not apply.
+        before_limit = math.floor((weapon_ms - martial_ms) * 0.25);
+        minimum, maximum = 400, 2000;
+        final_ms = math.floor(clamp(weapon_ms - martial_ms, 1600, 8000) * 0.25);
+    else
+        final_ms = math.floor((weapon_ms - martial_ms) * (1 - dual / 100));
+        final_ms = math.floor(final_ms * haste);
+        before_limit = math.floor(final_ms * (1 + percent / 100));
+        minimum, maximum = math.floor(weapon_ms * 0.2), weapon_ms * 2;
+        final_ms = clamp(before_limit, minimum, maximum);
+    end
 
-    local final_ms = math.floor(math.floor(weapon_ms - martial_ms) * dual_wield);
-    final_ms = math.floor(final_ms * clamp(1 - magic - ability, 0, 2.0));
-
-    -- Nothing takes delay below 20% of the weapon's or above double it.
-    final_ms = clamp(final_ms, math.floor(weapon_ms * 0.2), weapon_ms * 2);
+    if (details) then
+        details.gear = { raw = raw_gear * 100, effective = fists and 0 or gear * 100, cap = 25,
+            capped = (raw_gear - gear) * 100 };
+        details.magic = { raw = raw_magic * 100, effective = fists and 0 or magic * 100, cap = 43.75,
+            minimum = -100, capped = (raw_magic - magic) * 100 };
+        details.ability = { raw = raw_ability * 100, effective = fists and 0 or ability * 100, cap = 25,
+            minimum = -25, capped = (raw_ability - ability) * 100 };
+        details.combined = { raw = (magic + ability + gear) * 100,
+            effective = fists and 0 or (1 - haste) * 100, cap = PHOENIX_HASTE_CAP * 100, minimum = -100 };
+        details.martial_arts, details.dual_wield = martial, fists and 0 or dual;
+        details.delay_flat, details.delay_percent = flat, fists and 0 or percent;
+        details.raw_dual_wield, details.raw_delay_percent = dual, percent;
+        details.modeled_interval, details.before_limit = final_ms / 1000, before_limit / 1000;
+        details.minimum_interval, details.maximum_interval = minimum / 1000, maximum / 1000;
+        details.limit_adjustment, details.hundred_fists = (final_ms - before_limit) / 1000, fists;
+        details.known = model ~= nil and model.delay_known == true and not model.transition;
+        details.unknown = {};
+        local seen = {};
+        for _, row in ipairs(model and model.unknown_sources or {}) do
+            if (SPEED_FIELDS[row.field] and not seen[row.reason]) then
+                seen[row.reason] = true;
+                details.unknown[#details.unknown + 1] = row.reason;
+            end
+        end
+        if (model and model.transition) then details.unknown[#details.unknown + 1] = 'Equipment or effects are changing.'; end
+        if (not details.known and #details.unknown == 0) then
+            details.unknown[1] = 'Some speed inputs are unavailable.';
+        end
+    end
     return final_ms / 1000;
+end
+
+function delay.estimate(loadout)
+    return calculate(loadout);
+end
+
+-- Haste values are percentages, flat delay is milliseconds, and intervals are seconds.
+function delay.breakdown(loadout)
+    local details = {};
+    calculate(loadout, details);
+    return details;
 end
 
 -- An empty main hand fights with both fists only when one of your jobs has hand-to-hand skill and the
@@ -164,18 +233,22 @@ end
 ]]
 function delay.tp_delay(loadout)
     local main = loadout.main;
-    if (main == nil and not fights_with_fists(loadout)) then
-        return math.max(UNARMED_DELAY - best_trait(MARTIAL_ARTS, loadout), SHORTEST_UNARMED_TP_DELAY);
-    end
     local skill = main and main.skill or SKILL_HAND_TO_HAND;
+    local units = main and main.delay or UNARMED_DELAY;
+    if (main ~= nil and skill == SKILL_HAND_TO_HAND) then
+        units = units + H2H_CLIENT_OFFSET;
+    end
     if (skill == SKILL_HAND_TO_HAND) then
-        local units = main and (main.delay + H2H_CLIENT_OFFSET) or UNARMED_DELAY;
-        return math.floor(math.max((units - best_trait(MARTIAL_ARTS, loadout)) / 2, SHORTEST_TP_DELAY));
+        local martial = modifier(loadout, 'martial_arts', MARTIAL_ARTS);
+        if (main == nil and not fights_with_fists(loadout)) then
+            units = math.max(units - martial, SHORTEST_UNARMED_TP_DELAY);
+        else
+            units = math.max((units - martial) / 2, SHORTEST_TP_DELAY);
+        end
+    elseif (dual_wielding(loadout, skill)) then
+        units = (units + loadout.sub.delay) * (100 - modifier(loadout, 'dual_wield', DUAL_WIELD)) / 200;
     end
-    if (dual_wielding(loadout, skill)) then
-        return math.floor((main.delay + loadout.sub.delay) * (100 - best_trait(DUAL_WIELD, loadout)) / 100 / 2);
-    end
-    return main.delay;
+    return math.floor(units * math.max(1 + modifier(loadout, 'delay_percent') / 100, 0.85));
 end
 
 -- True when you attack with two weapons or fists. Both attack twice a round.
@@ -187,9 +260,9 @@ function delay.attacks_twice(loadout)
     return main.skill == SKILL_HAND_TO_HAND or dual_wielding(loadout, main.skill);
 end
 
--- Store TP from the Samurai trait, in percent. Store TP gear can't be seen from the client.
+-- Known Store TP, including eligible merits, or the job-only estimate before a model is available.
 function delay.store_tp(loadout)
-    return best_trait(STORE_TP, loadout);
+    return modifier(loadout, 'store_tp', STORE_TP);
 end
 
 --[[
@@ -205,12 +278,18 @@ function delay.key(loadout)
     end
     table.sort(haste_ids);
 
-    return ('%d:%d:%d/%d:%d/%d:%s'):format(
+    local gear = '';
+    if (loadout.modifiers ~= nil) then
+        gear = (loadout.modifiers.delay_key or ('%g/%g/%g'):format(
+            modifier(loadout, 'dual_wield', DUAL_WIELD), modifier(loadout, 'martial_arts', MARTIAL_ARTS),
+            modifier(loadout, 'delay_percent'))) .. ':';
+    end
+    return ('%d:%d:%d/%d:%d/%d:%s%s'):format(
         loadout.main and loadout.main.id or 0,
         loadout.sub and loadout.sub.id or 0,
         loadout.main_job, loadout.main_level,
         loadout.sub_job, loadout.sub_level,
-        table.concat(haste_ids, ','));
+        gear, table.concat(haste_ids, ','));
 end
 
 -- True when a key has March, Slow or Elegy in it and that buff isn't in `buffs`, your buffs right now.

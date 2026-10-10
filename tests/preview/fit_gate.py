@@ -1,6 +1,6 @@
 """
 The fit gate. Every tab of cadence's settings window has to fit its default size, 920x680, with no
-scrollbar. That goes for every preset, at Ashita's 18 px font, in three states. Shown has the timers
+outer scrollbar; each page scrolls below fixed navigation. That goes for every preset, at Ashita's 18 px font, in three states. Shown has the timers
 showing. Hidden has /cadence hide on, which adds a line at the top. Off also turns the auto attack and
 resting timers off, so the Timers tab adds a note under each of their headings. That's the tallest a
 tab gets, and the state 680 was picked for.
@@ -122,8 +122,24 @@ def setup(preset, state):
 
 def check(addon, tab, preset, state):
     name = '%s_%s%s.png' % (tab.replace(' ', '_'), preset, '' if state == 'shown' else '_' + state)
+    script = setup(preset, state)
+    # Every page scrolls below fixed navigation. Hidden timers add a notice above it, so the
+    # available page height must shrink while the outer window stays fixed.
+    script += """
+local imgui = require('imgui')
+local text, child = imgui.TextUnformatted, imgui.BeginChild
+imgui.TextUnformatted = function(words, ...)
+    if words == 'The timers are hidden.' then PREVIEW_PY.log('hidden_notice_drawn') end
+    return text(words, ...)
+end
+imgui.BeginChild = function(id, size, ...)
+    if tostring(id):find('##page_', 1, true) then PREVIEW_PY.log('page_height=' .. size[2]) end
+    if id == '##estimate_details' then PREVIEW_PY.log('details_height=' .. size[2]) end
+    return child(id, size, ...)
+end
+"""
     cmd = [sys.executable, PREVIEW, '--addon', addon, '--out', os.path.join(OUT, name), '--full', '--tab', tab,
-           '--window-size', str(WIDTH), str(HEIGHT), '--exec', setup(preset, state)]
+           '--window-size', str(WIDTH), str(HEIGHT), '--exec', script]
     run = render(cmd)
     lines = run.stdout.strip().splitlines()
     line = lines[-1] if lines else '(no output)'
@@ -136,19 +152,29 @@ def check(addon, tab, preset, state):
         problems.append('not drawn at %dx%d' % (WIDTH, HEIGHT))
     if ' scrollbar=' in line:
         problems.append('SCROLLBAR')
+    child_heights = re.findall(r'details_height=([0-9.]+)', run.stderr)
+    page_heights = re.findall(r'page_height=([0-9.]+)', run.stderr)
     return {
         'tab': tab, 'preset': preset, 'state': state, 'line': line, 'problems': problems,
         'height': int(content.group(2)) if content else None,
-        'warnings': run.stderr.strip().splitlines(),
+        'details_height': float(child_heights[-1]) if child_heights else None,
+        'page_height': float(page_heights[-1]) if page_heights else None,
+        'hidden_notice': 'hidden_notice_drawn' in run.stderr,
+        'warnings': [line for line in run.stderr.strip().splitlines()
+                     if 'hidden_notice_drawn' not in line and 'details_height=' not in line and 'page_height=' not in line],
     }
 
 
 def overlaps(addon, tab, font, size):
     """Draws a tab tall in a window font with the overlap probe. Every line the probe logged is a problem."""
     name = 'overlap_%s_%s%d.png' % (tab.replace(' ', '_'), font, size)
+    # Expanded pages need enough height to inspect every row below the fixed navigation.
+    height = {'Appearance': 4200, 'Timers': 2600, 'Profiles': 2200}.get(tab, TALL_WINDOW[1])
+    screen = (TALL_SCREEN[0], height + 60)
+    window = (WIDTH, height)
     cmd = [sys.executable, PREVIEW, '--addon', addon, '--out', os.path.join(OUT, name), '--full', '--tab', tab,
-           '--size', str(TALL_SCREEN[0]), str(TALL_SCREEN[1]),
-           '--window-size', str(TALL_WINDOW[0]), str(TALL_WINDOW[1]),
+           '--size', str(screen[0]), str(screen[1]),
+           '--window-size', str(window[0]), str(window[1]),
            '--set', 'window_style.font=%s' % font, '--set', 'window_style.font_size=%d' % size,
            '--exec', "dofile('%s')" % PROBE]
     run = render(cmd)
@@ -199,11 +225,11 @@ def main(argv=None):
 
     shown = {(r['tab'], r['preset']): r for r in results if r['state'] == 'shown'}
     for r in results:
-        # /cadence hide adds a line, so the window gets taller. When it doesn't, the hidden check proved nothing.
         other = shown[(r['tab'], r['preset'])]
-        if r['state'] == 'hidden' and r['height'] is not None and other['height'] is not None \
-                and r['height'] <= other['height']:
-            r['problems'].append('no taller with the timers hidden')
+        if r['state'] == 'hidden':
+            if not r['hidden_notice'] or r['page_height'] is None or other['page_height'] is None \
+                    or r['page_height'] >= other['page_height']:
+                r['problems'].append('the page did not make room for the hidden notice')
         print('%-14s %-12s %-7s %-6s %s' % (r['tab'], r['preset'], r['state'],
                                            r['height'] if r['height'] is not None else '-',
                                            ', '.join(r['problems']) or 'fits'))

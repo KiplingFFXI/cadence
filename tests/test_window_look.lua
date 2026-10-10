@@ -109,6 +109,12 @@ local EXPECTED = {
     ember = palette({ { '1a120c', 0.96 }, { '2a1d12' }, { '3a2716' }, { '4a321c' }, { 'ffb070', 0.25 }, { 'fff4e8' },
         { 'ffc38a' }, { 'a07c5c' }, { 'e8742a' }, { 'ffa04d' }, { '8fcf6a' } }, 2, 7, '1a120c',
         light('e8742a', { 'ffb070', 0.25 }, { '1a120c', 0.96 })),
+    mint = palette({ { '101f1b', 0.96 }, { '192f29' }, { '233d34' }, { '2e5446' }, { '8fe3ba', 0.35 }, { 'edf9f1' },
+        { 'b1ebd0' }, { '9bbbad' }, { '74d9ad' }, { 'a4edcc' }, { '8fe3b7' } }, 4, 7, '101f1b',
+        light('74d9ad', { '8fe3ba', 0.35 }, { '101f1b', 0.96 })),
+    lavender = palette({ { '191523', 0.96 }, { '262033' }, { '342b45' }, { '463858' }, { 'cdb1f4', 0.35 }, { 'f3ecff' },
+        { 'deccf7' }, { 'b5a5c9' }, { 'c3a0ed' }, { 'e4ccff' }, { 'a8d9c0' } }, 4, 7, '191523',
+        light('c3a0ed', { 'cdb1f4', 0.35 }, { '191523', 0.96 })),
     colorblind = palette({ { '101418', 0.96 }, { '1b2129' }, { '252d37' }, { '313b47' }, { '56b4e9', 0.30 },
         { 'f2f2f2' }, { '9fd3f5' }, { '8f9aa6' }, { '56b4e9' }, { '9fd3f5' }, { '56b4e9' } }, 2, 7, '101418',
         light('56b4e9', { '56b4e9', 0.30 }, { '101418', 0.96 })),
@@ -117,6 +123,7 @@ local EXPECTED = {
 -- problems take Okabe and Ito's orange.
 for _, p in pairs(EXPECTED) do p.problem = p.accent; end
 EXPECTED.colorblind.problem = hex('e69f00');
+EXPECTED.mint.problem, EXPECTED.lavender.problem = hex('ff8d79'), hex('ff8d79');
 local NAME_OF = {};
 for i, id in ipairs(presets.IDS) do NAME_OF[id] = presets.NAMES[i]; end
 
@@ -143,6 +150,11 @@ local function copy_color(c) return { c[1], c[2], c[3], c[4] }; end
 local function listen()
     rawset(imgui, 'PushStyleColor', function (slot, color) record('color', SLOT_NAME[slot], copy_color(color)); end);
     rawset(imgui, 'TextColored', function (color, words) record('text', words, copy_color(color)); end);
+    rawset(imgui, 'CollapsingHeader', function (label)
+        local last = events[#events];
+        if (last and last.kind == 'color' and last.a == 'Text') then record('text', label:gsub('##.*$', ''), last.b); end
+        return true;
+    end);
     rawset(imgui, 'Button', function (label) record('button', label); return false; end);
     rawset(imgui, 'PushStyleVar', function (slot, value)
         if (ROUNDED_NAME[slot] ~= nil) then rounding[ROUNDED_NAME[slot]] = value; end
@@ -150,7 +162,7 @@ local function listen()
     end);
 end
 local function stop_listening()
-    for _, name in ipairs({ 'PushStyleColor', 'TextColored', 'Button', 'PushStyleVar' }) do rawset(imgui, name, nil); end
+    for _, name in ipairs({ 'PushStyleColor', 'TextColored', 'CollapsingHeader', 'Button', 'PushStyleVar' }) do rawset(imgui, name, nil); end
 end
 
 settings_window.set_open(true);
@@ -200,7 +212,7 @@ end
 local function heading_colors()
     local found = {};
     for _, e in ipairs(events) do
-        if (e.kind == 'text') then found[e.a] = e.b; end
+        if (e.kind == 'text' and e.a:find('%a') and e.a == e.a:upper()) then found[e.a] = e.b; end
     end
     return found;
 end
@@ -414,14 +426,14 @@ check('picking a preset changes the window', wears('classic') == nil, wears('cla
 presets.undo(s);
 draw();
 check('Undo brings the window back', wears('phoenix') == nil, wears('phoenix'));
-presets.apply(s, 'Minimal');
+MOCK.fire('command', { command = '/cadence preset minimal' });
 rawset(imgui, 'SmallButton', function (label) return label == 'Reset look'; end);
 MOCK.frame(1 / 60);
 rawset(imgui, 'SmallButton', nil);
 draw();
 check('Reset look in the window brings back Phoenix', wears('phoenix') == nil, wears('phoenix'));
 rawset(imgui, 'SmallButton', function (label) return label == 'Undo'; end);
-draw();
+MOCK.frame(1 / 60);
 rawset(imgui, 'SmallButton', nil);
 draw();
 check('and Undo in the window takes that back', wears('minimal') == nil, wears('minimal'));
@@ -518,6 +530,8 @@ draw();
 check('/cadence windowlook flips it back on', lines[1] == 'Window matches the look is on.'
     and s.style.window_matches_look == true and wears('classic') == nil, lines[1]);
 MOCK.fire('command', { command = '/cadence undo' });
+check('unified Undo also restores the last checkbox change', s.style.window_matches_look == false);
+MOCK.fire('command', { command = '/cadence windowlook on' });
 MOCK.fire('command', { command = '/cadence preset classic' });
 
 -- The box, right under the Preset list, with its (?).
@@ -531,7 +545,7 @@ local combo_at, box_at, size_at, tip = nil, nil, nil, nil;
 for i, c in ipairs(MOCK.imgui_calls) do
     if (c[1] == 'BeginCombo' and c[2] == 'Preset') then combo_at = i; end
     if (c[1] == 'Checkbox' and c[2] == 'Window matches the look') then box_at = i; end
-    if (c[1] == 'TextColored' and c[3] == 'SIZE') then size_at = i; end
+    if (c[1] == 'CollapsingHeader' and c[2] == 'SIZE##section') then size_at = i; end
     if (box_at ~= nil and tip == nil and i > box_at and c[1] == 'TextUnformatted') then tip = tostring(c[2]); end
 end
 check('the box sits under the Preset list, above SIZE', combo_at and box_at and size_at and combo_at < box_at

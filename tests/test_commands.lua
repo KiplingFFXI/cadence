@@ -28,6 +28,7 @@ MOCK.fire('load');
 local s = MOCK.settings.current;
 local defaults = require('ui.defaults');
 local presets = require('ui.presets');
+local history = require('ui.history');
 local hud = require('ui.hud');
 local shared_layout = require('core.shared_layout');
 local json = require('json');
@@ -67,11 +68,18 @@ end
 local TIMER = { attack = ' for the auto attack timer', resting = ' for the resting timer',
     enemy = ' for the enemy attack timer', style = '' };
 local SWITCHES = {
+    { 'tips', 'style', 'hover_tips', 'Timer hover help', 'Timer hover help' },
     { 'attack seconds',    'attack',  'show_value',         'Seconds left',             'Seconds left##attack' },
     { 'attack delay',      'attack',  'show_delay',         'Weapon delay',             'Weapon delay##attack' },
+    { 'attack hits', 'attack', 'show_tp_hits', 'Successful hits', 'Successful hits' },
+    { 'attack time', 'attack', 'show_tp_time', 'Time to TP goal', 'Time to TP goal' },
+    { 'resting ticks', 'resting', 'show_ticks', 'Ticks until full', 'Ticks until full' },
+    { 'resting goal', 'resting', 'show_goal', 'Recovery goal', 'Recovery goal' },
+    { 'record', 'style', 'record_diagnostics', 'Record timing details', 'Record timing details' },
+    { 'guides', 'style', 'layout_guides', 'Alignment guides', 'Alignment guides' },
     { 'attack tp',         'attack',  'show_tp',            'Your TP',                  'Your TP' },
-    { 'attack rounds',     'attack',  'show_tp_rounds',     'Rounds to 1000',           'Rounds to 1000' },
-    { 'attack numbers',    'attack',  'numbers_only',       'Numbers only',             'Numbers only##attack' },
+    { 'attack rounds',     'attack',  'show_tp_rounds',     'Rounds to goal',           'Rounds to goal' },
+    { 'attack numbers',    'attack',  'numbers_only',       'Text only',                'Text only##attack' },
     { 'attack mark',       'attack',  'almost_mark',        'Ready mark',               'Ready mark##attack' },
     { 'attack almost',     'attack',  'almost_ready',       'Almost ready',             'Almost ready##attack' },
     { 'attack range',      'attack',  'show_reason',        'Range / facing',           'Range / facing' },
@@ -79,9 +87,10 @@ local SWITCHES = {
     { 'attack label',      'attack',  'show_label',         'Show its name',            '##show_label_attack' },
     { 'resting seconds',   'resting', 'show_value',         'Seconds left',             'Seconds left##resting' },
     { 'resting gains',     'resting', 'show_gains',         'Last tick gains',          'Last tick gains##resting' },
+    { 'resting nextgains', 'resting', 'show_next_gains',    'Next tick gains',          'Next tick gains##resting' },
     { 'resting untilfull', 'resting', 'show_until_full',    'Time until full',          'Time until full##resting' },
     { 'resting fulltimes', 'resting', 'show_each_full',     'Full times',               'Full times##resting' },
-    { 'resting numbers',   'resting', 'numbers_only',       'Numbers only',             'Numbers only##resting' },
+    { 'resting numbers',   'resting', 'numbers_only',       'Text only',                'Text only##resting' },
     { 'resting hidefull',  'resting', 'hide_when_full',     'Hide once full',           'Hide once full##resting' },
     { 'resting flash',     'resting', 'flash_on_tick',      'Flash on each tick',       'Flash on each tick' },
     { 'resting why',       'resting', 'show_why',           'Why it can\'t heal',       'Why it can\'t heal' },
@@ -98,7 +107,7 @@ local SWITCHES = {
     { 'enemy effects',     'enemy',   'show_effects',       'Slow and haste',           'Slow and haste' },
     { 'enemy tpmove',      'enemy',   'show_holds',         'TP move / casting',        'TP move / casting' },
     { 'enemy onyou',       'enemy',   'show_on_you',        'On you',                   'On you' },
-    { 'enemy numbers',     'enemy',   'numbers_only',       'Numbers only',             'Numbers only##enemy' },
+    { 'enemy numbers',     'enemy',   'numbers_only',       'Text only',                'Text only##enemy' },
     { 'enemy mark',        'enemy',   'almost_mark',        'Ready mark',               'Ready mark##enemy' },
     { 'enemy almost',      'enemy',   'almost_ready',       'Almost ready',             'Almost ready##enemy' },
     { 'enemy label',       'enemy',   'show_label',         'Show its name',            '##show_label_enemy' },
@@ -126,7 +135,15 @@ MOCK.fire('command', { command = '/cadence' });
 local by_box = {
     ['Lock in place'] = 'lock|unlock',
     ['One layout for all characters'] = 'onelayout',
+    ['Pause preview'] = 'preview pause|resume',
+    ['Inline preview'] = 'preview inline',
+    ['Enabled only##attack'] = 'temporary readout filter',
+    ['Enabled only##resting'] = 'temporary readout filter',
+    ['Enabled only##enemy'] = 'temporary readout filter',
 };
+for _, name in ipairs({ 'Timers', 'Enemy', 'Preview', 'Details', 'Profiles' }) do
+    by_box[name .. '##visible_tab'] = 'tab ' .. name .. ' on|off';
+end
 for _, switch in ipairs(SWITCHES) do by_box[switch[5]] = switch[1]; end
 local boxes, missing, combos = 0, {}, {};
 for _, c in ipairs(MOCK.imgui_calls) do
@@ -137,14 +154,14 @@ for _, c in ipairs(MOCK.imgui_calls) do
         table.insert(combos, c[2]);
     end
 end
-check('the window drew its boxes', boxes == #SWITCHES + 2, boxes);
-check('every box in the window has a command', #missing == 0, table.concat(missing, ', '));
+check('the window drew its boxes', boxes == #SWITCHES + 12, boxes);
+check('every saved box has a command and temporary filters are accounted for', #missing == 0, table.concat(missing, ', '));
 -- Each job link's list is named by its job after ##, like ##BLM. /cadence joblink sets them.
 local job_lists = {};
 for _, job in ipairs(defaults.JOBS) do table.insert(job_lists, '##' .. job); end
-check('the dropdowns are Sound, Follows, Preset, Font, the settings window\'s Font, the three chat colors and a job '
-    .. 'link for each job', table.concat(combos, ',') == 'Sound##resting,Follows##enemy,Preset,Font,Font##window,'
-    .. 'Tag brackets,Tag word,Replies,' .. table.concat(job_lists, ','), table.concat(combos, ','));
+check('the dropdowns cover timer goals, appearance, preview state and each job link', table.concat(combos, ',')
+    == 'TP goal##attack,Sound##resting,Follows##enemy,State##inline_preview,Preset,Font,Font##window,Tag brackets,Tag word,Replies,'
+    .. 'Timer##preview,State##preview,Resource##goal,Measure##goal,Starter layout,' .. table.concat(job_lists, ','), table.concat(combos, ','));
 
 -- Switches ---------------------------------------------------------------------------------------------
 local wrong = {};
@@ -163,7 +180,10 @@ for _, switch in ipairs(SWITCHES) do
     note(ok and s[section][key] == not default, command .. ' with no word flips it: ' .. detail);
     ok, detail = answers('/cadence ' .. command, ('%s is %s%s.'):format(name, second, TIMER[section]));
     note(ok and s[section][key] == default, command .. ' flips back: ' .. detail);
-    ok, detail = refuses('/cadence ' .. command .. ' maybe', ('Type /cadence %s on|off.'):format(command));
+    local usage = command == 'resting goal'
+        and 'Type /cadence resting goal hp|mp|both percent|amount <whole number>. Percent is 1 to 100.'
+        or ('Type /cadence %s on|off.'):format(command);
+    ok, detail = refuses('/cadence ' .. command .. ' maybe', usage);
     note(ok and s[section][key] == default, command .. ' maybe: ' .. detail);
 end
 check('every switch sets, flips and says what it did, and a wrong word gets its own line', #wrong == 0,
@@ -199,20 +219,20 @@ check('/cadence attack off still turns the timer off', answers('/cadence attack 
 check('/cadence attack on', answers('/cadence attack on', 'The auto attack timer is on.') and s.attack.enabled);
 check('/cadence attack flips it', answers('/cadence attack', 'The auto attack timer is off.') and not s.attack.enabled);
 MOCK.fire('command', { command = '/cadence attack on' });
-local ATTACK_USAGE = 'Type /cadence attack on|off, /cadence attack <part> on|off, /cadence attack <slider> <number> '
-    .. 'or /cadence attack labeltext <text>. The parts are seconds, delay, tp, rounds, numbers, mark, almost, range, '
-    .. 'why and label. The sliders are width, barheight and almostat.';
+local ATTACK_USAGE = 'Type /cadence attack on|off, /cadence attack goal 1000|2000|3000, /cadence attack <part> on|off, /cadence attack <slider> <number> '
+    .. 'or /cadence attack labeltext <text>. The parts are seconds, delay, tp, time, hits, rounds, numbers, mark, almost, range, '
+    .. 'why and label. The sliders are width, height, barheight and almostat.';
 local ok, detail = refuses('/cadence attack wat', ATTACK_USAGE);
 check('a wrong part gets the attack usage line and doesn\'t flip the timer', ok and s.attack.enabled, detail);
 ok, detail = refuses('/cadence resting gain on', 'Type /cadence resting on|off, /cadence resting <part> on|off, '
     .. '/cadence resting <slider> <number>, /cadence resting labeltext <text>, /cadence resting soundfile <name> or '
-    .. '/cadence resting playsound. The parts are seconds, gains, untilfull, fulltimes, numbers, hidefull, flash, why, '
-    .. 'sound and label. The sliders are width, barheight, flashlength and soundvolume.');
+    .. '/cadence resting playsound. The parts are goal, seconds, gains, ticks, nextgains, untilfull, fulltimes, numbers, hidefull, flash, why, '
+    .. 'sound and label. The sliders are width, height, barheight, flashlength and soundvolume.');
 check('a wrong resting part', ok, detail);
 ok, detail = refuses('/cadence enemy follows hits', 'Type /cadence enemy on|off, /cadence enemy follow '
     .. 'first|target|hits, /cadence enemy <part> on|off, /cadence enemy <slider> <number> or /cadence enemy '
     .. 'labeltext <text>. The parts are keeplast, attach, seconds, name, speed, effects, tpmove, onyou, numbers, mark, '
-    .. 'almost and label. The sliders are width, barheight and almostat.');
+    .. 'almost and label. The sliders are width, height, barheight and almostat.');
 check('a wrong enemy part names follow too', ok, detail);
 ok, detail = refuses('/cadence wat', 'Didn\'t recognize "wat". Type /cadence help to see the commands.');
 check('an unknown word gets one line, not the whole help', ok, detail);
@@ -232,27 +252,51 @@ check('a wrong Follows word gets its own line', ok, detail);
 ok, detail = refuses('/cadence enemy follow', 'Type /cadence enemy follow first|target|hits.');
 check('so does no word', ok, detail);
 
+-- Goal and preview commands keep display choices separate from temporary sample state.
+check('a percent recovery goal saves its resource and value', answers('/cadence resting goal mp percent 75',
+    'Your recovery goal is MP 75%.') and s.resting.goal_stat == 'mp' and s.resting.goal_mode == 'percent'
+    and s.resting.goal_value == 75 and s.resting.show_goal);
+check('a fixed recovery goal can follow both resources', answers('/cadence resting goal both amount 500',
+    'Your recovery goal is HP/MP 500.') and s.resting.goal_stat == 'both' and s.resting.goal_mode == 'amount'
+    and s.resting.goal_value == 500);
+for _, words in ipairs({ 'hp percent 101', 'mp amount 0', 'mp amount 100000', 'mp percent 33.5', 'tp percent 50' }) do
+    ok, detail = refuses('/cadence resting goal ' .. words,
+        'Type /cadence resting goal hp|mp|both percent|amount <whole number>. Percent is 1 to 100.');
+    check('invalid recovery goal ' .. words .. ' preserves the saved choice', ok, detail);
+end
+for _, words in ipairs({ 'enemy waiting', 'pause', 'resume', 'resting full', 'auto normal' }) do
+    local before, saves = json.encode(s), MOCK.saved;
+    local lines, blocked = said('/cadence preview ' .. words);
+    check('preview ' .. words .. ' stays temporary', #lines == 0 and blocked and MOCK.saved == saves
+        and json.encode(s) == before and require('ui.settings_window').is_open());
+end
+ok, detail = refuses('/cadence preview enemy invalid', 'Preview states are normal, blocked, waiting and full.');
+check('an invalid preview state keeps settings intact', ok, detail);
+require('ui.settings_window').set_open(false);
+
 -- Presets and Undo ----------------------------------------------------------------------------------------
+history.clear(s);
 check('Phoenix to start', presets.current(s) == 'Phoenix');
-ok, detail = refuses('/cadence undo', 'There\'s nothing to undo. Undo only takes back your last preset or Reset look.');
+ok, detail = refuses('/cadence undo', 'There is no settings change to undo in this session.');
 check('nothing to undo yet', ok, detail);
 check('/cadence preset minimal', answers('/cadence preset minimal', 'The Minimal preset is on. /cadence undo takes it back.')
     and presets.current(s) == 'Minimal', presets.current(s));
 ok, detail = refuses('/cadence preset Minimal', 'You already have the Minimal preset.');
 check('the preset you already have does nothing', ok, detail);
 check('so Undo still goes back past it', answers('/cadence undo',
-    'Your look is back to how it was before your last preset or Reset look.') and presets.current(s) == 'Phoenix',
+    'Undid Command: preset minimal.') and presets.current(s) == 'Phoenix',
     presets.current(s));
-ok, detail = refuses('/cadence undo', 'There\'s nothing to undo. Undo only takes back your last preset or Reset look.');
-check('Undo goes back one step', ok, detail);
+ok, detail = refuses('/cadence undo', 'There is no settings change to undo in this session.');
+check('Undo consumes the one change made since clearing history', ok, detail);
 -- A changed look is Custom from the preset it came from, and naming that preset puts its look back.
 MOCK.fire('command', { command = '/cadence preset minimal' });
 s.style.value_color[1] = 0.25;
+MOCK.fire('command', { command = '/cadence shadow on' });
 check('naming the preset your look came from puts its look back', answers('/cadence preset minimal',
     'The Minimal preset is on. /cadence undo takes it back.') and presets.current(s) == 'Minimal'
     and s.style.value_color[1] == 1, presets.current(s));
 check('and Undo brings back your change', answers('/cadence undo',
-    'Your look is back to how it was before your last preset or Reset look.') and presets.current(s) == nil
+    'Undid Command: preset minimal.') and presets.current(s) == nil
     and s.style.value_color[1] == 0.25 and s.style.window_look == 'minimal', s.style.window_look);
 for _, case in ipairs({ { 'classic', 'Classic FFXI' }, { 'contrast', 'High contrast' }, { 'ember', 'Ember' },
         { 'colorblind', 'Colorblind safe' }, { 'phoenix', 'Phoenix' }, { 'High Contrast', 'High contrast' },
@@ -264,7 +308,7 @@ check('each preset goes through Undo', presets.can_undo());
 MOCK.fire('command', { command = '/cadence preset phoenix' });
 for _, words in ipairs({ 'nope', '', 'high' }) do
     ok, detail = refuses('/cadence preset ' .. words,
-        'Type /cadence preset phoenix|classic|minimal|contrast|ember|colorblind.');
+        'Type /cadence preset phoenix|classic|minimal|contrast|ember|mint|lavender|colorblind.');
     check('preset "' .. words .. '" gets its own line', ok, detail);
 end
 
@@ -308,7 +352,7 @@ check('reset look', answers('/cadence reset look', 'The look is back to default.
     and s.style.scale == 1.0 and s.style.text_shadow == true and s.attack.x == 300 and s.attack.show_tp == false,
     s.style.scale);
 check('Undo takes back reset look', answers('/cadence undo',
-    'Your look is back to how it was before your last preset or Reset look.') and s.style.scale == 1.5
+    'Undid Command: reset look.') and s.style.scale == 1.5
     and s.style.text_shadow == false);
 ok, detail = refuses('/cadence reset everything', 'Type /cadence reset, /cadence reset look or /cadence reset all.');
 check('a wrong reset word gets its own line', ok, detail);
@@ -349,7 +393,7 @@ check('the timers are stacked like Reset positions', json.encode({ s.attack.x, s
     s.enemy.x, s.enemy.y }) == spots, spots);
 MOCK.screen = nil;
 check('the look is Phoenix again', presets.current(s) == 'Phoenix');
-ok, detail = refuses('/cadence undo', 'There\'s nothing to undo. Undo only takes back your last preset or Reset look.');
+ok, detail = refuses('/cadence undo', 'There is no settings change to undo in this session.');
 check('and Undo has nothing left from before', ok, detail);
 lines = said('/cadence reset all');
 check('the next reset all asks again', #lines == 1 and lines[1]:find('again within 10 seconds', 1, true) ~= nil, lines[1]);
@@ -399,7 +443,7 @@ local function line_with(text)
     for i, line in ipairs(help) do if (line:find(text, 1, true)) then return i; end end
     return nil;
 end
-local timers, enemy, look = where['Timers tab'], where['Enemy tab'], where['Look tab'];
+local timers, enemy, look = where['Timers tab'], where['Enemy tab'], where['Appearance tab'];
 check('help is grouped by tab', timers ~= nil and enemy ~= nil and look ~= nil and timers < enemy and enemy < look,
     tostring(timers) .. ' ' .. tostring(enemy) .. ' ' .. tostring(look));
 check('it starts with the window', (help[1] or ''):find('/cadence  opens or closes the settings window.', 1, true) == 1);
@@ -413,10 +457,11 @@ check('Timers tab lines', under('/cadence attack|resting <part> [on|off]', timer
         .. 'the game UI.', timers, enemy));
 check('Enemy tab lines', under('/cadence enemy follow first|target|hits  sets Follows to My target first, My target '
     .. 'only or Whoever hits me.', enemy, look) and under('/cadence enemy <part> [on|off]', enemy, look));
-check('Look tab lines', under('/cadence preset phoenix|classic|minimal|contrast|ember|colorblind', look)
+check('Appearance tab lines', under('/cadence preset phoenix|classic|minimal|contrast|ember|mint|lavender|colorblind', look)
     and under('/cadence font <name>', look) and under('/cadence attack|resting|enemy label [on|off]', look)
-    and under('/cadence windowlook|labels|background|border|accent|outline|shadow|drain|onespot|onelayout|peek [on|off]  '
-        .. 'sets Window matches the look, Show labels, Background, Border, Accent stripe, Text outline, Text shadow, '
+    and under('/cadence tips|record|windowlook|labels|background|border|accent|outline|shadow|drain|onespot|onelayout|peek [on|off]  '
+        .. 'sets Timer hover help, Record timing details, Window matches the look, Show labels, Background, Border, '
+        .. 'Accent stripe, Text outline, Text shadow, '
         .. 'Drain instead of fill, Share one spot, One layout for all characters or Peek with Shift.', look));
 check('commands that aren\'t on a tab come before the tabs', line_with('/cadence hide|show') < timers
     and line_with('/cadence info') < timers and line_with('/cadence help attack') < timers);
@@ -426,8 +471,8 @@ check('the name switch says what it does', under('/cadence attack|resting|enemy 
     .. 'timer\'s name.', look));
 check('help lists lock, hide and reset', line_with('/cadence lock|unlock') and line_with('/cadence hide|show')
     and line_with('/cadence reset [look|all]  puts every timer back at its default position'));
-check('it says where to find more', line_with('/cadence help attack|resting|enemy|look|colors|preset|font|reset|'
-    .. 'window|windowcolors|chatcolors|profiles  tells you more about one of them.'));
+check('it says where to find more', line_with('/cadence help attack|resting|enemy|appearance|colors|preset|font|reset|'
+    .. 'chatcolors|profiles|preview|details|ui  tells you more about one of them.'));
 check('it stays short enough to read in the chat log', #help <= 20, #help);
 
 -- Each timer's help names every part, with its name in the window when that's a different word.
@@ -438,6 +483,9 @@ for _, switch in ipairs(SWITCHES) do
         local text = table.concat(said('/cadence help ' .. timer), ' ');
         local named = part:lower() == switch[4]:lower():gsub('[^%w]', '') and part or (part .. ' (' .. switch[4] .. ')');
         if (not text:find(named, 1, true)) then table.insert(missing_parts, named); end
+    elseif (switch[1] == 'tips') then
+        local text = table.concat(said('/cadence help window'), ' ');
+        if (not text:find('/cadence tips [on|off]', 1, true)) then table.insert(missing_parts, switch[1]); end
     elseif (not table.concat(help, ' '):find(switch[1], 1, true)) then
         table.insert(missing_parts, switch[1]);
     end
@@ -445,14 +493,21 @@ end
 check('every switch is in the help', #missing_parts == 0, table.concat(missing_parts, ', '));
 -- The lines after the parts, for the sliders, the label and the colors, are in test_setting_commands.lua.
 lines = said('/cadence help attack');
-check('help attack', #lines == 7 and lines[1] == '/cadence attack [on|off]  turns the auto attack timer on or off.'
-    and lines[2]:find('/cadence attack <part> [on|off]  sets one of its boxes. The parts are seconds (Seconds left), '
-        .. 'delay (Weapon delay), tp (Your TP), rounds (Rounds to 1000)', 1, true) == 1, lines[2]);
+check('help attack', #lines == 9 and lines[1] == '/cadence attack [on|off]  turns the auto attack timer on or off.'
+    and lines[2] == '/cadence attack goal 1000|2000|3000  sets TP goal to 1000, 2000 or 3000.'
+    and lines[3]:find('/cadence attack <part> [on|off]  sets one of its boxes. The parts are seconds (Seconds left), '
+        .. 'delay (Weapon delay), tp (Your TP), time (Time to TP goal), hits (Successful hits), rounds (Rounds to goal)', 1, true) == 1, lines[2]);
 lines = said('/cadence help enemy');
-check('help enemy has Follows', #lines == 8 and lines[2]:find('/cadence enemy follow first|target|hits', 1, true) == 1);
+check('help enemy has Follows', #lines == 9 and lines[2]:find('/cadence enemy follow first|target|hits', 1, true) == 1);
+lines = said('/cadence help preview');
+check('preview help explains temporary samples and goal controls', #lines == 7
+    and lines[1]:find('/cadence preview auto|attack|resting|enemy', 1, true) == 1
+    and lines[5]:find('/cadence resting goal hp|mp|both percent|amount', 1, true) == 1
+    and lines[7]:find('/cadence relearn attack|tp|enemy', 1, true) == 1);
+check('Details help includes the same relearning controls', table.concat(said('/cadence help details'), '|') == table.concat(lines, '|'));
 lines = said('/cadence help preset');
 check('help preset', #lines == 2 and lines[1] == '/cadence preset <name>  picks a preset, the same as the Preset list. '
-    .. 'The presets are phoenix, classic (Classic FFXI), minimal, contrast (High contrast), ember and colorblind '
+    .. 'The presets are phoenix, classic (Classic FFXI), minimal, contrast (High contrast), ember, mint, lavender and colorblind '
     .. '(Colorblind safe).' and lines[2]:find('/cadence undo', 1, true) == 1, lines[1]);
 check('help undo is the same', table.concat(said('/cadence help undo'), '|') == table.concat(lines, '|'));
 lines = said('/cadence help font');

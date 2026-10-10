@@ -6,7 +6,7 @@
 
     The settings window has a palette for each preset. Each one has the same eleven role colors as
     checkmate's skins, like its background and accent, plus a corner roundness and the space between
-    rows. Phoenix, Classic FFXI, Minimal, High contrast and Ember use checkmate's own, so the two
+    rows. Phoenix, Classic FFXI, Minimal, High contrast, Ember, Mint and Lavender use checkmate's own, so the two
     addons match. High contrast's spacing is the one exception, 1 px less. A preset spreads its
     palette over every window color in WINDOW_COLORS and copies them into your settings, so each one
     can be changed on its own.
@@ -154,6 +154,38 @@ theme.window_palettes = {
         rounding     = 2,
         spacing      = 7,
     },
+    mint = {
+        background   = hex('101f1b', 0.96),
+        card         = hex('192f29'),
+        control      = hex('233d34'),
+        hover        = hex('2e5446'),
+        border       = hex('8fe3ba', 0.35),
+        text         = hex('edf9f1'),
+        heading      = hex('b1ebd0'),
+        muted        = hex('9bbbad'),
+        accent       = hex('74d9ad'),
+        accent_hover = hex('a4edcc'),
+        success      = hex('8fe3b7'),
+        problem      = hex('ff8d79'),
+        rounding     = 4,
+        spacing      = 7,
+    },
+    lavender = {
+        background   = hex('191523', 0.96),
+        card         = hex('262033'),
+        control      = hex('342b45'),
+        hover        = hex('463858'),
+        border       = hex('cdb1f4', 0.35),
+        text         = hex('f3ecff'),
+        heading      = hex('deccf7'),
+        muted        = hex('b5a5c9'),
+        accent       = hex('c3a0ed'),
+        accent_hover = hex('e4ccff'),
+        success      = hex('a8d9c0'),
+        problem      = hex('ff8d79'),
+        rounding     = 4,
+        spacing      = 7,
+    },
     -- The dark panel and the Okabe and Ito sky blue of the Colorblind safe timers. The greys and the
     -- light blue headings are checkmate's. Its accent and success are the same blue, so problems take
     -- Okabe and Ito's orange instead and stay apart from what worked.
@@ -177,7 +209,7 @@ theme.window_palettes = {
 
 --[[
     Every color of the settings window, kept in your settings under window_style. They're grouped the
-    way the Window colors tab shows them, under headings, in rows with a swatch for each color. `key`
+    way the Window colors section shows them, under headings, in rows with a swatch for each color. `key`
     is the color's name in your settings and the word /cadence windowcolor takes. `name` is what its
     swatch says when you point at it. `role` is the palette color it starts from and `paints` is the
     ImGui color it sets. `also` is a second ImGui color that takes the same color. Headings, notes,
@@ -324,7 +356,7 @@ theme.WINDOW_COLOR_GROUPS = {
     },
 };
 
--- Every window color in the Window colors tab's order.
+-- Every window color in the Window colors section's order.
 theme.WINDOW_COLORS = {};
 for _, group in ipairs(theme.WINDOW_COLOR_GROUPS) do
     for _, row in ipairs(group.rows) do

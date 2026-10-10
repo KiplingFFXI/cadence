@@ -95,7 +95,7 @@ check('it puts back the timers\' spots and everything else', s.attack.x == 333 a
 check('and the window colors and font', s.window_style.buttons_pressed[1] == 0.25 and s.window_style.font == 'consolas'
     and s.window_style.font_size == 21);
 check('but leaves where the settings window sits and its size', s.window.x == 111 and s.window.width == 920);
-check('Undo is cleared, so it can\'t bring back the look from before', not presets.can_undo());
+check('profile load keeps the previous settings for Undo', presets.can_undo());
 check('the Preset list names the preset the profile came from', presets.current(s) == nil
     and presets.custom_name(s.style.window_look) == 'Custom (from Ember)', s.style.window_look);
 check('a profile that isn\'t there doesn\'t load', profiles.load(s, 'Nope') == false and s.attack.x == 333);
@@ -196,7 +196,7 @@ check('no file again is no profiles', profiles.file_ok() and #profiles.names() =
 profiles.save(s, 'Keep');
 local real_open = io.open;
 io.open = function (path, mode)
-    if (path == FILE and mode == 'w') then return nil; end
+    if (path:sub(1, #FILE + 1) == FILE .. '.' and mode == 'w') then return nil; end
     return real_open(path, mode);
 end
 check('a save that can\'t be written fails', profiles.save(s, 'New') == false and not profiles.exists('New'));
@@ -221,7 +221,7 @@ MOCK.frame(1 / 60);
 MOCK.record_imgui = false;
 local tabs = {};
 for _, c in ipairs(MOCK.imgui_calls) do if (c[1] == 'BeginTabItem') then table.insert(tabs, c[2]); end end
-check('Profiles is the last tab', table.concat(tabs, ',') == 'Timers,Enemy,Look,Window,Window colors,Profiles',
+check('Profiles is the last tab', table.concat(tabs, ',') == 'Timers,Enemy,Appearance,Preview,Details,Profiles',
     table.concat(tabs, ','));
 
 -- What the tab draws, each as a short word, and every text with the color it's in.
@@ -235,7 +235,7 @@ local FAKES = {
     BeginDisabled = function (off) add(off and 'grey' or 'live'); end,
     InputText = function (label, buffer, size)
         add('box', ('%s %d "%s"'):format(label, size, buffer[1]));
-        if (typing ~= nil) then buffer[1] = typing; return true; end
+        if (label == 'Name' and typing ~= nil) then buffer[1] = typing; return true; end
         return false;
     end,
     SetNextItemWidth = function (width) add('width', width); end,
@@ -293,14 +293,16 @@ frame();
 local BUTTONS = 'button Save as new | same | (?) | same | %s | button Overwrite | same | (?) | %s | button Load | same '
     .. '| (?) | same | %s | button Rename | same | (?) | same | %s | button Delete | same | (?)';
 local EMPTY = 'PROFILES | same | (?) | list ##profiles -1x130 | No profiles yet. | end list | width 190 | box Name 33 "" | '
-    .. 'same | (?) | ' .. BUTTONS:gsub('%%s', 'grey');
+    .. 'same | (?) | ' .. BUTTONS:gsub('%%s', 'grey')
+    .. ' | ' .. (profiles.can_undo_delete() and 'live' or 'grey') .. ' | button Undo delete | same | (?)'
+    .. ' | ' .. (profiles.can_undo_overwrite() and 'live' or 'grey') .. ' | button Undo overwrite | same | (?)';
 check('PROFILES has a (?), then the list, the name box and the buttons, greyed out until you pick a profile',
     tab() == EMPTY, tab());
 local empty_note = nil;
 for _, e in ipairs(log) do if (e[1] == 'text' and e[2] == 'No profiles yet.') then empty_note = e[3]; end end
 check('an empty list says so in the faded text color', same(empty_note, W.faded_text));
 check('no message yet', #messages() == 0);
--- Verdana isn't in the mock's fonts folder, so the Window tab says so in the problem color too.
+-- Verdana isn't in the mock's fonts folder, so the Window section says so in the problem color too.
 s.window_style.font = 'verdana';
 frame();
 s.window_style.font = 'ashita';
@@ -329,7 +331,9 @@ frame();
 ok, detail = says('Saved "Solo BLM" as a new profile.', W.done_messages);
 check('Save as new saves your settings in the done color', ok and profiles.exists('Solo BLM'), detail);
 check('picks the new profile', tab():find('row Solo BLM picked', 1, true) ~= nil, tab());
-check('and saves no settings, since none changed', MOCK.saved == saves);
+check('and persists the active baseline once', MOCK.saved == saves + 1
+    and s.profile_source.kind == 'profile' and s.profile_source.name == 'Solo BLM'
+    and not profiles.status(s).modified);
 check('a profile is picked, so its buttons work', tab():find(BUTTONS:gsub('%%s', 'live'), 1, true) ~= nil, tab());
 typing = 'SOLO blm';
 press = 'Save as new';
@@ -373,6 +377,32 @@ frame();
 ok, detail = says('The profile "Solo BLM" is loaded.', W.done_messages);
 check('Load loads the profile you picked', ok and s.style.scale == 1.75 and s.attack.x == DEFAULTS.attack.x, detail);
 check('saves your settings and redraws the timers', MOCK.saved == saves + 1 and MOCK.in_use == s);
+
+-- The file can become unreadable after the action's initial check.
+local load_profile, saved_profiles = profiles.load, read_file();
+profiles.load = function (settings, name)
+    write_file('{broken');
+    return load_profile(settings, name);
+end;
+saves = MOCK.saved;
+s.style.scale = 1.25;
+press = 'Load';
+frame();
+frame();
+ok, detail = says(profiles.problem(), W.problem_messages);
+check('a failed profile load never reports success or saves settings', ok and s.style.scale == 1.25 and MOCK.saved == saves, detail);
+write_file(saved_profiles);
+profiles.refresh();
+MOCK.printed = {};
+MOCK.fire('command', { command = '/cadence profile load "Solo BLM"' });
+local reply = table.concat(MOCK.printed, ' ');
+check('a late command load failure preserves settings and reports the file problem', s.style.scale == 1.25
+    and MOCK.saved == saves and reply:find("can't be read", 1, true) ~= nil and not reply:find('is loaded', 1, true), reply);
+profiles.load = load_profile;
+write_file(saved_profiles);
+profiles.refresh();
+pick = 'Solo BLM';
+frame();
 
 -- Rename.
 press = 'Rename';
@@ -498,19 +528,21 @@ local function said(command)
     for n = before + 1, #MOCK.printed do table.insert(lines, (MOCK.printed[n]:gsub('^%[cadence%] ', ''))); end
     return lines;
 end
--- A command that answers with exactly `expected` and writes no settings.
-local function replies(command, expected)
-    local saves_now, state = MOCK.saved, json.encode(s);
+-- A command that answers with exactly `expected` and writes no settings, unless a new active baseline is expected.
+local function replies(command, expected, source)
+    local saves_now, state = MOCK.saved, require('ui.history').capture(s);
+    if (source) then state.profile_source = T{ kind = 'profile', name = source }; end
     local lines = said(command);
-    return #lines == 1 and lines[1] == expected and MOCK.saved == saves_now and json.encode(s) == state,
+    return #lines == 1 and lines[1] == expected and MOCK.saved == saves_now + (source and 1 or 0)
+        and require('ui.history').equal(s, state),
         table.concat(lines, ' / ') .. ' saves ' .. (MOCK.saved - saves_now);
 end
 local USAGE = 'Type /cadence profile save|overwrite|load|delete <name>, or /cadence profile rename <old> <new>. Put a '
-    .. 'name with spaces in quotes.';
+    .. 'name with spaces in quotes. /cadence profile undo restores a deletion. /cadence profile undooverwrite restores an overwrite.';
 local function none(name) return ('There\'s no profile called "%s". /cadence help profiles lists yours.'):format(name); end
 
 s.style.scale = 1.25;
-ok, detail = replies('/cadence profile save Solo BLM', 'Your settings are saved as the profile "Solo BLM".');
+ok, detail = replies('/cadence profile save Solo BLM', 'Your settings are saved as the profile "Solo BLM".', 'Solo BLM');
 check('profile save, with a space and no quotes', ok and profiles.exists('Solo BLM'), detail);
 ok, detail = replies('/cadence PROFILE Save "solo blm"', 'There\'s already a profile called "Solo BLM". /cadence profile '
     .. 'overwrite saves over it.');
@@ -521,7 +553,7 @@ check('so is none', ok and #profiles.names() == 1, detail);
 ok, detail = replies('/cadence profile save "(NONE)"', NO_LINK:format('(NONE)'));
 check('and (none), in any case', ok and #profiles.names() == 1, detail);
 s.style.scale = 1.5;
-ok, detail = replies('/cadence profile overwrite SOLO BLM', 'Your settings are saved over the profile "Solo BLM".');
+ok, detail = replies('/cadence profile overwrite SOLO BLM', 'Your settings are saved over the profile "Solo BLM".', 'Solo BLM');
 check('profile overwrite, in any case', ok and json.decode(read_file())['Solo BLM'].style.scale == 1.5, detail);
 ok, detail = replies('/cadence profile overwrite Duo', none('Duo'));
 check('overwrite needs a profile that\'s there', ok and not profiles.exists('Duo'), detail);
@@ -564,7 +596,7 @@ for _, command in ipairs({ '/cadence profile', '/cadence profile list', '/cadenc
     check('"' .. command .. '" gets the usage line', ok, detail);
 end
 -- An auto-translate phrase can hold plain letters, like Hi here.
-ok, detail = replies('/cadence profile save \253\2\2Hi\253Party\130\160', 'Your settings are saved as the profile "Party".');
+ok, detail = replies('/cadence profile save \253\2\2Hi\253Party\130\160', 'Your settings are saved as the profile "Party".', 'Party');
 check('auto-translate phrases and two-byte letters are dropped whole', ok, detail);
 ok, detail = replies('/cadence profile save \130\160\131\65', 'That name has nothing cadence can use. Use plain English '
     .. 'letters, numbers or symbols.');
@@ -576,11 +608,12 @@ check('the same for a name to find', ok, detail);
 -- Help, with the names of your profiles.
 local HELP = {
     '/cadence profile save <name>  saves your settings as a new profile. Every character shares your profiles.',
-    '/cadence profile overwrite <name>  saves your settings over that profile.',
-    '/cadence profile load <name>  loads a profile. It holds every setting but where the settings window sits, its size '
-        .. 'and your job links.',
+    '/cadence profile overwrite <name>  saves your settings over that profile. /cadence profile undooverwrite restores the previous copy if it is unchanged.',
+    '/cadence profile load <name>  loads a profile. It holds every setting but where the settings window sits, its size, '
+        .. 'hidden tabs and your job links.',
     '/cadence profile rename <old> <new>  gives a profile a new name. Your job links to it follow.',
     '/cadence profile delete <name>  deletes a profile and your job links to it.',
+    '/cadence profile undo  restores the last deleted profile and any unchanged job links.',
     '/cadence joblink <job> <profile>  loads that profile when you change to that main job and zone. Each character has '
         .. 'its own job links. The jobs are WAR, MNK, WHM, BLM, RDM, THF, PLD, DRK, BST, BRD, RNG, SAM, NIN, DRG, SMN, BLU, '
         .. 'COR and PUP.',

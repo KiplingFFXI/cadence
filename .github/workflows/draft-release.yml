@@ -20,7 +20,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+    permissions:
+      contents: read
+
   draft:
+    needs: verify
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
@@ -46,7 +52,11 @@ jobs:
               exit 1
             fi
           # A run by hand has no commit before it, and neither does the first push of main.
-          elif [ -n "$BEFORE" ] && git fetch --quiet --depth 1 origin "$BEFORE" 2>/dev/null; then
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            if ! git fetch --quiet --depth 1 origin "$BEFORE"; then
+              echo "Could not read the previous commit. No release was drafted."
+              exit 1
+            fi
             if [ "$(git show "$BEFORE:cadence/cadence.lua" | read_version)" = "$version" ]; then
               echo "This push didn't change addon.version from $version."
               exit 0

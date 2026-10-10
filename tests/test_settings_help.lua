@@ -187,7 +187,7 @@ check('opening it again keeps it too', s.window.width == 920 and s.window.height
 local shared_layout = require('core.shared_layout');
 local writes = 0;
 local write_shared = shared_layout.save;
-shared_layout.save = function () writes = writes + 1; write_shared(); end
+shared_layout.save = function () writes = writes + 1; return write_shared(); end
 MOCK.fire('command', { command = '/cadence onelayout on' });
 MOCK.window_size = { 920, 680 };
 reopen();

@@ -6,8 +6,8 @@
     and it opens where you left it. Its sections sit in two columns when there's room and stack into
     one when there isn't. Every setting has a (?) that explains it. The window draws in its own font
     at its own size, and its layout grows with a font bigger or wider than Ashita's at 18 px. Its
-    font, corners, spacing and colors are on its Window and Window colors tabs. cadence's chat colors
-    are on the Window tab too. The Profiles tab saves and loads named copies of your settings, and
+    font, corners, spacing and colors are in the Window and Window colors sections of Appearance. cadence's chat colors
+    are in the Window section too. The Profiles tab saves and loads named copies of your settings, and
     links them to your main jobs.
 ]]
 
@@ -22,8 +22,16 @@ local profiles      = require('ui.profiles');
 local sound         = require('ui.sound');
 local shared_layout = require('core.shared_layout');
 local player        = require('core.player');
+local search        = require('ui.search');
+local navigation    = require('ui.navigation');
+local workflow = { history = require('ui.history'), layouts = require('ui.layouts'), preview = require('ui.preview') };
+local ui_state = { inline = true, sample = 'normal', enabled = {}, options = {}, search_options = {}, layout = 'minimal' };
 
 local settings_window = {};
+local query, details_query = { '' }, { '' };
+local page_name, page_width, folded, detail_folded, copied = nil, nil, {}, {}, nil;
+local page_size, current_settings = { 0, 0 }, nil;
+local matched_query, matched_tabs;
 
 local ASHITA_FONT = hud.ASHITA_FONT;
 
@@ -32,7 +40,7 @@ local WINDOW_FLAGS = bit.bor(ImGuiWindowFlags_NoCollapse, ImGuiWindowFlags_NoSav
 local PEEK_FLAGS = bit.bor(WINDOW_FLAGS, ImGuiWindowFlags_NoInputs);
 local COLOR_FLAGS = bit.bor(ImGuiColorEditFlags_NoInputs, ImGuiColorEditFlags_AlphaBar,
     ImGuiColorEditFlags_AlphaPreviewHalf);
--- A swatch on the Window colors tab names its color when you point at it, instead of ImGui's own tip.
+-- A swatch on the Window colors section names its color when you point at it, instead of ImGui's own tip.
 local SWATCH_FLAGS = bit.bor(COLOR_FLAGS, ImGuiColorEditFlags_NoTooltip);
 -- A chat color's swatch only shows the color. It has no tip and can't be dragged onto another swatch.
 local CHAT_SWATCH_FLAGS = bit.bor(ImGuiColorEditFlags_NoTooltip, ImGuiColorEditFlags_NoDragDrop);
@@ -40,7 +48,7 @@ local CHAT_SWATCH_FLAGS = bit.bor(ImGuiColorEditFlags_NoTooltip, ImGuiColorEditF
 -- Layout in pixels at Ashita's 18 px font. px() grows each one with a bigger or wider window font. A
 -- column of settings needs 420, and the second control on a line starts 228 in. A tip wraps at 300. The
 -- list of profiles is 130 tall. Each job link's list starts 48 in from its job's name. The window can
--- shrink to 240 tall.
+-- shrink to 440 tall, leaving room below the fixed controls.
 local BASE_FONT_SIZE = 18;
 local COLUMN_WIDTH   = 420;
 local SECOND_COLUMN  = 228;
@@ -49,9 +57,9 @@ local CHIP_WIDTH     = 52;
 local TIP_WIDTH      = 300;
 local LIST_HEIGHT    = 130;
 local JOB_LIST_AT    = 48;
-local MIN_HEIGHT     = 240;
+local MIN_HEIGHT     = 440;
 
--- Words from the left column of the Timers and Look tabs. A font that draws them wider than Ashita's
+-- Words from the left column of the Timers and Appearance tabs. A font that draws them wider than Ashita's
 -- font does at 18 px grows the layout by that much, like a bigger font would.
 local WIDTH_SAMPLE = 'Almost ready Time until full Text outline';
 
@@ -62,12 +70,6 @@ local COLUMN_GAP     = 24;
 local BUTTON_PADDING = 16;
 local ITEM_GAP       = 8;
 local BOX_GAP        = 4;
-
--- The tabs take 5 either side of their names instead of 8, so more of them fit across the window. ImGui
--- makes each tab 1 wider than its name and padding, and puts 4 between tabs.
-local TAB_PADDING = { 5, 4 };
-local TAB_EXTRA   = 1;
-local TAB_GAP     = 4;
 
 -- How strong a timer's settings are drawn while the timer is off.
 local OFF_ALPHA = 0.5;
@@ -93,12 +95,31 @@ local TIPS = {
     attack_value   = 'Shows the seconds until your next attack, then "ready" once you can attack.',
     attack_delay   = 'Shows the weapon delay the timer is using. Until your own attacks show the real one, it\'s a '
         .. 'guess marked est.',
-    tp             = 'Shows your TP under the bar. Your TP turns this color at 1000.',
-    tp_rounds      = 'Shows about how many rounds until 1000 TP. It counts the TP your hits give you and what being '
+    tp             = 'Shows your TP under the bar. Your TP turns this color at your selected goal.',
+    tp_rounds      = 'Shows about how many rounds until your selected TP goal. It counts the TP your hits give you and what being '
         .. 'hit or Regain has been adding lately.',
-    numbers_only   = 'Hides the bar and shows just the numbers.',
+    tp_hits        = 'Shows the successful hits your own attacks need to reach the TP goal. Misses, being hit and Regain are separate. est. means the TP per hit is uncertain.',
+    tp_goal        = 'The actual TP target used for the color, successful hits and approximate rounds: 1000, 2000 or 3000.',
+    tp_time        = 'Shows an approximate time to your TP goal using your recent rounds and attack speed. Pauses and changing hit rates can move it.',
+    recovery_goal  = 'Shows how long until HP, MP or both reach your chosen amount or percent. The goal does not change when the full recovery sound plays.',
+    goal_stat      = 'Which resource the recovery goal follows. Both waits for HP and MP to reach the goal.',
+    goal_mode      = 'Choose a percent of maximum HP or MP, or a fixed amount.',
+    goal_value     = 'The amount or percent you want to reach. A fixed amount above your maximum stops at that maximum.',
+    layout_guides  = 'Shows alignment guides and helps timer edges line up while you hold Shift and drag. Turn it off for free movement.',
+    preview_timer  = 'Chooses the timer sample shown while settings are open. Auto uses the usual samples. These controls are not saved.',
+    preview_state  = 'Shows how the sample looks during ordinary timing, a pause, a wait or full recovery. It does not change your live timers.',
+    preview_pause  = 'Freezes the sample so you can compare its text, colors and layout. Your live timers keep running.',
+    relearn_attack = 'Forgets learned attack intervals and starts from the current model. The pending attack countdown keeps its place.',
+    relearn_tp     = 'Forgets observed TP per hit and recent round gains. The next clean hits teach it again.',
+    relearn_enemy  = 'Forgets the selected monster\'s learned speed. The timer keeps its place and starts learning again.',
+    ticks          = 'Shows how many resting ticks remain until full. Regen and Refresh can finish between ticks. A ~ marks an estimated amount or timing.',
+    hover_tips     = 'Rest the mouse over a timer to see its estimate source, samples and missing inputs. Clicks still reach the game. Tips stay hidden while you drag or another window covers the timer.',
+    record         = 'Keeps a small local history of recent timing decisions while on. Off by default. It records no chat.',
+    save_report    = 'Saves a local timing report with the current estimates and any recent recorded timing decisions. It records no chat.',
+    numbers_only   = 'Hides the bar and keeps the timer\'s text.',
     width          = 'How wide the timer is. You can also hold Shift and drag its right edge.',
-    bar_height     = 'How thick the bar is. You can also hold Shift and drag its bottom edge.',
+    height         = 'How tall the whole timer is, including its text and spacing. Width stays the same. You can also hold Shift and drag its bottom edge.',
+    bar_height     = 'How thick the bar is before the timer height is applied. Height changes the whole timer.',
     fill           = 'The bar\'s colors, from empty to full.',
     attack_ready   = 'The bar\'s color once you can attack.',
     attack_almost  = 'The bar turns this color just before your next attack, so you can line up a weapon skill.',
@@ -112,7 +133,8 @@ local TIPS = {
     resting_timer  = 'Turns the resting timer on or off. It shows up while you /heal.',
     resting_value  = 'Shows the seconds until your next resting tick.',
     gains          = 'Shows what your last tick restored, like +24 HP +31 MP.',
-    until_full     = 'Shows how long until your HP and MP are both full, like "full in 28s" on the timer.',
+    next_gains     = 'Shows what your next resting tick should restore, before Regen or Refresh. est. means some bonuses are not known yet.',
+    until_full     = 'Shows how long until your HP and MP are both full, like "full in 28s" on the timer. A ~ marks uncertain amounts or timing. It includes separate Regen and Refresh passes.',
     each_full      = 'Adds a line under the bar that says when your HP and your MP will each be full.',
     hide_when_full = 'Hides the resting timer once your HP and MP are full.',
     full_color     = 'The bar\'s color once your HP and MP are full.',
@@ -141,7 +163,7 @@ local TIPS = {
     attached       = 'Puts the enemy timer right under your auto attack timer as a slim strip that moves with it. '
         .. 'With the auto attack timer off, it sits at its own spot.',
     enemy_value    = 'Shows the seconds until the monster\'s next attack, then "ready" when it can attack. It shows '
-        .. '"--" once it\'s overdue by a whole attack, like while the monster is asleep or chasing you.',
+        .. '"waiting" once it\'s overdue by a whole attack, like while the monster is asleep or chasing you.',
     enemy_name     = 'Shows the monster\'s name.',
     enemy_delay    = 'Shows the monster\'s delay between attacks. Until it has attacked a few times, it\'s a guess '
         .. 'marked est.',
@@ -153,17 +175,17 @@ local TIPS = {
         .. 'either way. Someone else\'s effect gets a question mark once it might have worn off.',
     enemy_width    = 'How wide the timer is. You can also hold Shift and drag its right edge. Attached, it\'s '
         .. 'as wide as the auto attack timer.',
-    enemy_bar      = 'How thick the bar is. You can also hold Shift and drag its bottom edge, except while it '
-        .. 'hangs right under the auto attack timer.',
+    enemy_height   = 'How tall the whole enemy timer is, including its text and spacing. Width stays the same. You can also hold Shift and drag its bottom edge when it is at its own spot.',
+    enemy_bar      = 'How thick the bar is before the timer height is applied. Height changes the whole timer.',
     enemy_ready    = 'The bar\'s color once the monster can attack.',
     enemy_almost   = 'The bar turns this color just before the monster attacks.',
     enemy_at       = 'How many seconds before the monster\'s attack the almost ready color starts.',
 
-    undo           = 'Puts back the look you had before your last preset or Reset look. It goes back one step.',
+    undo           = 'Takes back the last settings change. Up to eight changes stay available during this session.',
     preset         = 'Sets the timer and chat colors, card, text shadow and corners. Change one and it says Custom and '
         .. 'the preset you started from. Colorblind safe stays clear for red-green and blue-yellow colorblindness.',
-    window_look    = 'Picking a preset also sets this window\'s colors, corners and spacing, the ones on the Window '
-        .. 'and Window colors tabs. Off, presets leave this window as it is.',
+    window_look    = 'Picking a preset also sets this window\'s colors, corners and spacing, the ones in the Window '
+        .. 'and Window colors sections of Appearance. Off, presets leave this window as it is.',
     scale          = 'Makes the timers bigger or smaller.',
     text_size      = 'The size of the numbers. At auto, the names and the small text are a little smaller.',
     detail_size    = 'How big the small text is, like the delay next to AUTO ATTACK, the gains next to RESTING and '
@@ -200,9 +222,9 @@ local TIPS = {
         .. 'back to their own.',
     reset_spots    = 'Puts the timers back where they started. On a screen too short for them, they start higher up.',
     reset_look     = 'Puts sizes, timer and chat colors, the card, corners, text shadow and outline, labels, font, '
-        .. 'Numbers only, Ready mark, Drain instead of fill and this window\'s look and font back to default.',
+        .. 'Text only, Ready mark, Drain instead of fill and this window\'s look and font back to default.',
 
-    window_font    = 'This window\'s font. The timers\' font is on the Look tab. A wide one like Consolas stacks the '
+    window_font    = 'This window\'s font. The timer font is on the Appearance tab. A wide one like Consolas stacks the '
         .. 'sections, so the window may scroll. A preset never changes it. No addon can change the chat log\'s font.',
     window_size    = 'How big this window\'s text is. Its layout grows with a bigger font, so its sections may stack '
         .. 'into one column. A preset never changes it.',
@@ -217,20 +239,19 @@ local TIPS = {
     chat_sample    = 'Prints a line in chat in your chat colors. The swatches here only come close to the shades the '
         .. 'game shows.',
 
-    profiles       = 'Every character shares your profiles. A profile holds every setting, the timers\' spots too, '
-        .. 'but not where this window sits, its size or your job links. Pick one in the list to use the buttons on it.',
+    profiles       = 'Profiles are shared by every character. They hold your settings and timer positions, but leave '
+        .. 'this window\'s position, size, hidden tabs and job links alone. Pick one to use its buttons.',
     profile_name   = 'Type a name here for Save as new or Rename. Picking a profile in the list puts its name here.',
     save_new       = 'Saves your settings as a new profile with the name in the box.',
     overwrite      = 'Saves your settings over the profile you picked.',
-    load           = 'Loads the profile you picked. Undo can\'t take it back, so save your settings first if you want '
-        .. 'to keep them.',
+    load           = 'Loads the profile you picked. Undo restores the setup you had before loading it.',
     rename         = 'Gives the profile you picked the name in the box. Your job links to it follow.',
-    delete         = 'Deletes the profile you picked, and your job links to it. It can\'t be brought back.',
+    delete         = 'Deletes the profile you picked, and your job links to it. Undo delete can bring back the last one until cadence unloads.',
     job_links      = 'Pick a profile for a main job, and it loads each time you change to that job and zone. Each '
         .. 'character has its own links. Profiles don\'t hold them, and /cadence reset all clears them.',
 };
 
--- What each row of the Window colors tab paints, by the row's name. Its swatches go in the same order.
+-- What each row of the Window colors section paints, by the row's name. Its swatches go in the same order.
 local WINDOW_COLOR_TIPS = {
     ['Text']           = 'Most of this window\'s text, then the faded text, like the subtitle and the question mark after '
         .. 'each setting.',
@@ -301,7 +322,7 @@ local FOOTER = 'Hold Shift and drag a timer to move it, or drag its edge to resi
 local WINDOW_COLORS_NOTE = 'Point at a swatch to see which color it is, and click it to pick a new one. While Window '
     .. 'matches the look is on, a preset sets all of them.';
 
--- The Window colors tab's second column starts at this heading.
+-- The Window colors section's second column starts at this heading.
 local SECOND_COLORS = 'BOXES AND BUTTONS';
 
 local open = { false };
@@ -315,6 +336,7 @@ local wider = 1;          -- How much wider the window's font draws than Ashita'
 local wider_font = nil;   -- The window font and size `wider` was measured at.
 local wider_size = nil;
 local two_columns_at = 0; -- How wide the window has to be this frame for two columns.
+local current_preview, current_details;
 local result = { changed = false, save = false, reset_positions = false, reset_look = false, share_layout = nil,
     show_timers = false, sample = false, links = false, sound_picked = false, play_sound = false };
 
@@ -370,8 +392,10 @@ function settings_window.set_open(value)
     end
 end
 
-local function mark_changed(save_now)
-    result.changed = true;
+local function mark_changed(save_now, label)
+    result.changed, result.edited = true, true;
+    result.label = label and label:gsub('##.*$', '') or result.label or 'Settings change';
+    ui_state.layout_cache = nil;
     if (save_now) then
         result.save = true;
     end
@@ -386,8 +410,16 @@ local function px(size)
     return round(size * scale);
 end
 
+function settings_window.search_width(label, limit, clear)
+    local help_width = ITEM_GAP + imgui.CalcTextSize('(?)');
+    local reserved = BOX_GAP + imgui.CalcTextSize(label) + help_width;
+    if (clear) then reserved = reserved + ITEM_GAP + imgui.CalcTextSize('Clear') + BUTTON_PADDING + help_width; end
+    return math.max(px(60), math.min(px(limit), imgui.GetContentRegionAvail() - reserved));
+end
+
 -- A (?) after a setting. Hovering it shows what the setting does, even when the setting is greyed out.
-local function help(tip)
+local function help(tip, label)
+    search.mark(label, tip);
     imgui.SameLine();
     imgui.TextDisabled('(?)');
     if (imgui.IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) then
@@ -408,9 +440,22 @@ local function heading(title, tip)
     imgui.Spacing();
     imgui.TextColored(look.headings, title);
     if (tip ~= nil) then
-        help(tip);
+        help(tip, title);
     end
     imgui.Separator();
+end
+
+-- Searching opens a folded group temporarily, then restores its previous state.
+local function section_open(title, default_open)
+    local key = tostring(page_name) .. '/' .. title;
+    local searching = search.active();
+    if (searching or folded[key] ~= nil) then imgui.SetNextItemOpen(searching or folded[key], ImGuiCond_Always); end
+    imgui.PushStyleColor(ImGuiCol_Text, look.headings);
+    local shown = imgui.CollapsingHeader(title .. '##section', default_open == false and 0 or ImGuiTreeNodeFlags_DefaultOpen);
+    imgui.PopStyleColor(1);
+    search.mark(title);
+    if (not searching) then folded[key] = shown; end
+    return shown;
 end
 
 -- Text that wraps at the edge of its column, or of the window outside the columns. It's in the notes
@@ -450,7 +495,7 @@ local function heading_with_toggle(title, id, timer, tip)
     -- Lines the heading up with the text inside the chip next to it.
     imgui.AlignTextToFramePadding();
     imgui.TextColored(look.headings, title);
-    help(tip);
+    help(tip, title);
     imgui.SameLine();
     imgui.SetCursorPosX(x + width - chip_size[1]);
     toggle_chip(id, timer);
@@ -484,7 +529,7 @@ end
 -- scrollbar shows up, and that would flip it back and forth. Each imgui.TableNextColumn() moves on
 -- to the next section.
 local function begin_sections(id)
-    stacked = imgui.GetWindowSize() < two_columns_at;
+    stacked = (page_width or imgui.GetWindowSize()) < two_columns_at;
     return imgui.BeginTable(id, stacked and 1 or 2, SECTION_FLAGS);
 end
 
@@ -502,13 +547,13 @@ local function tick_box(label, table_, key)
     flag[1] = table_[key];
     if (imgui.Checkbox(label, flag)) then
         table_[key] = flag[1];
-        mark_changed(true);
+        mark_changed(true, label);
     end
 end
 
 local function checkbox(label, table_, key, tip)
     tick_box(label, table_, key);
-    help(tip);
+    help(tip, label);
 end
 
 -- A checkbox that's greyed out while `off` is true. Its (?) still works.
@@ -516,7 +561,7 @@ local function checkbox_unless(off, label, table_, key, tip)
     imgui.BeginDisabled(off);
     tick_box(label, table_, key);
     imgui.EndDisabled();
-    help(tip);
+    help(tip, label);
 end
 
 -- Runs a slider on one setting, from its range in defaults.RANGES. `draw` is imgui.SliderInt or
@@ -528,28 +573,28 @@ local function slider(draw, label, table_, key, range, format, tip, off, width)
     imgui.SetNextItemWidth(width or px(CONTROL_WIDTH));
     if (draw(label, number, range[1], range[2], format, ImGuiSliderFlags_AlwaysClamp)) then
         table_[key] = number[1];
-        mark_changed(false);
+        mark_changed(false, label);
     end
     if (imgui.IsItemDeactivatedAfterEdit()) then
         result.save = true;
     end
     imgui.EndDisabled();
-    help(tip);
+    help(tip, label);
 end
 
 local function whole_slider(label, table_, key, range, format, tip, off, width)
     slider(imgui.SliderInt, label, table_, key, range, format, tip, off, width);
 end
 
-local function float_slider(label, table_, key, range, format, tip, off)
-    slider(imgui.SliderFloat, label, table_, key, range, format, tip, off);
+local function float_slider(label, table_, key, range, format, tip, off, width)
+    slider(imgui.SliderFloat, label, table_, key, range, format, tip, off, width);
 end
 
 -- A color swatch that opens a picker. The settings color table is edited in place. A color dragged onto
 -- the swatch never holds it the way the picker does, so it saves right away.
 local function color(label, table_, key, flags)
     if (imgui.ColorEdit4(label, table_[key], flags or COLOR_FLAGS)) then
-        mark_changed(not imgui.IsItemActive());
+        mark_changed(not imgui.IsItemActive(), label);
     end
     if (imgui.IsItemDeactivatedAfterEdit()) then
         result.save = true;
@@ -558,7 +603,7 @@ end
 
 local function color_with_help(label, table_, key, tip)
     color(label, table_, key);
-    help(tip);
+    help(tip, label);
 end
 
 -- A checkbox with its color swatch right after the label.
@@ -568,7 +613,7 @@ local function checkbox_with_color(label, table_, flag_key, color_key, tip, off)
     imgui.SameLine();
     color('##' .. color_key .. label, table_, color_key);
     imgui.EndDisabled();
-    help(tip);
+    help(tip, label);
 end
 
 --[[
@@ -586,18 +631,19 @@ local function label_box(label, switch_id, element, default, tip, labels_off)
     imgui.SetNextItemWidth(px(CONTROL_WIDTH) - (imgui.GetCursorPosX() - x));
     if (imgui.InputTextWithHint(label, default, text, LABEL_BUFFER)) then
         element.label_text = text[1];
-        mark_changed(false);
+        mark_changed(false, label);
     end
     if (imgui.IsItemDeactivatedAfterEdit()) then
         result.save = true;
     end
-    help(tip);
+    help(tip, label);
 end
 
--- The width and bar height sliders for the auto attack or resting timer. Bar height is greyed out while
+-- The timer size and bar thickness sliders. Bar height is greyed out while
 -- it shows just numbers.
 local function size_sliders(id, element)
     whole_slider('Width##' .. id, element, 'width', RANGES[id].width, '%d px', TIPS.width);
+    float_slider('Height##' .. id, element, 'height_scale', RANGES[id].height_scale, '%.2fx', TIPS.height);
     whole_slider('Bar height##' .. id, element, 'bar_height', RANGES[id].bar_height, '%d px', TIPS.bar_height,
         element.numbers_only);
 end
@@ -609,37 +655,175 @@ local function bar_colors(id, element, end_key, end_label, end_tip)
     color('##' .. id .. '_end', element, 'fill_end');
     imgui.SameLine();
     imgui.TextUnformatted('Fill');
-    help(TIPS.fill);
+    help(TIPS.fill, 'Fill');
     imgui.SameLine(px(SECOND_COLUMN));
     color_with_help(end_label .. '##' .. id, element, end_key, end_tip);
 end
 
--- Numbers only, and the mark on the bar where the almost ready color starts.
+-- Text only, and the mark on the bar where the almost ready color starts.
 local function bar_toggles(id, element)
-    checkbox('Numbers only##' .. id, element, 'numbers_only', TIPS.numbers_only);
+    checkbox('Text only##' .. id, element, 'numbers_only', TIPS.numbers_only);
     imgui.SameLine(px(SECOND_COLUMN));
     checkbox_unless(not element.almost_ready or element.numbers_only, 'Ready mark##' .. id, element, 'almost_mark',
         TIPS.almost_mark);
 end
 
+local function tp_goal_picker(attack)
+    imgui.SetNextItemWidth(px(78));
+    if (imgui.BeginCombo('TP goal##attack', tostring(attack.tp_goal))) then
+        for _, goal in ipairs(defaults.TP_GOALS) do
+            if (imgui.Selectable(tostring(goal), goal == attack.tp_goal)) then
+                attack.tp_goal = goal;
+                mark_changed(true);
+            end
+        end
+        imgui.EndCombo();
+    end
+    help(TIPS.tp_goal, 'TP goal');
+end
+
+
+-- Button rows wrap at their available width.
+function settings_window.flow(label, tip)
+    local width = imgui.CalcTextSize(label:gsub('##.*$', '')) + BUTTON_PADDING;
+    if (tip) then width = width + ITEM_GAP + imgui.CalcTextSize('(?)'); end
+    local available = ui_state.flow_width or imgui.GetContentRegionAvail();
+    if (ui_state.flow_used and ui_state.flow_used > 0 and ui_state.flow_used + ITEM_GAP + width <= available) then
+        imgui.SameLine(); ui_state.flow_used = ui_state.flow_used + ITEM_GAP + width;
+    else ui_state.flow_used = width; end
+end
+function settings_window.begin_buttons()
+    ui_state.flow_width, ui_state.flow_used = imgui.GetContentRegionAvail(), 0;
+end
+function settings_window.open_details(section)
+    local names = { attack = 'AUTO ATTACK', tp = 'TP', resting = 'RESTING', enemy = 'ENEMY' };
+    if (section ~= nil and names[section] == nil) then return false; end
+    query[1], details_query[1], copied = '', '', nil;
+    ui_state.details_target = section and names[section] or nil;
+    navigation.select('Details');
+    return true;
+end
+function settings_window.set_inline_preview(value) ui_state.inline = value == true; end
+function settings_window.inline_preview_enabled() return ui_state.inline; end
+function settings_window.invalidate_preview()
+    ui_state.layout_cache, ui_state.preview_dirty = nil, true;
+end
+function settings_window.preview_layout(id)
+    if (workflow.layouts.find(id) == nil) then return false; end
+    ui_state.layout, ui_state.preview_layout, ui_state.layout_cache = id, id, nil;
+    query[1] = ''; navigation.select('Profiles');
+    return true;
+end
+function settings_window.action_message(ok, message)
+    status_ok, status = ok, message;
+    ui_state.layout_cache = nil;
+end
+function settings_window.draw_toolbar(settings)
+    local source = profiles.status(settings);
+    if (source.name and source.name ~= '') then
+        local prefix = source.modified and 'Modified from ' or 'Using ';
+        local suffix = source.missing and ' (no longer available)' or '';
+        local label = source.label or source.name;
+        if (ui_state.source_label ~= label or ui_state.source_prefix ~= prefix or ui_state.source_suffix ~= suffix) then
+            ui_state.source_label, ui_state.source_prefix, ui_state.source_suffix = label, prefix, suffix;
+            ui_state.source_text = prefix .. label .. suffix;
+        end
+        note(ui_state.source_text);
+    end
+    settings_window.begin_buttons();
+    settings_window.flow('Details##toolbar', true);
+    if (imgui.Button('Details##toolbar')) then settings_window.open_details(); end
+    help('Opens the inputs and sources behind the current estimates.', 'Details');
+    settings_window.flow('Undo last change', true);
+    imgui.BeginDisabled(workflow.history.status(settings) == nil);
+    if (imgui.Button('Undo last change')) then result.undo_settings = true; end
+    imgui.EndDisabled();
+    help(workflow.history.status(settings) or 'No settings changes to undo in this session.', 'Undo last change');
+    settings_window.flow('Reset this section', true);
+    imgui.BeginDisabled(navigation.current() == 'Details');
+    if (imgui.Button('Reset this section')) then result.reset_section = navigation.current():lower(); end
+    imgui.EndDisabled();
+    help('Resets this tab. Keeps positions, custom timer labels and saved profiles. Undo restores the previous choices.', 'Reset this section');
+end
+
+ui_state.rows = {
+    attack = {
+        { 'Seconds left##attack', 'show_value', 'attack_value', 'attack' },
+        { 'Weapon delay##attack', 'show_delay', 'attack_delay', 'attack' },
+        { 'Your TP', 'show_tp', 'tp', 'tp' },
+        { 'Rounds to goal', 'show_tp_rounds', 'tp_rounds', 'tp', 'show_tp' },
+        { 'Successful hits', 'show_tp_hits', 'tp_hits', 'tp', 'show_tp' },
+        { 'Range / facing', 'show_reason', 'reason', 'attack' },
+        { 'Why it stopped', 'show_why', 'why', 'attack' },
+    },
+    resting = {
+        { 'Seconds left##resting', 'show_value', 'resting_value', 'resting' },
+        { 'Last tick gains##resting', 'show_gains', 'gains', 'resting' },
+        { 'Time until full##resting', 'show_until_full', 'until_full', 'resting' },
+        { 'Full times##resting', 'show_each_full', 'each_full', 'resting' },
+        { 'Ticks until full', 'show_ticks', 'ticks', 'resting' },
+        { "Why it can't heal", 'show_why', 'cant_heal', 'resting' },
+        { 'Next tick gains##resting', 'show_next_gains', 'next_gains', 'resting' },
+    },
+    enemy = {
+        { 'Seconds left##enemy', 'show_value', 'enemy_value', 'enemy' },
+        { 'Enemy name', 'show_name', 'enemy_name', 'enemy' },
+        { 'Attack speed##enemy', 'show_delay', 'enemy_delay', 'enemy' },
+        { 'Slow and haste', 'show_effects', 'enemy_effects', 'enemy' },
+        { 'TP move / casting', 'show_holds', 'enemy_holds', 'enemy' },
+    },
+};
+for id, rows in pairs(ui_state.rows) do
+    for _, row in ipairs(rows) do
+        row.options = 'Options##readout_' .. id .. '_' .. row[2];
+        row.details = 'Details##readout_' .. id .. '_' .. row[2];
+    end
+end
+function settings_window.draw_readouts(id, element)
+    flag[1] = ui_state.enabled[id] == true;
+    if (imgui.Checkbox('Enabled only##' .. id, flag)) then ui_state.enabled[id] = flag[1]; end
+    help('Hides unchecked readouts from this list. Searching shows all matching controls. It changes no timer setting.', 'Enabled only');
+    local wide = imgui.GetContentRegionAvail() >= px(560);
+    local shown = 0;
+    for _, row in ipairs(ui_state.rows[id]) do
+        if (not ui_state.enabled[id] or element[row[2]] or search.active()) then
+            shown = shown + 1;
+            checkbox_unless(row[5] ~= nil and not element[row[5]], row[1], element, row[2], TIPS[row[3]]);
+            local can_share = imgui.GetContentRegionAvail() > imgui.CalcTextSize(wide and 'Details' or 'Options') + BUTTON_PADDING + ITEM_GAP;
+            if (can_share) then imgui.SameLine(); end
+            if (wide) then
+                if (imgui.SmallButton(row.details)) then settings_window.open_details(row[4]); end
+                help('Shows the inputs and sources for this readout.', 'Details');
+            else
+                if (imgui.SmallButton(row.options)) then ui_state.options[row.options] = not ui_state.options[row.options]; end
+                help('Opens the explanation and a link to this readout\'s inputs.', 'Options');
+                if (ui_state.options[row.options]) then
+                    note(TIPS[row[3]]);
+                    if (imgui.SmallButton(row.details)) then settings_window.open_details(row[4]); end
+                    help('Shows the inputs and sources for this readout.', 'Details');
+                end
+            end
+        end
+    end
+    if (shown == 0) then note('No readouts enabled. Clear Enabled only to choose some.'); end
+end
+
 local function draw_attack_section(attack)
     heading_with_toggle('AUTO ATTACK TIMER', 'attack', attack, TIPS.attack_timer);
     local faded = fade_if_off(attack);
-    checkbox('Seconds left##attack', attack, 'show_value', TIPS.attack_value);
-    imgui.SameLine(px(SECOND_COLUMN));
-    checkbox('Weapon delay##attack', attack, 'show_delay', TIPS.attack_delay);
-    checkbox_with_color('Your TP', attack, 'show_tp', 'tp_color', TIPS.tp);
-    imgui.SameLine(px(SECOND_COLUMN));
-    checkbox_unless(not attack.show_tp, 'Rounds to 1000', attack, 'show_tp_rounds', TIPS.tp_rounds);
+    settings_window.draw_readouts('attack', attack);
+    color('##tp_colorYour TP', attack, 'tp_color');
+    imgui.SameLine(); imgui.TextUnformatted('TP color'); help(TIPS.tp, 'TP color');
     bar_toggles('attack', attack);
-    size_sliders('attack', attack);
+    whole_slider('Width##attack', attack, 'width', RANGES.attack.width, '%d px', TIPS.width);
+    float_slider('Height##attack', attack, 'height_scale', RANGES.attack.height_scale, '%.2fx', TIPS.height);
+    whole_slider('Bar height##attack', attack, 'bar_height', RANGES.attack.bar_height, '%d px', TIPS.bar_height,
+        attack.numbers_only, px(78));
     bar_colors('attack', attack, 'ready_color', 'Ready', TIPS.attack_ready);
     checkbox_with_color('Almost ready##attack', attack, 'almost_ready', 'almost_color', TIPS.attack_almost);
-    imgui.SameLine(px(SECOND_COLUMN));
-    checkbox('Range / facing', attack, 'show_reason', TIPS.reason);
     float_slider('Almost ready at##attack', attack, 'almost_seconds', RANGES.attack.almost_seconds, '%.1f s left',
         TIPS.attack_at, not attack.almost_ready);
-    checkbox('Why it stopped', attack, 'show_why', TIPS.why);
+    tp_goal_picker(attack);
     end_fade(faded);
 end
 
@@ -692,12 +876,12 @@ local function sound_rows(resting)
         sound_list(resting);
         imgui.EndCombo();
     end
-    help(TIPS.sound);
+    help(TIPS.sound, 'Sound');
     imgui.SameLine();
     if (imgui.Button('Refresh##sound')) then
         sound.refresh();
     end
-    help(TIPS.sound_refresh);
+    help(TIPS.sound_refresh, 'Refresh');
     whole_slider('Volume##sound', resting, 'sound_volume', RANGES.resting.sound_volume, '%d%%', TIPS.sound_volume);
     imgui.SameLine();
     imgui.BeginDisabled(resting.sound_file == '');
@@ -705,7 +889,7 @@ local function sound_rows(resting)
         result.play_sound = true;
     end
     imgui.EndDisabled();
-    help(TIPS.play_sound);
+    help(TIPS.play_sound, 'Play');
     local problem = sound.problem(resting.sound_file);
     if (problem ~= nil) then
         note(problem, look.problem_messages);
@@ -715,21 +899,15 @@ end
 local function draw_resting_section(resting)
     heading_with_toggle('RESTING TIMER', 'resting', resting, TIPS.resting_timer);
     local faded = fade_if_off(resting);
-    checkbox('Seconds left##resting', resting, 'show_value', TIPS.resting_value);
-    imgui.SameLine(px(SECOND_COLUMN));
-    checkbox('Last tick gains##resting', resting, 'show_gains', TIPS.gains);
-    checkbox('Time until full##resting', resting, 'show_until_full', TIPS.until_full);
-    imgui.SameLine(px(SECOND_COLUMN));
-    checkbox('Full times##resting', resting, 'show_each_full', TIPS.each_full);
-    checkbox('Numbers only##resting', resting, 'numbers_only', TIPS.numbers_only);
+    settings_window.draw_readouts('resting', resting);
+    checkbox('Text only##resting', resting, 'numbers_only', TIPS.numbers_only);
     imgui.SameLine(px(SECOND_COLUMN));
     checkbox('Hide once full##resting', resting, 'hide_when_full', TIPS.hide_when_full);
     size_sliders('resting', resting);
     bar_colors('resting', resting, 'full_color', 'Full HP/MP', TIPS.full_color);
     checkbox_with_color('Flash on each tick', resting, 'flash_on_tick', 'flash_color', TIPS.flash);
     float_slider('Flash length', resting, 'flash_seconds', RANGES.resting.flash_seconds, '%.1f s', TIPS.flash_length,
-        not resting.flash_on_tick);
-    checkbox('Why it can\'t heal', resting, 'show_why', TIPS.cant_heal);
+        not resting.flash_on_tick, px(78));
     sound_rows(resting);
     end_fade(faded);
 end
@@ -787,7 +965,7 @@ local function which_enemy_picker(enemy)
         end
         imgui.EndCombo();
     end
-    help(TIPS.follows);
+    help(TIPS.follows, 'Follows');
 end
 
 local function draw_enemy_section(enemy, style)
@@ -796,13 +974,7 @@ local function draw_enemy_section(enemy, style)
     which_enemy_picker(enemy);
     checkbox_unless(enemy.which == 'attacker', 'Keep the last monster', enemy, 'keep_last', TIPS.keep_last);
     checkbox('Attach under auto attack', enemy, 'attached', TIPS.attached);
-    checkbox('Seconds left##enemy', enemy, 'show_value', TIPS.enemy_value);
-    imgui.SameLine(px(SECOND_COLUMN));
-    checkbox('Enemy name', enemy, 'show_name', TIPS.enemy_name);
-    checkbox('Attack speed##enemy', enemy, 'show_delay', TIPS.enemy_delay);
-    imgui.SameLine(px(SECOND_COLUMN));
-    checkbox('Slow and haste', enemy, 'show_effects', TIPS.enemy_effects);
-    checkbox('TP move / casting', enemy, 'show_holds', TIPS.enemy_holds);
+    settings_window.draw_readouts('enemy', enemy);
     -- On you shows on the name and the stripe. With neither on screen it has nothing to color.
     local nothing_to_color = not (style.show_labels and enemy.show_label) and not style.accent;
     checkbox_with_color('On you', enemy, 'show_on_you', 'on_you_color', TIPS.on_you,
@@ -815,6 +987,7 @@ local function draw_enemy_look(enemy)
     local faded = fade_if_off(enemy);
     bar_toggles('enemy', enemy);
     whole_slider('Width##enemy', enemy, 'width', RANGES.enemy.width, '%d px', TIPS.enemy_width, enemy.attached);
+    float_slider('Height##enemy', enemy, 'height_scale', RANGES.enemy.height_scale, '%.2fx', TIPS.enemy_height);
     whole_slider('Bar height##enemy', enemy, 'bar_height', RANGES.enemy.bar_height, '%d px', TIPS.enemy_bar,
         enemy.numbers_only);
     bar_colors('enemy', enemy, 'ready_color', 'Ready', TIPS.enemy_ready);
@@ -859,11 +1032,11 @@ local function preset_picker(settings)
         end
         imgui.EndCombo();
     end
-    help(TIPS.preset);
+    help(TIPS.preset, 'Preset');
 end
 
 -- The PRESET heading, with Undo and Reset look at its right end like a timer's ON/OFF chip. They're
--- small buttons, so the heading stays one line of text tall. The Look tab has no room for another row.
+-- small buttons, so the heading stays one line of text tall.
 local function preset_heading(settings)
     imgui.Spacing();
     local x = imgui.GetCursorPosX();
@@ -873,23 +1046,20 @@ local function preset_heading(settings)
         + ITEM_GAP + help_width * 2;
     imgui.TextColored(look.headings, 'PRESET');
     imgui.SameLine(x + width - buttons_width);
-    imgui.BeginDisabled(not presets.can_undo());
-    if (imgui.SmallButton('Undo')) then
-        presets.undo(settings);
-        mark_changed(true);
-    end
+    imgui.BeginDisabled(workflow.history.status(settings) == nil);
+    if (imgui.SmallButton('Undo')) then result.undo_settings = true; end
     imgui.EndDisabled();
-    help(TIPS.undo);
+    help(TIPS.undo, 'Undo');
     imgui.SameLine();
     if (imgui.SmallButton('Reset look')) then
         result.reset_look = true;
     end
-    help(TIPS.reset_look);
+    help(TIPS.reset_look, 'Reset look');
     imgui.Separator();
 end
 
 -- The LABELS heading, with Show labels at its right end like a timer's ON/OFF chip, since it turns the
--- whole section on or off. The Look tab has no room for it on a row of its own.
+-- whole section on or off.
 local function labels_heading(style)
     imgui.Spacing();
     local x = imgui.GetCursorPosX();
@@ -904,14 +1074,14 @@ local function labels_heading(style)
     imgui.Separator();
 end
 
--- The preset, sizes and labels, the left column of the Look tab.
+-- The preset, sizes and labels, the left column of the Appearance tab.
 local function draw_size_sections(settings)
     local style = settings.style;
     preset_heading(settings);
     preset_picker(settings);
     checkbox('Window matches the look', style, 'window_matches_look', TIPS.window_look);
 
-    heading('SIZE');
+    if (section_open('SIZE')) then
     float_slider('Scale', style, 'scale', RANGES.style.scale, '%.2fx', TIPS.scale);
     whole_slider('Text size', style, 'font_size', RANGES.style.font_size, '%d px', TIPS.text_size);
     -- The slider's left end is auto.
@@ -919,6 +1089,7 @@ local function draw_size_sections(settings)
     whole_slider('Detail size', style, 'detail_size', RANGES.style.detail_size, detail_format, TIPS.detail_size);
     whole_slider('Corner roundness', style, 'rounding', RANGES.style.rounding, '%d px', TIPS.rounding);
 
+    end
     labels_heading(style);
     local labels_off = not style.show_labels;
     -- The slider's left end is auto.
@@ -955,18 +1126,19 @@ local function font_picker(style)
         end
         imgui.EndCombo();
     end
-    help(TIPS.font);
+    help(TIPS.font, 'Font');
 end
 
--- Colors and where the timers sit, the right column of the Look tab.
+-- Colors and where the timers sit, the right column of the Appearance tab.
 local function draw_color_sections(style)
-    heading('CARD');
+    if (section_open('CARD')) then
     checkbox_with_color('Background', style, 'panel', 'panel_color', TIPS.background);
     imgui.SameLine(px(SECOND_COLUMN));
     checkbox_with_color('Border', style, 'border', 'border_color', TIPS.border);
     checkbox_with_color('Accent stripe', style, 'accent', 'accent_color', TIPS.accent);
 
-    heading('TEXT AND BAR');
+    end
+    if (section_open('TEXT AND BAR')) then
     color_with_help('Labels##text', style, 'label_color', TIPS.label_color);
     imgui.SameLine(px(SECOND_COLUMN));
     color_with_help('Values##text', style, 'value_color', TIPS.value_color);
@@ -979,7 +1151,8 @@ local function draw_color_sections(style)
     font_picker(style);
     checkbox('Drain instead of fill', style, 'bar_drains', TIPS.drains);
 
-    heading('POSITION');
+    end
+    if (section_open('POSITION')) then
     checkbox('Lock in place', style, 'locked', TIPS.locked);
     imgui.SameLine(px(SECOND_COLUMN));
     checkbox('Share one spot', style, 'shared_spot', TIPS.shared_spot);
@@ -987,13 +1160,14 @@ local function draw_color_sections(style)
     if (imgui.Checkbox('One layout for all characters', flag)) then
         result.share_layout = flag[1];
     end
-    help(TIPS.one_layout);
+    help(TIPS.one_layout, 'One layout for all characters');
     if (imgui.Button('Reset positions')) then
         result.reset_positions = true;
     end
-    help(TIPS.reset_spots);
+    help(TIPS.reset_spots, 'Reset positions');
     imgui.SameLine(px(SECOND_COLUMN));
-    checkbox('Peek with Shift', style, 'see_through', TIPS.see_through);
+    checkbox('Peek with Shift', style, 'see_through', TIPS.see_through);    end
+
 end
 
 local function draw_look_tab(settings)
@@ -1035,7 +1209,7 @@ local function window_font_picker()
         end
         imgui.EndCombo();
     end
-    help(TIPS.window_font);
+    help(TIPS.window_font, 'Font');
 end
 
 --[[
@@ -1064,7 +1238,7 @@ local function chat_color(chat, part, widest, room)
         end
         imgui.EndCombo();
     end
-    help(TIPS[part.key]);
+    help(TIPS[part.key], part.name);
 end
 
 -- cadence's chat colors and Print a sample, two to a line like ALL TIMERS, lined up with the columns
@@ -1091,7 +1265,7 @@ local function draw_chat_section(chat)
     if (imgui.Button('Print a sample')) then
         result.sample = true;
     end
-    help(TIPS.chat_sample);
+    help(TIPS.chat_sample, 'Print a sample');
 end
 
 -- This window's font, size, corners and spacing, then cadence's chat colors.
@@ -1115,9 +1289,17 @@ local function draw_window_tab(settings)
         imgui.EndTable();
     end
     draw_chat_section(settings.chat);
+    heading('TIMING DETAILS');
+    checkbox('Timer hover help', settings.style, 'hover_tips', TIPS.hover_tips);
+    checkbox('Record timing details', settings.style, 'record_diagnostics', TIPS.record);
+    imgui.SameLine();
+    if (imgui.Button('Save timing report')) then
+        result.save_report = true;
+    end
+    help(TIPS.save_report, 'Save timing report');
 end
 
--- One row of the Window colors tab. Its name, then a swatch for each of its colors, then its (?). The
+-- One row of the Window colors section. Its name, then a swatch for each of its colors, then its (?). The
 -- swatches start `name_width` past the row's start, so they line up from row to row.
 local function window_color_row(row, name_width)
     imgui.AlignTextToFramePadding();
@@ -1132,7 +1314,7 @@ local function window_color_row(row, name_width)
             imgui.SetTooltip(entry.name);
         end
     end
-    help(WINDOW_COLOR_TIPS[row.name]);
+    help(WINDOW_COLOR_TIPS[row.name], row.name);
 end
 
 -- Every color of this window, as rows of swatches under their headings.
@@ -1151,12 +1333,105 @@ local function draw_window_colors_tab()
             if (group.name == SECOND_COLORS) then
                 next_section();
             end
-            heading(group.name);
-            for _, row in ipairs(group.rows) do
-                window_color_row(row, name_width);
+            if (section_open(group.name .. '##window_colors')) then
+                for _, row in ipairs(group.rows) do window_color_row(row, name_width); end
             end
         end
         imgui.EndTable();
+    end
+end
+
+
+ui_state.sample_choices = { { 'normal', 'Normal' }, { 'blocked', 'Blocked' }, { 'waiting', 'Waiting' }, { 'full', 'Full' } };
+ui_state.sample_names = { normal = 'Normal', blocked = 'Blocked', waiting = 'Waiting', full = 'Full' };
+function settings_window.draw_inline_preview(settings, proposed)
+    note(proposed and 'Starter layout sample. Apply it to use these choices.' or 'Sample timers. Your live timers keep running.');
+    imgui.SetNextItemWidth(px(CONTROL_WIDTH));
+    if (imgui.BeginCombo('State##inline_preview', ui_state.sample_names[ui_state.sample])) then
+        for _, entry in ipairs(ui_state.sample_choices) do
+            if (imgui.Selectable(entry[2], ui_state.sample == entry[1])) then ui_state.sample = entry[1]; end
+        end
+        imgui.EndCombo();
+    end
+    help('Shows a static sample of each enabled timer. It sends no actions and changes no live estimate.', 'Sample state');
+    workflow.preview.draw(settings, ui_state.sample, result.edited or ui_state.preview_dirty);
+    workflow.preview.chat(settings);
+    ui_state.preview_dirty = false;
+end
+function settings_window.draw_tab_visibility(settings)
+    if (not section_open('TABS', false)) then return; end
+    note('Hide tabs you do not use. Their features keep working. Appearance always stays available.');
+    settings_window.begin_buttons();
+    for _, name in ipairs(navigation.TAB_NAMES) do
+        if (name ~= 'Appearance') then
+            flag[1] = navigation.visible(settings.window.tabs, name);
+            settings_window.flow(name, true);
+            if (imgui.Checkbox(name .. '##visible_tab', flag)) then
+                if (navigation.set_visible(settings.window.tabs, name, flag[1])) then mark_changed(true, 'Show ' .. name); end
+            end
+            help('Shows this settings tab. Hiding it never disables its timers or features.', name);
+        end
+    end
+    if (imgui.Button('Restore all tabs')) then
+        if (navigation.restore(settings.window.tabs)) then mark_changed(true, 'Restore all tabs'); end
+    end
+    help('Shows every settings tab again.', 'Restore all tabs');
+end
+function settings_window.layout_metadata(id)
+    ui_state.layout_list = ui_state.layout_list or workflow.layouts.list();
+    for _, entry in ipairs(ui_state.layout_list) do if (entry.id == id) then return entry; end end
+end
+function settings_window.draw_starter_layouts(settings)
+    heading('STARTER LAYOUTS');
+    local selected = settings_window.layout_metadata(ui_state.layout);
+    imgui.SetNextItemWidth(px(CONTROL_WIDTH));
+    if (imgui.BeginCombo('Starter layout', selected.name)) then
+        for _, entry in ipairs(ui_state.layout_list) do
+            if (imgui.Selectable(entry.name, ui_state.layout == entry.id)) then
+                ui_state.layout, ui_state.layout_cache = entry.id, nil;
+                selected = entry;
+            end
+        end
+        imgui.EndCombo();
+    end
+    help('Choose a set of timer readouts. Picking a name only changes this selection.', 'Starter layout');
+    note(selected.description);
+    for _, change in ipairs(selected.changes) do note(change); end
+    settings_window.begin_buttons(); settings_window.flow('Preview layout', true);
+    if (imgui.Button('Preview layout')) then ui_state.preview_layout, ui_state.layout_cache = selected.id, nil; end
+    help('Shows sample timers with this layout before you apply it.', 'Preview layout');
+    settings_window.flow('Apply layout', true);
+    if (imgui.Button('Apply layout')) then result.apply_layout = selected.id; end
+    help('Applies the listed choices. Keeps colors, fonts, positions and saved profiles. Undo restores your previous settings.', 'Apply layout');
+    if (ui_state.preview_layout) then
+        local cache = ui_state.layout_cache;
+        if (cache == nil or cache.settings ~= settings or cache.id ~= ui_state.preview_layout) then
+            local shown = workflow.layouts.preview(settings, ui_state.preview_layout);
+            cache = { settings = settings, id = ui_state.preview_layout, shown = shown };
+            ui_state.layout_cache = cache;
+        end
+        local shown = settings_window.layout_metadata(ui_state.preview_layout);
+        note('Previewing ' .. shown.name .. '.');
+        settings_window.draw_inline_preview(cache.shown, true);
+        if (imgui.Button('Close layout preview')) then ui_state.preview_layout, ui_state.layout_cache = nil, nil; end
+        help('Closes the sample without changing your setup.', 'Close layout preview');
+    end
+    imgui.Separator();
+end
+
+-- The window controls and colors stay together with the timers' appearance.
+local function draw_appearance_tab(settings)
+    flag[1] = ui_state.inline;
+    if (imgui.Checkbox('Inline preview', flag)) then ui_state.inline = flag[1]; end
+    help('Shows sample timers and chat here while you change their appearance. It changes no live timer or saved setting.', 'Inline preview');
+    if (ui_state.inline and section_open('SAMPLE PREVIEW')) then settings_window.draw_inline_preview(settings); end
+    settings_window.draw_tab_visibility(settings);
+    draw_look_tab(settings);
+    if (section_open('WINDOW')) then
+        draw_window_tab(settings);
+    end
+    if (section_open('WINDOW COLORS')) then
+        draw_window_colors_tab();
     end
 end
 
@@ -1179,6 +1454,7 @@ local function save_as_new(settings)
         return false, profiles.problem();
     end
     picked = name;
+    mark_changed(true, 'Save as new');
     return true, ('Saved "%s" as a new profile.'):format(name);
 end
 
@@ -1186,11 +1462,14 @@ local function overwrite_picked(settings)
     if (not profiles.save(settings, picked)) then
         return false, profiles.problem();
     end
+    mark_changed(true, 'Overwrite');
     return true, ('The profile "%s" has your settings now.'):format(picked);
 end
 
 local function load_picked(settings)
-    profiles.load(settings, picked);
+    if (not profiles.load(settings, picked)) then
+        return false, profiles.file_ok() and 'The profile you picked isn\'t there anymore.' or profiles.problem();
+    end
     mark_changed(true);
     return true, ('The profile "%s" is loaded.'):format(picked);
 end
@@ -1208,13 +1487,14 @@ local function rename_picked(settings)
     elseif (profiles.no_link_word(name)) then
         return false, profiles.NO_LINK_NAME:format(name);
     end
-    local ok, relinked = profiles.rename(settings, picked, name);
+    local ok, relinked, renamed_source = profiles.rename(settings, picked, name);
     if (not ok) then
         return false, profiles.problem();
     end
     if (relinked) then
         result.links = true;
     end
+    if (renamed_source) then mark_changed(true, 'Rename'); end
     local old = picked;
     picked = name;
     return true, ('The profile "%s" is called "%s" now.'):format(old, name);
@@ -1252,7 +1532,7 @@ local function profile_button(label, tip, action, settings)
         run_action(action, settings, true);
     end
     imgui.EndDisabled();
-    help(tip);
+    help(tip, label);
 end
 
 -- The saved profiles. Picking one puts its name in the box. A picked profile that's gone stops being
@@ -1284,11 +1564,11 @@ local function draw_profiles_section(settings)
     draw_profile_list();
     imgui.SetNextItemWidth(px(CONTROL_WIDTH));
     imgui.InputText('Name', profile_name, profiles.NAME_MAX + 1);
-    help(TIPS.profile_name);
+    help(TIPS.profile_name, 'Name');
     if (imgui.Button('Save as new')) then
         run_action(save_as_new, settings, false);
     end
-    help(TIPS.save_new);
+    help(TIPS.save_new, 'Save as new');
     imgui.SameLine();
     profile_button('Overwrite', TIPS.overwrite, overwrite_picked, settings);
     profile_button('Load', TIPS.load, load_picked, settings);
@@ -1296,6 +1576,23 @@ local function draw_profiles_section(settings)
     profile_button('Rename', TIPS.rename, rename_picked, settings);
     imgui.SameLine();
     profile_button('Delete', TIPS.delete, delete_picked, settings);
+    imgui.BeginDisabled(not profiles.can_undo_delete());
+    if (imgui.Button('Undo delete')) then
+        local ok, message, relinked = profiles.undo_delete(settings);
+        status_ok = ok;
+        if (ok) then status = ('Restored "%s".'):format(message);
+        elseif (message == 'exists') then status = 'That profile name is already in use. Nothing was replaced.';
+        elseif (message == 'none') then status = 'There is no deleted profile to restore.';
+        else status = profiles.problem(); end
+        if (ok) then result.changed, result.save = true, true; picked = nil; end
+        if (relinked) then result.links = true; end
+    end
+    imgui.EndDisabled();
+    help('Restores the last deleted profile without replacing a profile with the same name or a newer job link.', 'Undo delete');
+    imgui.BeginDisabled(profiles.overwritten_name() == nil);
+    if (imgui.Button('Undo overwrite')) then result.undo_overwrite = true; end
+    imgui.EndDisabled();
+    help('Restores the last overwritten profile only if nobody changed it afterward.', 'Undo overwrite');
     if (status ~= nil) then
         note(status, status_ok and look.done_messages or look.problem_messages);
     end
@@ -1366,6 +1663,7 @@ local function draw_job_links(links)
 end
 
 local function draw_profiles_tab(settings)
+    settings_window.draw_starter_layouts(settings);
     if (begin_sections('##profile_sections')) then
         imgui.TableNextColumn();
         draw_profiles_section(settings);
@@ -1375,15 +1673,418 @@ local function draw_profiles_tab(settings)
     end
 end
 
+local PREVIEW_TIMERS = { { 'auto', 'Auto' }, { 'attack', 'Auto attack' }, { 'resting', 'Resting' }, { 'enemy', 'Enemy' } };
+local PREVIEW_STATES = { { 'normal', 'Normal' }, { 'blocked', 'Blocked' }, { 'waiting', 'Waiting' }, { 'full', 'Full' } };
+local GOAL_STATS = { { 'hp', 'HP' }, { 'mp', 'MP' }, { 'both', 'Both' } };
+local GOAL_MODES = { { 'percent', 'Percent' }, { 'amount', 'Amount' } };
+local EMPTY_DETAILS, DEFAULT_PREVIEW = {}, { timer = 'auto', state = 'normal', paused = false };
+local RELEARN_ACTIONS = { { 'attack', 'Relearn attack', TIPS.relearn_attack },
+    { 'tp', 'Relearn TP', TIPS.relearn_tp }, { 'enemy', 'Relearn enemy', TIPS.relearn_enemy } };
+local details_size = { 0, 0 };
+local cached_details, detail_lines;
+
+local function choice(label, value, choices, tip)
+    local selected, shown = value, choices[1][2];
+    for _, entry in ipairs(choices) do if (entry[1] == value) then shown = entry[2]; end end
+    imgui.SetNextItemWidth(px(CONTROL_WIDTH));
+    if (imgui.BeginCombo(label, shown)) then
+        for _, entry in ipairs(choices) do
+            if (imgui.Selectable(entry[2], entry[1] == value)) then selected = entry[1]; end
+        end
+        imgui.EndCombo();
+    end
+    help(tip, label);
+    return selected;
+end
+
+local function draw_preview_tab(settings)
+    if (begin_sections('##preview_sections')) then
+        imgui.TableNextColumn();
+        heading('PREVIEW');
+        note('Try the timers here. Your live timers keep running.');
+        local previous = current_preview or DEFAULT_PREVIEW;
+        local timer = choice('Timer##preview', previous.timer or 'auto', PREVIEW_TIMERS, TIPS.preview_timer);
+        local state = choice('State##preview', previous.state or 'normal', PREVIEW_STATES, TIPS.preview_state);
+        local paused = previous.paused == true;
+        flag[1] = paused;
+        if (imgui.Checkbox('Pause preview', flag)) then paused = flag[1]; end
+        help(TIPS.preview_pause, 'Pause preview');
+        if (timer ~= (previous.timer or 'auto') or state ~= (previous.state or 'normal') or paused ~= (previous.paused == true)) then
+            result.preview = { timer = timer, state = state, paused = paused };
+        end
+        heading('ALIGNMENT');
+        checkbox('Alignment guides', settings.style, 'layout_guides', TIPS.layout_guides);
+        note('Hold Shift and drag a timer to move it.');
+        next_section();
+        heading('GOALS');
+        checkbox('Time to TP goal', settings.attack, 'show_tp_time', TIPS.tp_time);
+        checkbox('Recovery goal', settings.resting, 'show_goal', TIPS.recovery_goal);
+        imgui.BeginDisabled(not settings.resting.show_goal);
+        local stat = choice('Resource##goal', settings.resting.goal_stat, GOAL_STATS, TIPS.goal_stat);
+        local mode = choice('Measure##goal', settings.resting.goal_mode, GOAL_MODES, TIPS.goal_mode);
+        if (stat ~= settings.resting.goal_stat or mode ~= settings.resting.goal_mode) then
+            settings.resting.goal_stat, settings.resting.goal_mode = stat, mode;
+            local range = mode == 'amount' and defaults.GOAL_AMOUNT or defaults.GOAL_PERCENT;
+            settings.resting.goal_value = math.max(range[1], math.min(range[2], settings.resting.goal_value));
+            mark_changed(true);
+        end
+        whole_slider('Goal##recovery', settings.resting, 'goal_value',
+            mode == 'amount' and defaults.GOAL_AMOUNT or defaults.GOAL_PERCENT,
+            mode == 'amount' and '%d' or '%d%%', TIPS.goal_value);
+        imgui.EndDisabled();
+        note('The usual time until full and full recovery sound keep their own settings.');
+        imgui.EndTable();
+    end
+end
+
+local EFFECT_NAMES = { [13] = 'Slow', [33] = 'Haste', [46] = 'Hundred Fists', [194] = 'Elegy' };
+local FIELD_NAMES = {
+    dexterity = 'DEX', store_tp = 'Store TP', hp_heal = 'HP while resting', mp_heal = 'MP while resting', clear_mind = 'Clear Mind',
+    haste_gear = 'Gear haste', haste_magic = 'Magic haste', haste_ability = 'Ability haste',
+    twohand_haste_ability = 'Two handed haste', desperate_blows = 'Desperate Blows',
+    delay_flat = 'Delay', delay_percent = 'Delay percent', dual_wield = 'Dual Wield', martial_arts = 'Martial Arts',
+    regen = 'Regen', refresh = 'Refresh', regen_down = 'HP drain', refresh_down = 'MP drain',
+};
+local function plain(value)
+    return tostring(value or ''):gsub('[%c]', ' '):gsub('_', ' ');
+end
+local function amount(value, unit)
+    if (type(value) ~= 'number' or value ~= value or math.abs(value) == math.huge) then return 'waiting'; end
+    return ('%.2f%s'):format(value, unit or '');
+end
+local function sample_note(entry, note)
+    local count = entry.samples or entry.accepted or 0;
+    local words = ('Samples: %d'):format(count);
+    if (entry.rejected) then words = words .. ('  |  Not used: %d'):format(entry.rejected); end
+    if (entry.sample_age) then words = words .. '  |  Last sample ' .. amount(entry.sample_age, ' s ago'); end
+    note(words);
+    if (entry.last_rejection) then note('Last sample not used: ' .. plain(entry.last_rejection)); end
+end
+
+local function contribution_text(entry)
+    local value, unit = tonumber(entry.value) or 0, '';
+    local field = tostring(entry.field);
+    if (field:find('haste', 1, true) or field == 'desperate_blows') then value, unit = value / 100, '%';
+    elseif (field == 'delay_flat') then value, unit = value / 1000, ' s';
+    elseif (field == 'dual_wield' or field == 'delay_percent') then unit = '%';
+    elseif (field == 'martial_arts') then unit = ' delay units'; end
+    return (FIELD_NAMES[field] or plain(field)) .. ' ' .. ('%+.2f%s'):format(value, unit);
+end
+
+local function speed_details(speed, heading, note)
+    heading('APPLIED ATTACK SPEED');
+    if (speed == nil) then note('Waiting for speed inputs.'); return; end
+    note(speed.known and 'Current speed inputs are known.' or 'Estimated: some speed inputs are unknown.');
+    if (speed.hundred_fists) then
+        note('Hundred Fists overrides haste, Dual Wield and percentage delay.');
+    end
+    for _, entry in ipairs({ { 'gear', 'Gear haste' }, { 'magic', 'Magic haste' },
+        { 'ability', 'Ability haste' }, { 'combined', 'Combined haste' } }) do
+        local part = speed[entry[1]];
+        if (part) then
+            local line = entry[2] .. ': ' .. amount(part.raw, '%') .. ' raw -> ' .. amount(part.effective, '%') .. ' applied';
+            if (not speed.hundred_fists) then
+                line = line .. ' | cap ' .. amount(part.cap, '%');
+                if (part.minimum and part.raw and part.raw < part.minimum) then
+                    line = line .. ', minimum ' .. amount(part.minimum, '%');
+                end
+            end
+            note(line);
+        end
+    end
+    note('Martial Arts: ' .. amount(speed.martial_arts, ' delay units') .. ' | Dual Wield: ' .. amount(speed.dual_wield, '%'));
+    note('Flat delay: ' .. amount(speed.delay_flat and speed.delay_flat / 1000, ' s')
+        .. ' | Percentage delay: ' .. amount(speed.delay_percent, '%'));
+    note('Modeled interval: ' .. amount(speed.modeled_interval, ' s') .. (speed.known and '' or ' (estimated)'));
+    if (speed.limit_adjustment and speed.limit_adjustment ~= 0) then
+        note('Interval limit: ' .. amount(speed.before_limit, ' s') .. ' -> ' .. amount(speed.modeled_interval, ' s')
+            .. ' | allowed ' .. amount(speed.minimum_interval, ' s') .. ' to ' .. amount(speed.maximum_interval, ' s'));
+    end
+    local unknown = speed.unknown or {};
+    for i = 1, #unknown do note('Unknown speed input: ' .. plain(unknown[i])); end
+end
+
+local function blue_details(blue, heading, note)
+    heading('BLUE MAGIC');
+    if (blue == nil) then note('Waiting for BLU set evidence.'); return; end
+    if (blue.active == false or blue.status == 'inactive') then
+        note(blue.role == 'sub' and 'BLU subjob traits are inactive.' or 'BLU is not active for this job setup.');
+        return;
+    end
+    local role = blue.role == 'sub' and 'sub' or 'main';
+    note('BLU ' .. role .. ' Lv. ' .. tostring(blue.level or '?'));
+    local confirmed = blue.status == 'confirmed';
+    if (confirmed) then
+        note('Confirmed set. Eligible spell bonuses and traits can apply.');
+    elseif (blue.status == 'provisional') then
+        note('Provisional set candidate. These spell bonuses and traits are not applied until the set is confirmed.');
+    else
+        note('The current spell set is unknown. BLU bonuses remain estimated until the set is confirmed.');
+        return;
+    end
+    local traits = blue.traits or {};
+    if (#traits == 0) then note('No relevant trait threshold is met by this set.'); end
+    for _, trait in ipairs(traits) do
+        local state = 'not applied';
+        if (not confirmed) then state = 'candidate, not applied';
+        elseif (trait.overridden) then state = 'native trait takes precedence';
+        elseif (trait.applied) then state = 'applied'; end
+        note(plain(trait.name or trait.id) .. ' rank ' .. tostring(trait.tier or trait.rank or '?')
+            .. ': ' .. tostring(trait.points or '?') .. ' points / ' .. tostring(trait.required or '?')
+            .. ' required | ' .. state);
+        for _, entry in ipairs(trait.contributions or {}) do note('  Trait bonus: ' .. contribution_text(entry)); end
+    end
+    local spells = blue.spells or {};
+    note(('Set spells: %d'):format(#spells));
+    for _, spell in ipairs(spells) do
+        local state = spell.eligible and 'eligible' or 'above current BLU level';
+        if (spell.level == nil) then state = 'not in the current source profile'; end
+        if (not confirmed) then state = 'candidate, ' .. state; end
+        note(plain(spell.name or spell.id) .. ' (Lv. ' .. tostring(spell.level or '?') .. ') | ' .. state);
+    end
+    for _, entry in ipairs(blue.direct_contributions or {}) do
+        local state = confirmed and entry.applied and 'applied' or 'not applied';
+        note('Spell bonus: ' .. plain(entry.name or entry.id) .. ' | ' .. contribution_text(entry) .. ' | ' .. state);
+    end
+end
+
+local function build_estimate_details(details)
+    local lines = {};
+    local function heading(text) lines[#lines + 1] = { heading = text }; end
+    local function note(text) lines[#lines + 1] = { text = text }; end
+    local a, t, r, e, m = details.attack, details.tp, details.resting, details.enemy, details.modifiers;
+    heading('AUTO ATTACK');
+    if (a) then
+        note('In use: ' .. amount(a.delay, ' s') .. '  |  ' .. plain(a.source));
+        note('Model: ' .. amount(a.modeled_delay, ' s'));
+        if (a.next_interval_changed) then
+            note('Following interval: ' .. amount(a.next_interval_model, ' s') .. '. The current countdown keeps its place.');
+        end
+        sample_note(a, note);
+        if (a.holding or a.reason) then note('Paused: ' .. plain(a.holding or a.reason)); end
+    else note('Waiting for your first attack.'); end
+    speed_details(details.speed, heading, note);
+    heading('TP');
+    if (t) then
+        note('TP per hit: ' .. amount(t.per_hit) .. '  |  ' .. plain(t.source));
+        note('Model: ' .. amount(t.modeled_per_hit) .. '  |  Hits per round: ' .. amount(t.hits_per_round));
+        sample_note(t, note);
+        if (t.transition) then note('Waiting for a gear or effect change to settle.'); end
+    else note('Waiting for TP data.'); end
+    heading('RESTING');
+    if (r) then
+        note('Next tick: ' .. amount(r.next_hp) .. ' HP  |  ' .. amount(r.next_mp) .. ' MP');
+        note(r.pattern_known and 'Recovery pattern observed.' or 'Recovery pattern still estimated.');
+        sample_note(r, note);
+        if (r.last_decision) then note('Last sample: ' .. plain(r.last_decision)); end
+        if (r.blocked) then note('Recovery is currently blocked.'); end
+    else note('Waiting for recovery data.'); end
+    heading('ENEMY');
+    if (e) then
+        note('Interval: ' .. amount(e.delay, ' s') .. '  |  ' .. plain(e.source));
+        sample_note(e, note);
+        if (e.waiting) then note('Waiting for the next attack.'); end
+        if (e.holding) then note('Observed hold: ' .. plain(e.holding)); end
+        for _, effect in ipairs(e.effects or {}) do
+            note((effect.control and plain(effect.control) or EFFECT_NAMES[effect.id] or ('Effect ' .. tostring(effect.id)))
+                .. (effect.uncertain and ' | duration uncertain' or ''));
+            if (effect.power ~= nil) then note('  Speed amount: ' .. amount(effect.power / 100, '%')
+                .. (effect.exact and ' (known)' or ' (estimated)')); end
+            if (effect.duration_estimate) then note('  Cast-time duration estimate: ' .. amount(effect.duration_estimate, ' s')
+                .. ' before resists, not time remaining.'); end
+            if (effect.duration_basis) then note('  Duration source: ' .. plain(effect.duration_basis)); end
+            if (effect.inputs_known == false) then note('  Some cast inputs are unknown.'); end
+            local inputs = effect.cast_inputs;
+            if (inputs) then
+                note('  Cast inputs: gear ' .. (inputs.equipment_known and 'read' or 'unknown')
+                    .. ', buffs ' .. (inputs.buffs_known and 'read' or 'unknown')
+                    .. ', merits ' .. (inputs.merits_known and 'read' or 'unknown'));
+                for _, item in ipairs(inputs.equipment or {}) do
+                    note('  Cast gear: item ' .. tostring(item.id) .. ', slot ' .. tostring(item.slot)
+                        .. (item.augment and ', augment ' .. tostring(item.augment) or '')
+                        .. (item.song_bonus and ', song bonus ' .. tostring(item.song_bonus) or '')
+                        .. (item.duration_percent and ', duration ' .. tostring(item.duration_percent) .. '%' or ''));
+                end
+                if (inputs.buffs and inputs.buffs.troubadour) then note('  Troubadour was active at the cast.'); end
+                if (inputs.merits) then
+                    if (inputs.merits.slow_ii ~= nil) then note('  Slow II merits at cast: ' .. tostring(inputs.merits.slow_ii)); end
+                    if (inputs.merits.enfeebling_duration ~= nil) then note('  Enfeebling duration merits at cast: ' .. tostring(inputs.merits.enfeebling_duration)); end
+                end
+            end
+        end
+    else note('No enemy timing data yet.'); end
+    blue_details(m and m.blue_magic, heading, note);
+    heading('UNKNOWN INPUTS');
+    local unknown = m and m.unknown or {};
+    if (#unknown == 0) then note(m and 'No missing modifier inputs in this model.' or 'Waiting for modifier data.'); end
+    for i = 1, #unknown do note(plain(unknown[i])); end
+    if (m and m.evidence) then
+        if (m.evidence.age) then note('Inputs read ' .. amount(m.evidence.age, ' s ago')); end
+        if (m.evidence.blue_status == 'provisional') then note('The BLU memory candidate is provisional. A normal job update confirms the set.'); end
+    end
+    heading('MODEL CONTRIBUTIONS');
+    local contributions = m and m.contributions or {};
+    if (#contributions == 0) then note('No separate contributions to show.'); end
+    for i = 1, #contributions do
+        local c = contributions[i];
+        note(plain(c.kind) .. (c.name and ' / ' .. plain(c.name) or '') .. ': ' .. contribution_text(c)
+            .. (c.estimated and ' (estimated)' or ''));
+    end
+    return lines;
+end
+
+function settings_window.detail_groups(details)
+    local groups, group = {}, nil;
+    for _, line in ipairs(build_estimate_details(details or EMPTY_DETAILS)) do
+        if (line.heading) then
+            group = { title = line.heading, lines = {} };
+            groups[#groups + 1] = group;
+        else group.lines[#group.lines + 1] = line.text; end
+    end
+    for _, entry in ipairs(groups) do entry.text = entry.title .. '\n' .. table.concat(entry.lines, '\n'); end
+    return groups;
+end
+
+function settings_window.details_text(details, value, target)
+    local out = {};
+    for _, group in ipairs(settings_window.detail_groups(details)) do
+        if (search.matches(group.text, value) and (target == nil or group.title == target
+            or target == 'AUTO ATTACK' and group.title == 'APPLIED ATTACK SPEED')) then out[#out + 1] = group.text; end
+    end
+    return #out > 0 and table.concat(out, '\n\n') or 'No matching details.';
+end
+
+function settings_window.detail_matches(group)
+    return search.matches(group.text, details_query[1]) and (ui_state.details_target == nil
+        or group.title == ui_state.details_target
+        or ui_state.details_target == 'AUTO ATTACK' and group.title == 'APPLIED ATTACK SPEED');
+end
+
+local function draw_details_tab()
+    heading('WHY THIS ESTIMATE');
+    local wide = imgui.GetContentRegionAvail() >= px(600);
+    for i, action in ipairs(RELEARN_ACTIONS) do
+        if (i > 1 and wide) then imgui.SameLine(); end
+        if (imgui.Button(action[2])) then result.relearn = action[1]; end
+        help(action[3], action[2]);
+    end
+    imgui.SetNextItemWidth(settings_window.search_width('Find details', 230, details_query[1] ~= '' or ui_state.details_target ~= nil));
+    if (imgui.InputText('Find details', details_query, 128)) then copied, ui_state.details_target = nil, nil; end
+    help('Finds matching sections by their names, inputs and source notes. Clear the search to show all sections.', 'Find details');
+    if (details_query[1] ~= '' or ui_state.details_target ~= nil) then
+        imgui.SameLine();
+        if (imgui.Button('Clear##details')) then details_query[1], copied, ui_state.details_target = '', nil, nil; end
+        help('Clears the details search.', 'Clear');
+    end
+    local details = current_details or EMPTY_DETAILS;
+    if (imgui.Button('Copy shown')) then
+        local ok = pcall(imgui.SetClipboardText, settings_window.details_text(details, details_query[1], ui_state.details_target));
+        copied = ok and 'Copied shown details.' or 'Copy is unavailable. The details remain below.';
+    end
+    help('Copies every section matching the details search, including folded groups.', 'Copy shown');
+    imgui.SameLine();
+    if (imgui.Button('Copy all')) then
+        local ok = pcall(imgui.SetClipboardText, settings_window.details_text(details, ''));
+        copied = ok and 'Copied all details.' or 'Copy is unavailable. The details remain below.';
+    end
+    help('Copy shown includes every search match, even folded groups. Copy all ignores the search and includes every section and contribution.', 'Copy all');
+    if (copied) then note(copied); end
+    if (details ~= cached_details or detail_lines == nil) then
+        cached_details, detail_lines = details, settings_window.detail_groups(details);
+    end
+    local matches = 0;
+    for _, group in ipairs(detail_lines) do if (settings_window.detail_matches(group)) then matches = matches + 1; end end
+    note(('Showing %d of %d sections.'):format(matches, #detail_lines));
+    local _, room = imgui.GetContentRegionAvail();
+    details_size[2] = math.max(1, room - px(8));
+    local nested = room >= px(100);
+    if (not nested or imgui.BeginChild('##estimate_details', details_size, 0)) then
+        for _, group in ipairs(detail_lines) do
+            if (settings_window.detail_matches(group)) then
+                local searching = details_query[1]:find('%S') ~= nil or ui_state.details_target ~= nil;
+                if (searching or detail_folded[group.title] ~= nil) then
+                    imgui.SetNextItemOpen(searching or detail_folded[group.title], ImGuiCond_Always);
+                end
+                imgui.PushStyleColor(ImGuiCol_Text, look.headings);
+                local shown = imgui.CollapsingHeader(group.title, ImGuiTreeNodeFlags_DefaultOpen);
+                imgui.PopStyleColor(1);
+                if (not searching) then detail_folded[group.title] = shown; end
+                if (shown) then
+                    for _, line in ipairs(group.lines) do note(line); end
+                end
+            end
+        end
+        if (matches == 0) then note('No matching details. Clear the search to show everything.'); end
+    end
+    if (nested) then imgui.EndChild(); end
+end
+
 -- The tabs in order, each drawn by its function.
 local TABS = {
     { 'Timers',        draw_timers_tab },
     { 'Enemy',         draw_enemy_tab },
-    { 'Look',          draw_look_tab },
-    { 'Window',        draw_window_tab },
-    { 'Window colors', draw_window_colors_tab },
+    { 'Appearance',    draw_appearance_tab },
+    { 'Preview',       draw_preview_tab },
+    { 'Details',       draw_details_tab },
     { 'Profiles',      draw_profiles_tab },
 };
+
+local SEARCH_WORDS = {
+    ['Timers'] = table.concat({ 'Timers Seconds left attack Weapon delay attack Your TP Width attack Bar height attack Almost ready attack Range / facing Almost ready at attack Why it stopped  Text only  ALL TIMERS Hide during events Seconds left resting Last tick gains resting Time until full resting Full times resting Text only resting Hide once full resting Flash on each tick Flash length Ticks until full Why it can\'t heal Next tick gains resting Width  Bar height  Refresh sound Volume sound Play sound Rounds to goal Successful hits Ready mark TP goal Hide on the map Hide with the game UI Full HP/MP', TIPS.attack_timer, TIPS.attack_value, TIPS.attack_delay, TIPS.tp, TIPS.tp_rounds, TIPS.width, TIPS.height, TIPS.bar_height, TIPS.tp_hits, TIPS.attack_ready, TIPS.attack_almost, TIPS.reason, TIPS.attack_at, TIPS.why, TIPS.numbers_only, TIPS.almost_mark, TIPS.fill, TIPS.tp_goal, TIPS.hide_events, TIPS.hide_on_map, TIPS.cant_see_map, TIPS.hide_ui, TIPS.cant_see_ui, TIPS.resting_timer, TIPS.resting_value, TIPS.gains, TIPS.until_full, TIPS.each_full, TIPS.hide_when_full, TIPS.full_color, TIPS.flash, TIPS.flash_length, TIPS.ticks, TIPS.cant_heal, TIPS.next_gains, TIPS.sound, TIPS.sound_refresh, TIPS.sound_volume, TIPS.play_sound }, ' '),
+    ['Enemy'] = table.concat({ 'Enemy Attach under auto attack Seconds left enemy Enemy name Attack speed enemy Slow and haste TP move / casting On you  ENEMY BAR Width enemy Bar height enemy Almost ready enemy Almost ready at enemy Text only ', TIPS.enemy_timer, TIPS.keep_last, TIPS.attached, TIPS.enemy_value, TIPS.enemy_name, TIPS.enemy_delay, TIPS.enemy_effects, TIPS.enemy_holds, TIPS.on_you, TIPS.follows, TIPS.enemy_width, TIPS.enemy_height, TIPS.enemy_bar, TIPS.enemy_ready, TIPS.enemy_almost, TIPS.enemy_at, TIPS.numbers_only, TIPS.almost_mark, TIPS.fill }, ' '),
+    ['Appearance'] = table.concat({ 'Appearance Window matches the look SIZE Scale Text size Detail size Corner roundness Label size Auto attack label Resting label Enemy label Undo Reset look Show labels CARD Background Border Accent stripe TEXT AND BAR Labels text Values text Details text Bar track text Text outline Text shadow Drain instead of fill POSITION Lock in place Share one spot Reset positions Peek with Shift One layout for all characters Preset Font', TIPS.window_look, TIPS.scale, TIPS.text_size, TIPS.detail_size, TIPS.rounding, TIPS.label_size, TIPS.attack_label, TIPS.resting_label, TIPS.enemy_label, TIPS.undo, TIPS.reset_look, TIPS.preset, TIPS.show_labels, TIPS.background, TIPS.border, TIPS.accent, TIPS.label_color, TIPS.value_color, TIPS.detail_color, TIPS.track_color, TIPS.text_outline, TIPS.text_shadow, TIPS.drains, TIPS.locked, TIPS.shared_spot, TIPS.one_layout, TIPS.reset_spots, TIPS.see_through, TIPS.font }, ' '),
+    ['Window'] = table.concat({ 'Window FONT Font size window SHAPE Corner roundness window Spacing window TIMING DETAILS Timer hover help Record timing details Save timing report CHAT Print a sample Tag brackets Tag word Replies', TIPS.window_size, TIPS.window_corners, TIPS.window_spacing, TIPS.hover_tips, TIPS.record, TIPS.save_report, TIPS.window_font, TIPS.chat_sample, TIPS.tag_brackets, TIPS.tag_word, TIPS.replies }, ' '),
+    ['Window colors'] = table.concat({ 'Window colors ' }, ' '),
+    ['Preview'] = table.concat({ 'Preview PREVIEW ALIGNMENT Alignment guides GOALS Time to TP goal Recovery goal Goal recovery Timer State Pause preview Resource Measure ', TIPS.preview_timer, TIPS.preview_state, TIPS.preview_pause, TIPS.layout_guides, TIPS.tp_time, TIPS.recovery_goal, TIPS.goal_stat, TIPS.goal_mode, TIPS.goal_value }, ' '),
+    ['Details'] = table.concat({ 'Details WHY THIS ESTIMATE Relearn attack Relearn TP Relearn enemy Find details Clear details Copy shown Copy all AUTO ATTACK TP RESTING ENEMY UNKNOWN INPUTS MODEL CONTRIBUTIONS APPLIED ATTACK SPEED BLUE MAGIC', 'Store TP hHP hMP BLU Blue Magic spell trait set haste slow food equipment augments unknown inputs model samples copy contribution', TIPS.relearn_attack, TIPS.relearn_tp, TIPS.relearn_enemy }, ' '),
+    ['Profiles'] = table.concat({ 'Profiles PROFILES Name Save as new Overwrite Undo delete JOB LINKS', TIPS.profiles, TIPS.profile_name, TIPS.save_new, TIPS.overwrite, TIPS.load, TIPS.rename, TIPS.delete, TIPS.job_links }, ' '),
+};
+for _, group in ipairs(theme.WINDOW_COLOR_GROUPS) do
+    SEARCH_WORDS['Window colors'] = SEARCH_WORDS['Window colors'] .. ' ' .. group.name;
+    for _, row in ipairs(group.rows) do
+        SEARCH_WORDS['Window colors'] = SEARCH_WORDS['Window colors'] .. ' ' .. row.name .. ' ' .. (WINDOW_COLOR_TIPS[row.name] or '');
+    end
+end
+
+SEARCH_WORDS.Appearance = table.concat({ SEARCH_WORDS.Appearance, SEARCH_WORDS.Window,
+    SEARCH_WORDS['Window colors'] }, ' ');
+SEARCH_WORDS.Window, SEARCH_WORDS['Window colors'] = nil, nil;
+SEARCH_WORDS.Appearance = SEARCH_WORDS.Appearance .. ' Inline preview Sample state TABS Restore all tabs';
+SEARCH_WORDS.Profiles = SEARCH_WORDS.Profiles .. ' STARTER LAYOUTS Starter layout Preview layout Apply layout Close layout preview Minimal Melee TP Resting Enemy tracking Undo overwrite Modified from';
+SEARCH_WORDS.Timers = SEARCH_WORDS.Timers .. ' Enabled only Options TP color Details';
+SEARCH_WORDS.Enemy = SEARCH_WORDS.Enemy .. ' Enabled only Options Details';
+for name, words in pairs(SEARCH_WORDS) do SEARCH_WORDS[name] = words .. ' Undo last change Reset this section'; end
+
+function settings_window.search_tabs(value)
+    if (value == matched_query and matched_tabs ~= nil) then return matched_tabs; end
+    local matches = {};
+    for name, words in pairs(SEARCH_WORDS) do matches[name] = search.matches(words, value); end
+    matched_query, matched_tabs = value, matches;
+    return matches;
+end
+function settings_window.needs_details()
+    return open[1] and navigation.current() == 'Details';
+end
+function settings_window.select_tab(name)
+    query[1] = '';
+    return navigation.select(name);
+end
+function settings_window.draw_page(tab, settings)
+    page_name, page_width = tab[1], imgui.GetWindowSize();
+    search.begin_page(page_name);
+    local width, room = imgui.GetContentRegionAvail();
+    local _, footer_height = imgui.CalcTextSize(FOOTER, false, width);
+    local footer_room = footer_height + look.spacing * 3 + 4;
+    local show_footer = room > footer_room + px(180);
+    page_size[2] = math.max(1, room - (show_footer and footer_room or px(8)));
+    if (imgui.BeginChild('##page_' .. page_name, page_size, 0,
+        ImGuiWindowFlags_NoSavedSettings)) then tab[2](settings); search.finish_page(); end
+    imgui.EndChild();
+    search.begin_page(nil);
+    if (show_footer) then imgui.Separator(); note(FOOTER); end
+end
+
+local function draw_current_page(tab) settings_window.draw_page(tab, current_settings); end
 
 -- Another character logged in. The open window moves to their spot and size on the next frame. ImGui
 -- would leave it where it is, and its old spot would save over theirs.
@@ -1391,25 +2092,16 @@ function settings_window.place_again()
     place_now = true;
 end
 
--- How wide the tab bar is with every tab's name in full, in this frame's font.
-local function tabs_width()
-    local width = -TAB_GAP;
-    for _, tab in ipairs(TABS) do
-        width = width + math.ceil(imgui.CalcTextSize(tab[1])) + TAB_PADDING[1] * 2 + TAB_EXTRA + TAB_GAP;
-    end
-    return width;
-end
-
 --[[
     Where the window opens. It's where you left it, at the size you left it. On a smaller screen the
     size gets cut down to fit. A window left hanging off an edge gets pulled back so all of it shows.
-    The smallest size has room for one column and every tab's name. It grows with the font size, and
+    The smallest size has room for one column. Tabs wrap. It grows with the font size, and
     gets cut down to fit a small screen too.
 ]]
-local function place_window(window)
+local function place_window(window, extra)
     local screen = imgui.GetIO().DisplaySize;
-    min_size[1] = math.min(math.max(px(COLUMN_WIDTH), tabs_width()) + WINDOW_EDGES, screen.x);
-    min_size[2] = math.min(px(MIN_HEIGHT), screen.y);
+    min_size[1] = math.min(px(COLUMN_WIDTH) + WINDOW_EDGES, screen.x);
+    min_size[2] = math.min(px(MIN_HEIGHT + extra), screen.y);
     extent[1] = math.max(min_size[1], math.min(window.width, screen.x));
     extent[2] = math.max(min_size[2], math.min(window.height, screen.y));
     spot[1] = math.max(0, math.min(window.x, screen.x - extent[1]));
@@ -1460,10 +2152,15 @@ end
     picked in the Sound list, and `play_sound` means Play was pressed. `shift` is true while you hold
     Shift and aren't typing in the game's chat line.
 ]]
-function settings_window.draw(settings, version, timers_hidden, shift)
+function settings_window.draw(settings, version, timers_hidden, shift, preview, details)
     result.changed, result.save, result.reset_positions, result.reset_look = false, false, false, false;
     result.share_layout, result.show_timers, result.sample, result.links = nil, false, false, false;
-    result.sound_picked, result.play_sound = false, false;
+    result.sound_picked, result.play_sound, result.save_report = false, false, false;
+    result.preview, result.relearn = nil, nil;
+    result.undo_settings, result.reset_section, result.apply_layout, result.undo_overwrite = nil, nil, nil, nil;
+    result.edited, result.label = false, nil;
+    result.editing = false;
+    current_preview, current_details = preview, details;
     if (not open[1]) then
         return result;
     end
@@ -1492,7 +2189,10 @@ function settings_window.draw(settings, version, timers_hidden, shift)
     scale = math.max(1, imgui.GetFontSize() / BASE_FONT_SIZE, wider);
     chip_size[1] = px(CHIP_WIDTH);
     two_columns_at = 2 * px(COLUMN_WIDTH) + COLUMN_GAP + WINDOW_EDGES;
-    place_window(settings.window);
+    local source = profiles.status(settings);
+    local extra = (timers_hidden and 32 or 0) + (query[1]:find('%S') and 64 or 0)
+        + (source.name and source.name ~= '' and 48 or 0);
+    place_window(settings.window, extra);
     if (imgui.Begin('cadence##cadence_settings', open, peek and PEEK_FLAGS or WINDOW_FLAGS)) then
         remember_window(settings.window);
         -- The version goes on its own line when the subtitle doesn't fit, so it never breaks at a dot.
@@ -1511,26 +2211,37 @@ function settings_window.draw(settings, version, timers_hidden, shift)
             help(TIPS.show_timers);
         end
 
-        -- The tab bar lays its tabs out with the tab padding, and each tab's page draws with the usual one.
-        imgui.PushStyleVar(ImGuiStyleVar_FramePadding, TAB_PADDING);
-        if (imgui.BeginTabBar('##cadence_tabs', ImGuiTabBarFlags_DrawSelectedOverline)) then
-            for _, tab in ipairs(TABS) do
-                if (imgui.BeginTabItem(tab[1])) then
-                    imgui.PushStyleVar(ImGuiStyleVar_FramePadding, theme.FRAME_PADDING);
-                    tab[2](settings);
-                    imgui.PopStyleVar(1);
-                    imgui.EndTabItem();
-                end
-            end
-            imgui.EndTabBar();
+        imgui.SetNextItemWidth(settings_window.search_width('Find settings', 260, query[1] ~= ''));
+        imgui.InputText('Find settings', query, 128);
+        help('Finds tabs by their controls and help, highlights matches, and scrolls to the first match. Every word must match.');
+        if (query[1] ~= '') then
+            imgui.SameLine();
+            if (imgui.Button('Clear##settings')) then query[1] = ''; end
+            help('Clears the settings search and shows every tab.');
         end
-        imgui.PopStyleVar(1);
-
-        imgui.Spacing();
-        imgui.Separator();
-        note(FOOTER);
+        settings_window.draw_toolbar(settings);
+        search.query(query[1], look.headings);
+        if (search.active()) then
+            local at, count = search.status(navigation.current());
+            settings_window.begin_buttons(); settings_window.flow('Previous match', false);
+            imgui.BeginDisabled(count == 0);
+            if (imgui.Button('Previous match')) then search.step(-1, navigation.current()); end
+            settings_window.flow('Next match', false);
+            if (imgui.Button('Next match')) then search.step(1, navigation.current()); end
+            imgui.EndDisabled();
+            local key = tostring(at) .. '/' .. tostring(count);
+            if (ui_state.match_key ~= key) then ui_state.match_key, ui_state.match_text = key, ('%d of %d matches on this tab'):format(at, count); end
+            note(ui_state.match_text);
+        end
+        local matches = settings_window.search_tabs(query[1]);
+        current_settings = settings;
+        ui_state.search_options.searching = search.active();
+        if (navigation.draw(TABS, look, matches, draw_current_page, settings.window.tabs, ui_state.search_options)) then
+            mark_changed(true, 'Show settings tab');
+        end
         -- The next frame's Shift check reads this. A timer you're dragging is in its own window, so it doesn't count.
-        busy = imgui.IsAnyItemActive() and imgui.IsWindowFocused();
+        result.editing = imgui.IsAnyItemActive();
+        busy = result.editing and imgui.IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     end
     imgui.End();
     imgui.PopFont();

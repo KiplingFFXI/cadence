@@ -188,7 +188,7 @@ ok, moved = profiles.delete(s, 'Alone');
 check('a delete with no link to it says no link changed', ok and moved == false and links_of(s) == 'THF=Other');
 local real_open = io.open;
 io.open = function (path, mode)
-    if (path == FILE and mode == 'w') then return nil; end
+    if (path:sub(1, #FILE + 1) == FILE .. '.' and mode == 'w') then return nil; end
     return real_open(path, mode);
 end
 check('a rename that can\'t be written leaves the links', profiles.rename(s, 'Other', 'Moved') == false
@@ -217,7 +217,7 @@ local lines = change_job(6);
 check('zoning as a new job loads its profile and says so', s.style.scale == 1.25 and #lines == 1
     and lines[1] == 'Your settings now come from the profile "Thief", since it\'s linked to THF.', lines[1]);
 check('it saves once and redraws the timers', MOCK.saved == saves + 1 and MOCK.in_use == s, MOCK.saved - saves);
-check('Undo can\'t take it back, like any profile load', not presets.can_undo());
+check('a linked profile load can be undone', presets.can_undo());
 check('the job links stay', links_of(s) == 'WHM=Gone,BLM=Mage,RDM=Mage,THF=Thief', links_of(s));
 frames(30);
 check('your job is read once after zoning', job_reads == 1, job_reads);
@@ -319,8 +319,8 @@ local FAKES = {
     GetContentRegionAvail = function () return room, 400; end,
     Button = function (label) return label == press; end,
     BeginListBox = function () return true; end,
-    InputText = function (_, buffer)
-        if (typing ~= nil) then buffer[1] = typing; return true; end
+    InputText = function (label, buffer)
+        if (label == 'Name' and typing ~= nil) then buffer[1] = typing; return true; end
         return false;
     end,
 };
@@ -542,7 +542,7 @@ os.remove(FILE);
 profiles.save(s, 'Solo BLM');
 profiles.save(s, 'Melee');
 
--- The profile commands take the links along, and save only when a link changed.
+-- Profile commands persist changed links and a renamed active baseline.
 links.BLM, links.SAM = 'Solo BLM', 'Melee';
 ok, detail = answers('/cadence profile rename "solo blm" Nuker', 'The profile "Solo BLM" is now called "Nuker".');
 check('profile rename moves the links to it and saves', ok and links.BLM == 'Nuker'
@@ -551,8 +551,9 @@ ok, detail = answers('/cadence profile delete melee', 'The profile "Melee" is de
 check('profile delete clears the links to it and saves', ok and links.SAM == nil and files.Alice.job_links.SAM == nil,
     detail);
 profiles.save(s, 'Spare');
-ok, detail = refuses('/cadence profile rename spare Extra', 'The profile "Spare" is now called "Extra".');
-check('with no link to it, rename saves nothing', ok, detail);
+ok, detail = answers('/cadence profile rename spare Extra', 'The profile "Spare" is now called "Extra".');
+check('renaming the active baseline saves its new name without changing links',
+    ok and s.profile_source.name == 'Extra' and files.Alice.profile_source.name == 'Extra', detail);
 ok, detail = refuses('/cadence profile delete extra', 'The profile "Extra" is deleted.');
 check('and neither does delete', ok, detail);
 
@@ -659,10 +660,10 @@ check('and clears them, saving once', ok and links_of(s) == '' and files.Alice.j
     and profiles.exists('Wide'), detail);
 os.remove(FILE);
 
--- profiles.json is read at each time the README's "What cadence reads" table names, and only then ----------------
-local readme_file = assert(io.open(ADDON_DIR .. '/../README.md'));
-local row = readme_file:read('*a'):match('\n| `config\\addons\\cadence\\profiles%.json`, read ([^|]*)|') or '';
-readme_file:close();
+-- profiles.json is read at each time the guide's "What cadence reads" table names, and only then ----------------
+local guide_file = assert(io.open(ADDON_DIR .. '/../docs/GUIDE.md'));
+local row = guide_file:read('*a'):match('\n| `config\\addons\\cadence\\profiles%.json`, read ([^|]*)|') or '';
+guide_file:close();
 local real_open, reads = io.open, 0;
 io.open = function (path, mode)
     if (path == FILE and (mode == nil or mode == 'r')) then reads = reads + 1; end
@@ -694,7 +695,7 @@ local TIMES = {
     { 'after a zone when your main job changed and has a link', reads_file(function () change_job(4); end) },
 };
 for _, time in ipairs(TIMES) do
-    check(('profiles.json is read %s, as the README says'):format(time[1]), time[2] and row:find(time[1], 1, true) ~= nil,
+    check(('profiles.json is read %s, as the guide says'):format(time[1]), time[2] and row:find(time[1], 1, true) ~= nil,
         row);
 end
 check('and not when the window closes, after a zone with the same job or one with no link, or for joblink none',

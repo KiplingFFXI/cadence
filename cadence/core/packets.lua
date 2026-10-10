@@ -9,6 +9,7 @@ local packets = {};
 
 packets.ID = {
     ZONE_IN = 0x00A,
+    ENTITY  = 0x00E,
     ACTION  = 0x028,
     MESSAGE = 0x029,
     ASSIST  = 0x058,
@@ -70,29 +71,67 @@ local TARGET_BITS = 36;
 
 local unpack_bits = ashita.bits.unpack_be;
 
---[[
-    Steps past the result that starts at `offset`, along with its add-effect and reaction blocks.
-    Returns where the next result starts and where this one's reaction block starts, if it has one.
-    Returns nil when the packet ends before the reaction flag.
-]]
+-- Ashita event structures are userdata. The reported size cannot extend the received body.
+local function byte_count(e)
+    if ((type(e) ~= 'table' and type(e) ~= 'userdata') or type(e.data) ~= 'string' or type(e.size) ~= 'number'
+        or e.size ~= e.size or e.size < 0) then return 0; end
+    return math.min(#e.data, math.floor(e.size));
+end
+
+-- Both optional blocks must be complete before any result is accepted.
 local function next_result(data, offset, total_bits)
     offset = offset + RESULT_BASE_BITS;
-    if (unpack_bits(data, 0, offset, 1) == 1) then
-        offset = offset + ADD_EFFECT_BITS;
-    end
-    offset = offset + 1;
+    if (offset + 1 > total_bits) then return nil; end
+    local added = unpack_bits(data, 0, offset, 1) == 1;
+    offset = offset + 1 + (added and ADD_EFFECT_BITS or 0);
+    if (offset + 1 > total_bits) then return nil; end
+    local reaction = unpack_bits(data, 0, offset, 1) == 1;
+    local reaction_at = reaction and offset + 1 or nil;
+    offset = offset + 1 + (reaction and REACTION_BITS or 0);
+    if (offset > total_bits) then return nil; end
+    return offset, reaction_at;
+end
 
-    if (offset + 1 > total_bits) then
-        return nil;
+-- A truncated later target also invalidates every earlier result in the action.
+local function valid_action(e)
+    local total = byte_count(e) * 8;
+    if (total < TARGET_BIT or e.data_raw == nil) then return false; end
+    local raw = e.data_raw;
+    local targets = unpack_bits(raw, 0, TARGET_COUNT_BIT, 6);
+    if (targets > MAX_TARGETS) then return false; end
+    local offset = TARGET_BIT;
+    for _ = 1, targets do
+        if (offset + TARGET_BITS > total) then return false; end
+        local results = unpack_bits(raw, 0, offset + 32, 4);
+        if (results > MAX_RESULTS) then return false; end
+        offset = offset + TARGET_BITS;
+        for _ = 1, results do
+            offset = next_result(raw, offset, total);
+            if (offset == nil) then return false; end
+        end
     end
-    if (unpack_bits(data, 0, offset, 1) == 1) then
-        return offset + 1 + REACTION_BITS, offset + 1;
-    end
-    return offset + 1, nil;
+    return true;
+end
+
+local MINIMUM = { [packets.ID.ZONE_IN] = 8, [packets.ID.ENTITY] = 11,
+    [packets.ID.MESSAGE] = 26, [packets.ID.ASSIST] = 12, [packets.ID.VITALS] = 20 };
+
+-- Call before a packet can change any timer or observed input.
+function packets.valid(e)
+    if (type(e) ~= 'table' and type(e) ~= 'userdata') then return false; end
+    if (e.id == packets.ID.ACTION) then return valid_action(e); end
+    return MINIMUM[e.id] == nil or byte_count(e) >= MINIMUM[e.id];
+end
+
+-- Leaving sight invalidates this incarnation's observations, whether or not it died.
+function packets.despawned(e)
+    if (byte_count(e) < 11 or bit.band(e.data:byte(11), 0x20) == 0) then return nil; end
+    return struct.unpack('L', e.data, 5), struct.unpack('H', e.data, 9);
 end
 
 -- Reads who acted and what kind of action it was.
 function packets.action_header(e)
+    if (not valid_action(e)) then return 0, 0; end
     local actor    = unpack_bits(e.data_raw, 0, ACTOR_BIT, 32);
     local category = unpack_bits(e.data_raw, 0, CATEGORY_BIT, 4);
     return actor, category;
@@ -101,18 +140,21 @@ end
 -- The low 16 bits of the action id. That is the spell id on a spell finish, or CAST_BEGIN or
 -- CAST_INTERRUPT on a start.
 function packets.action_param(e)
+    if (not valid_action(e)) then return 0; end
     return unpack_bits(e.data_raw, 0, PARAM_BIT, 16);
 end
 
 -- The server id of the first target. On an attack round that's who got attacked.
 function packets.action_target(e)
+    if (not valid_action(e) or unpack_bits(e.data_raw, 0, TARGET_COUNT_BIT, 6) == 0) then return 0; end
     return unpack_bits(e.data_raw, 0, TARGET_BIT, 32);
 end
 
 -- Fills `out` with the message id of every result on the first target and returns the count.
 function packets.action_messages(e, out)
+    if (not valid_action(e) or unpack_bits(e.data_raw, 0, TARGET_COUNT_BIT, 6) == 0) then return 0; end
     local data = e.data_raw;
-    local total_bits = e.size * 8;
+    local total_bits = byte_count(e) * 8;
     local count = math.min(unpack_bits(data, 0, RESULT_COUNT_BIT, 4), MAX_RESULTS);
 
     local offset = FIRST_RESULT_BIT;
@@ -137,8 +179,9 @@ end
     when the first attack was a plain hit.
 ]]
 function packets.melee_hits(e)
+    if (not valid_action(e) or unpack_bits(e.data_raw, 0, TARGET_COUNT_BIT, 6) == 0) then return 0, false, false; end
     local data = e.data_raw;
-    local total_bits = e.size * 8;
+    local total_bits = byte_count(e) * 8;
     local count = math.min(unpack_bits(data, 0, RESULT_COUNT_BIT, 4), MAX_RESULTS);
     local hits, hit_back = 0, false;
     local clean_start = count > 0 and unpack_bits(data, 0, FIRST_RESULT_BIT, 3) == PLAIN_HIT;
@@ -173,8 +216,9 @@ end
     is the effect it put on.
 ]]
 function packets.action_results(e, out)
+    if (not valid_action(e)) then return 0; end
     local data = e.data_raw;
-    local total_bits = e.size * 8;
+    local total_bits = byte_count(e) * 8;
     local targets = math.min(unpack_bits(data, 0, TARGET_COUNT_BIT, 6), MAX_TARGETS);
     local n = 0;
 
@@ -197,7 +241,13 @@ function packets.action_results(e, out)
             row.target  = target;
             row.message = unpack_bits(data, 0, offset + RESULT_MESSAGE_OFFSET, 10);
             row.param   = unpack_bits(data, 0, offset + RESULT_DAMAGE_OFFSET, 17);
-            offset = next_result(data, offset, total_bits);
+            local added = unpack_bits(data, 0, offset + RESULT_BASE_BITS, 1) == 1;
+            row.added = added and unpack_bits(data, 0, offset + RESULT_BASE_BITS + 28, 10) or 0;
+            row.added_param = added and unpack_bits(data, 0, offset + RESULT_BASE_BITS + 11, 17) or 0;
+            local reaction;
+            offset, reaction = next_result(data, offset, total_bits);
+            row.reaction = reaction and unpack_bits(data, 0, reaction + 24, 10) or 0;
+            row.reaction_param = reaction and unpack_bits(data, 0, reaction + 10, 14) or 0;
             if (offset == nil) then
                 return n;
             end
@@ -209,8 +259,9 @@ end
 -- True when `id` is one of the action's targets. Every target is checked, since a monster's area TP
 -- move lists the whole party.
 function packets.action_has_target(e, id)
+    if (not valid_action(e)) then return false; end
     local data = e.data_raw;
-    local total_bits = e.size * 8;
+    local total_bits = byte_count(e) * 8;
     local targets = math.min(unpack_bits(data, 0, TARGET_COUNT_BIT, 6), MAX_TARGETS);
 
     local offset = TARGET_BIT;
@@ -240,6 +291,7 @@ end
 -- 0x029 battle message. Returns who it's from, the message id, who it's about and its first number.
 -- On a wear-off that number is the effect id.
 function packets.message(e)
+    if (byte_count(e) < 26) then return nil; end
     local data = e.data;
     local actor   = struct.unpack('L', data, 0x04 + 1);
     local target  = struct.unpack('L', data, 0x08 + 1);
@@ -251,11 +303,13 @@ end
 -- 0x0DF party member vitals. The server sends one for each party member every time their HP, MP or TP
 -- changes. This returns whose it is, so the other fields are only read when it's yours.
 function packets.vitals_member(e)
+    if (byte_count(e) < 8) then return nil; end
     return struct.unpack('L', e.data, 0x04 + 1);
 end
 
 -- The HP, MP and TP in a 0x0DF.
 function packets.vitals(e)
+    if (byte_count(e) < 20) then return nil; end
     local data = e.data;
     local hp = struct.unpack('L', data, 0x08 + 1);
     local mp = struct.unpack('L', data, 0x0C + 1);
@@ -266,11 +320,13 @@ end
 -- 0x058 assist. Returns whose it is and the server id of the monster they're on. The server sends it
 -- when your attacks move to another monster, and as the answer to /assist.
 function packets.assist(e)
+    if (byte_count(e) < 12) then return nil; end
     return struct.unpack('L', e.data, 0x04 + 1), struct.unpack('L', e.data, 0x08 + 1);
 end
 
 -- 0x00A zone in. Returns your server id.
 function packets.zone_in(e)
+    if (byte_count(e) < 8) then return nil; end
     return struct.unpack('L', e.data, 0x04 + 1);
 end
 

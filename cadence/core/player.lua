@@ -180,64 +180,64 @@ end
 
 --[[
     Fills `out` with your buffs as { [buff id] = true } and returns it. Old entries are cleared first,
-    so one table can be reused.
+    so one table can be reused. The second return value says whether the client had a buff list.
 ]]
 function player.read_buffs(out)
+    local buffs = stats:GetBuffs();
+    if (buffs == nil) then
+        return out, false, nil;
+    end
     for id in pairs(out) do
         out[id] = nil;
     end
 
-    local buffs = stats:GetBuffs();
-    if (buffs == nil) then
-        return out;
-    end
-
+    local counts = {};
     -- Slots 0 to 32 cover the buff list whether it starts at 0 or at 1.
     for i = 0, 32 do
         local id = buffs[i];
         if (id ~= nil and id > 0 and id ~= 255) then
             out[id] = true;
+            counts[id] = (counts[id] or 0) + 1;
         end
     end
-    return out;
+    return out, true, counts;
 end
 
--- Weapon info for the delay estimate, or nil for an empty slot or anything without a delay, like a
--- shield.
+-- Weapon info for the delay estimate, and whether the slot is occupied. A shield has no delay.
 local function weapon_in(slot)
     local equipped = inventory:GetEquippedItem(slot);
     if (equipped == nil or equipped.Index == 0) then
-        return nil;
+        return nil, false;
     end
 
     local item = inventory:GetContainerItem(bit.rshift(equipped.Index, 8), bit.band(equipped.Index, 0xFF));
     if (item == nil or ITEM_NONE[item.Id]) then
-        return nil;
+        return nil, true;
     end
 
     local info = resources:GetItemById(item.Id);
     if (info == nil or info.Delay == nil or info.Delay == 0) then
-        return nil;
+        return nil, true;
     end
-    return { id = item.Id, delay = info.Delay, skill = info.Skill };
-end
-
-local function slot_used(slot)
-    local equipped = inventory:GetEquippedItem(slot);
-    return equipped ~= nil and equipped.Index ~= 0;
+    return { id = item.Id, delay = info.Delay, skill = info.Skill }, true;
 end
 
 -- Reads what decides your attack delay. See delay.estimate() for the shape.
 function player.read_loadout()
+    local buffs, known, counts = player.read_buffs({});
+    local main = weapon_in(SLOT_MAIN);
+    local sub, sub_used = weapon_in(SLOT_SUB);
     return {
-        main       = weapon_in(SLOT_MAIN),
-        sub        = weapon_in(SLOT_SUB),
-        sub_used   = slot_used(SLOT_SUB),
+        main       = main,
+        sub        = sub,
+        sub_used   = sub_used,
         main_job   = stats:GetMainJob(),
         main_level = stats:GetMainJobLevel(),
         sub_job    = stats:GetSubJob(),
         sub_level  = stats:GetSubJobLevel(),
-        buffs      = player.read_buffs({}),
+        buffs      = buffs,
+        buffs_known = known,
+        buff_counts = counts,
     };
 end
 

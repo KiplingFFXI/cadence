@@ -131,4 +131,6 @@ setmetatable(_G, { __index = function (_, name)
     return nil;
 end });
 
+-- The real preview uses the real tab navigation instead of the unit-test traversal.
+package.preload['ui.navigation'], package.loaded['ui.navigation'] = nil, nil;
 return module;

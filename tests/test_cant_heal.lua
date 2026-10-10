@@ -154,7 +154,9 @@ calls = frame();
 check('once it wears off the seconds come back', seconds_shown(calls) and not shows('diseased', calls), texts(calls));
 check('at full strength', full_strength(fill_calls(calls)[1] and fill_calls(calls)[1][4], s.resting.fill_start));
 check('with no gains, since the last tick healed nothing', not has('|+', calls), texts(calls));
-check('and no full times yet', has('HP full in --', calls) and not until_full_shown(calls), texts(calls));
+-- Eight gains17..24 fill at162, on the retained9/9/12 phase,77s after the cure.
+check('the model restores phase-aware full times before another heal', near(resting.until_full(MOCK.now), 77)
+    and has('HP full in 1:17', calls) and until_full_shown(calls), texts(calls));
 check('the next tick is still due on time', near(target(), T + 90), target());
 run_to(T + REAL[8]);
 hp = hp + 17;
@@ -323,15 +325,16 @@ stand();
 -- The box, its (?) and its tip ------------------------------------------------------------------------
 MOCK.fire('command', { command = '/cadence' });
 calls = frame();
-local after_flash, box_at = false, nil;
+local after_ticks, box_at, next_at = false, nil, nil;
 for i, c in ipairs(calls) do
-    if (c[1] == 'SliderFloat' and c[2] == 'Flash length') then after_flash = true; end
+    if (c[1] == 'Checkbox' and c[2] == 'Ticks until full') then after_ticks = true; end
+    if (c[1] == 'Checkbox' and c[2] == 'Next tick gains##resting') then next_at = i; end
     if (c[1] == 'Checkbox' and c[2] == 'Why it can\'t heal') then
         box_at = i;
-        check('the box comes after Flash length', after_flash);
+        check('the box follows Ticks until full among recovery readouts', after_ticks);
     end
 end
-check('the window has the box', box_at ~= nil);
+check('the window has the box before Next tick gains', box_at ~= nil and next_at ~= nil and box_at < next_at);
 rawset(imgui, 'IsItemHovered', function () return true; end);
 calls = frame();
 rawset(imgui, 'IsItemHovered', nil);

@@ -1,6 +1,6 @@
 addon.name    = 'cadence';
 addon.author  = 'Kipling';
-addon.version = '1.0.0';
+addon.version = '1.2.0';
 addon.desc    = 'Auto attack, resting tick and enemy attack timers for Phoenix.';
 addon.link    = 'https://github.com/KiplingFFXI/cadence';
 
@@ -26,6 +26,10 @@ local resting  = require('core.resting');
 local enemy    = require('core.enemy');
 local monster_effects = require('core.monster_effects');
 local tp       = require('core.tp');
+local stat_state = require('core.stat_state');
+local diagnostics = require('core.diagnostics');
+local modifier_data = require('data.phoenix_modifiers');
+local save_report, report_snapshot;
 local shared_layout = require('core.shared_layout');
 local defaults = require('ui.defaults');
 local theme    = require('ui.theme');
@@ -36,6 +40,7 @@ local chat_colors = require('ui.chat_colors');
 local profiles = require('ui.profiles');
 local sound    = require('ui.sound');
 local settings_window = require('ui.settings_window');
+local ui_tools = { history = require('ui.history'), layouts = require('ui.layouts'), navigation = require('ui.navigation') };
 
 ffi.cdef[[
     short __stdcall GetAsyncKeyState(int vKey);
@@ -124,7 +129,10 @@ local cadence = {
     results     = {},      -- Reused list of every result in one action.
     buffs       = {},      -- Reused set of your buffs.
     buffs_at    = -1,
+    modifiers_at = -1,
     broken      = false,   -- Set when drawing failed, so the error isn't repeated every frame.
+    preview     = { timer = 'auto', state = 'normal', paused = false },
+    preview_offset = 0,
     unsaved     = false,   -- A slider or color picker is being dragged and hasn't saved yet.
     hidden      = false,   -- True after /cadence hide, until it's typed again. Not saved.
     enemy_id      = nil,   -- The monster the enemy timer follows, its status and its name.
@@ -145,35 +153,123 @@ local function say(text)
     print(chat_colors.line(cadence.settings.chat, addon.name, text));
 end
 
--- Writes your settings. While one layout is shared, that's only the shared file. Your own file keeps
--- your own layout.
+-- Keep a baseline between edits. A held slider becomes one change when it is released.
+function ui_tools.changed(label)
+    local s, before = cadence.settings, ui_tools.saved;
+    local own_changed = false;
+    if (before ~= nil and ui_tools.owner == s) then
+        own_changed = not ui_tools.history.equal(before.job_links, s.job_links)
+            or not ui_tools.history.equal(before.window.tabs, s.window.tabs);
+        if (not ui_tools.undoing) then ui_tools.history.record(s, before, label or ui_tools.label or 'Settings change'); end
+    end
+    ui_tools.saved, ui_tools.owner = ui_tools.history.capture(s), s;
+    ui_tools.label = nil;
+    profiles.invalidate_status(s);
+    return own_changed;
+end
+
+function ui_tools.clear()
+    if (ui_tools.owner) then ui_tools.history.clear(ui_tools.owner); end
+    ui_tools.history.clear(cadence.settings);
+    ui_tools.saved, ui_tools.owner = ui_tools.history.capture(cadence.settings), cadence.settings;
+    ui_tools.label, cadence.unsaved = nil, false;
+    ui_tools.own_dirty, cadence.save_failed = false, false;
+    profiles.invalidate_status(cadence.settings);
+end
+
+-- Shared display changes go to the shared file. Hidden tabs and job links stay in your own file.
 local function save_settings()
     defaults.tidy(cadence.settings);
+    local own_changed = ui_tools.changed();
+    ui_tools.own_dirty = ui_tools.own_dirty or own_changed;
     if (shared_layout.is_on()) then
-        shared_layout.save();
+        if (not shared_layout.save()) then
+            cadence.save_failed = true;
+            say('Could not save shared_layout.json. Your changes are still on screen. The saved file was kept.');
+            return false;
+        end
+        if (ui_tools.own_dirty) then defaults.tidy(cadence.own); settings.save(); end
     else
         settings.save();
     end
+    ui_tools.own_dirty, cadence.save_failed = false, false;
+    return true;
 end
 
--- Writes this character's own file, where its job links live even while one layout is shared. With
+function ui_tools.flush()
+    if (cadence.unsaved or cadence.save_failed) then
+        cadence.unsaved = false;
+        return save_settings();
+    end
+    return true;
+end
+
+-- Writes this character's own file, where its job links and hidden tabs live even while a layout is shared. With
 -- sharing off, that's the same as save_settings.
 local function save_own()
     defaults.tidy(cadence.own);
+    ui_tools.changed();
     settings.save();
+    ui_tools.own_dirty = false;
 end
 
 -- Your current weapon delay estimate, a key that changes with the gear or buffs behind it, and the
 -- loadout they came from.
-local function current_delay()
+local function read_inputs()
     local loadout = player.read_loadout();
-    return delay.estimate(loadout), delay.key(loadout), loadout;
+    local entity = player.entity();
+    loadout.engaged = entity ~= nil and entity.Status == STATUS_ENGAGED;
+    loadout.resting = entity ~= nil and entity.Status == STATUS_RESTING;
+    if (entity and entity.PetTargetIndex ~= nil) then
+        loadout.pet_present = entity.PetTargetIndex ~= 0;
+    end
+    return loadout;
+end
+
+local function read_loadout(now)
+    local loadout = read_inputs();
+    loadout.modifiers = stat_state.update(now or os.clock(), loadout);
+    cadence.loadout = loadout;
+    cadence.delay_estimate, cadence.delay_key = delay.estimate(loadout), delay.key(loadout);
+    return loadout;
+end
+
+local function current_delay()
+    local loadout = read_loadout();
+    return cadence.delay_estimate, cadence.delay_key, loadout;
 end
 
 -- True while the TP line is on screen, so its packets are worth reading.
 local function tracking_tp()
     local element = cadence.settings.attack;
     return element.enabled and element.show_tp;
+end
+
+-- Update predicted gains at the same pace as buffs. Changing gear never restarts either timer.
+local function check_modifiers(now)
+    if (now - cadence.modifiers_at < BUFF_CHECK_SECONDS) then
+        return;
+    end
+    cadence.modifiers_at = now;
+    local loadout = read_loadout(now);
+    if (stat_state.drain_events) then
+        for _, event in ipairs(stat_state.drain_events()) do
+            diagnostics.record(event.kind, event.at or now, event);
+        end
+    end
+    if (diagnostics.is_enabled()) then
+        local model = loadout.modifiers;
+        local key = model.tp_key .. model.delay_key .. model.resting_key .. (model.rounds_key or '');
+        if (key ~= cadence.report_key) then
+            cadence.report_key = key;
+            diagnostics.record('modifiers', now, model);
+        end
+    end
+    cadence.buffs, cadence.buffs_known = loadout.buffs, loadout.buffs_known;
+    resting.on_model(loadout.modifiers);
+    if (tracking_tp()) then
+        tp.on_loadout(loadout);
+    end
 end
 
 --[[
@@ -259,6 +355,9 @@ end
 -- or close their own sound file.
 local function apply_settings()
     hud.refresh(cadence.settings);
+    profiles.invalidate_status(cadence.settings);
+    settings_window.invalidate_preview();
+    diagnostics.enable(cadence.settings.style.record_diagnostics);
     apply_sound();
 end
 
@@ -270,22 +369,32 @@ end
 
 -- On load and on every login. The timers use your own settings, or the shared copy while one layout
 -- is shared. Both get the settings check.
-local function pick_settings()
+local function pick_settings(keep_pending)
     defaults.tidy(cadence.own);
-    cadence.settings = shared_layout.apply(cadence.own);
+    cadence.settings = shared_layout.apply(cadence.own, keep_pending);
     defaults.tidy(cadence.settings);
     apply_settings();
+    ui_tools.clear();
+    if (keep_pending) then cadence.save_failed = true; end
 end
 
 -- Turns one layout for all characters on or off. Nothing on screen changes. The timers switch to the
 -- shared copy, or back to your own settings.
 local function share_layout(on)
-    if (on) then
-        cadence.settings = shared_layout.turn_on(cadence.own);
-    else
-        cadence.settings = shared_layout.turn_off(cadence.own);
+    if (not ui_tools.flush()) then return false; end
+    local previous = cadence.settings;
+    local chosen;
+    if (on) then chosen = shared_layout.turn_on(cadence.own);
+    else chosen = shared_layout.turn_off(cadence.own); end
+    if (chosen == nil) then
+        say('Could not change shared_layout.json. Check that the file is readable and writable.');
+        return false;
     end
-    apply_and_save();
+    cadence.settings = chosen;
+    apply_settings();
+    if (chosen ~= previous) then ui_tools.clear(); end
+    if (not on) then save_own(); end
+    return true;
 end
 
 --[[
@@ -330,7 +439,13 @@ local function check_buffs(now)
     end
     cadence.buffs_at = now;
 
-    local buffs = player.read_buffs(cadence.buffs);
+    local buffs, known;
+    if (cadence.modifiers_at == now) then
+        buffs, known = cadence.buffs, cadence.buffs_known;
+    else
+        buffs, known = player.read_buffs(cadence.buffs);
+    end
+    if (known == false) then return; end
     attack.on_buffs(buffs);
     resting.on_buffs(now, buffs);
     for _, id in ipairs(DISABLED_BY) do
@@ -358,18 +473,38 @@ end
 -- What the TP line under the auto attack bar shows. One table is reused so drawing makes no garbage.
 local tp_view = { goal = TP_GOAL };
 
-local function read_tp(sample_tp)
+local function read_tp(sample_tp, now, blocked)
     local element = cadence.settings.attack;
     if (not element.show_tp) then
         return nil;
     end
     local value = sample_tp or player.tp();
-    tp_view.tp, tp_view.rounds = value, nil;
-    if (element.show_tp_rounds and value < TP_GOAL) then
+    local goal = element.tp_goal or TP_GOAL;
+    tp_view.goal = goal;
+    tp_view.tp, tp_view.rounds, tp_view.hits, tp_view.time_to_goal = value, nil, nil, nil;
+    tp_view.estimated = not sample_tp and tp.is_estimated();
+    tp_view.hits_estimated = not sample_tp and tp.hits_estimated();
+    if (element.show_tp_hits and value < goal) then
+        tp_view.hits = sample_tp and math.ceil((goal - value) / SAMPLE_TP_STEP) or tp.hits_to(goal, value);
+    end
+    if (element.show_tp_rounds and value < goal) then
         if (sample_tp) then
-            tp_view.rounds = math.ceil((TP_GOAL - value) / SAMPLE_TP_STEP);
+            tp_view.rounds = math.ceil((goal - value) / SAMPLE_TP_STEP);
         else
-            tp_view.rounds = tp.rounds_to(TP_GOAL, value);
+            tp_view.rounds = tp.rounds_to(goal, value);
+        end
+    end
+    if (element.show_tp_time and value < goal) then
+        if (sample_tp) then
+            tp_view.time_to_goal = math.ceil((goal - value) / SAMPLE_TP_STEP) * 3.78;
+        else
+            -- The regular modifier poll already reads these inputs five times a second.
+            if (cadence.loadout == nil) then read_loadout(now); end
+            local timing = attack.info(now, cadence.delay_estimate, cadence.delay_key);
+            timing.blocked = blocked;
+            local model = stat_state.info();
+            timing.transition = model ~= nil and model.transition;
+            tp_view.time_to_goal = tp.time_to(goal, value, now, timing);
         end
     end
     return tp_view;
@@ -392,8 +527,8 @@ local my_body, target_body = {}, {};
 
 -- "too far" or "not facing" from where you and the monster you're fighting stand, or nil. Only checked
 -- with Range / facing on, while that monster is alive and around you.
-local function reach_word()
-    if (not cadence.settings.attack.show_reason) then
+local function reach_word(force)
+    if (not force and not cadence.settings.attack.show_reason) then
         return nil;
     end
     local id = cadence.battle_id;
@@ -406,16 +541,27 @@ local function reach_word()
     return message and CANT_ATTACK[message];
 end
 
-local function draw_attack(now, sample)
-    local fill, left, attack_delay, reason, why = attack.progress(now);
+local function draw_attack(now, sample, forced, preview_state, sample_clock)
+    local fill, left, attack_delay, reason, why;
+    if (not forced) then fill, left, attack_delay, reason, why = attack.progress(now); end
     if (fill ~= nil) then
-        hud.draw_attack(fill, left, attack_delay, attack.is_learned(), read_tp(), reason, why, reach_word());
+        local blocked = reach_word(cadence.settings.attack.show_tp_time);
+        local visible = cadence.settings.attack.show_reason and blocked or nil;
+        hud.draw_attack(fill, left, attack_delay, attack.is_learned(), read_tp(nil, now, blocked), reason, why, visible);
     elseif (sample) then
+        now = sample_clock or now;
         -- The sample bar fills in 3.8 s and shows ready for a moment before the next round.
         local cycle = now % 4.2;
         -- The sample TP climbs each round past 1000, then starts over, so both of its colors show.
         local sample_tp = 512 + SAMPLE_TP_STEP * (math.floor(now / 4.2) % 6);
-        hud.draw_attack(math.min(cycle / 3.8, 1), math.max(3.8 - cycle, 0), 3.78, true, read_tp(sample_tp));
+        local state = preview_state or 'normal';
+        local view = read_tp(state == 'full' and cadence.settings.attack.tp_goal or sample_tp, now);
+        local preview_left = math.max(3.8 - cycle, 0);
+        if (state == 'waiting') then preview_left = nil;
+        elseif (state == 'full') then preview_left = 0; end
+        if (state == 'blocked' or state == 'waiting') then if (view) then view.time_to_goal = nil; end end
+        hud.draw_attack(state == 'full' and 1 or math.min(cycle / 3.8, 1), preview_left, 3.78, true, view,
+            nil, state == 'blocked' and 'spell' or nil, nil, true);
     end
 end
 
@@ -441,28 +587,69 @@ local function flash_strength(now, tick_at)
     return math.max(0, 1 - (now - tick_at) / length);
 end
 
-local function draw_resting(now, sample)
+local function draw_resting(now, sample, forced, preview_state, sample_clock)
     local view = resting_view;
-    local fill, left, _, gained_hp, gained_mp, full = resting.progress(now);
+    view.preview, view.goal, view.waiting = false, nil, false;
+    local fill, left, _, gained_hp, gained_mp, full;
+    if (not forced) then fill, left, _, gained_hp, gained_mp, full = resting.progress(now); end
     if (fill ~= nil) then
         local element = cadence.settings.resting;
         view.fill, view.left, view.gained_hp, view.gained_mp, view.full = fill, left, gained_hp, gained_mp, full;
+        view.next_hp, view.next_mp, view.next_estimated = nil, nil, false;
+        if (element.show_next_gains) then
+            local confidence;
+            view.next_hp, view.next_mp, confidence = resting.next_gains();
+            view.next_estimated = confidence ~= nil and (confidence.hp == 'estimated' or confidence.mp == 'estimated'
+                or confidence.hp == 'unknown' or confidence.mp == 'unknown' or confidence.transition);
+        end
         -- The full times are only worked out when they show.
-        view.until_full = element.show_until_full and resting.until_full(now) or nil;
-        if (element.show_each_full) then
-            view.hp_full_in, view.mp_full_in, view.has_mp = resting.until_each_full(now);
+        view.until_full, view.full_meta = nil, nil;
+        if (element.show_until_full or element.show_ticks or element.show_each_full) then
+            view.hp_full_in, view.mp_full_in, view.has_mp, view.full_meta = resting.until_each_full(now);
+            if (not full and view.hp_full_in ~= nil and view.mp_full_in ~= nil and view.full_meta) then
+                view.until_full = view.full_meta.full_in;
+            end
+        end
+        if (element.show_goal) then
+            view.goal = resting.goal_progress(now, element.goal_stat, element.goal_mode, element.goal_value);
         end
         view.flash = flash_strength(now, resting.seen_at());
         view.why = resting.blocked_by();
     elseif (sample) then
+        now = sample_clock or now;
         local cycle = now % 10;
         view.fill, view.left, view.gained_hp, view.gained_mp, view.full = cycle / 10, 10 - cycle, 24, 31, false;
+        view.next_hp, view.next_mp, view.next_estimated = 25, 34, false;
         view.why = nil;
         view.until_full = 10 - cycle + 20;
+        view.full_meta = { hp_ticks = 1, mp_ticks = 3, ticks = 3, hp_confidence = 'estimated',
+            mp_confidence = 'estimated', confidence = 'estimated' };
         view.hp_full_in, view.mp_full_in, view.has_mp = 10 - cycle, 10 - cycle + 20, true;
         view.flash = flash_strength(now, now - cycle);
+        view.preview = true;
+        if (preview_state == 'blocked') then view.why = 8; end
+        if (preview_state == 'waiting') then view.left, view.waiting = 0, true; end
+        if (preview_state == 'full') then
+            view.full, view.fill, view.left = true, 1, 0;
+            view.next_hp, view.next_mp, view.until_full = 0, 0, nil;
+            view.hp_full_in, view.mp_full_in = 0, 0;
+        end
+        if (cadence.settings.resting.show_goal) then
+            view.goal = { seconds = 10 - cycle, ticks = 1, reached = preview_state == 'full', confidence = 'estimated' };
+        end
     else
         return;
+    end
+    if (view.goal) then
+        local element = cadence.settings.resting;
+        local unit = element.goal_stat == 'both' and 'HP/MP' or element.goal_stat:upper();
+        local value = element.goal_value;
+        if (element.goal_mode == 'amount' and not view.preview) then
+            if (element.goal_stat == 'hp') then value = view.goal.target_hp;
+            elseif (element.goal_stat == 'mp') then value = view.goal.target_mp;
+            else unit = ('HP %d / MP %d'):format(view.goal.target_hp, view.goal.target_mp); value = nil; end
+        end
+        view.goal.label = unit .. (value and (' ' .. tostring(value)) or '') .. (element.goal_mode == 'percent' and '%' or '');
     end
     hud.draw_resting(view);
 end
@@ -588,20 +775,23 @@ local function update_enemy(now)
     end
     local view = enemy_view;
     view.fill, view.left, view.delay, view.learned, view.waiting = fill, left, enemy_delay, learned, waiting;
-    view.tag, view.holding = tag, holding;
+    view.tag, view.holding, view.preview = tag, holding, false;
     view.on_you = enemy.last_target(id) == cadence.my_id;
     view.name = cadence.enemy_name;
     return true;
 end
 
-local function sample_enemy(now)
+local function sample_enemy(now, preview_state)
     -- The sample runs 1.3 s out of step with the auto attack sample, so the two don't move together.
     local time = now + 1.3;
     local cycle = time % 4.4;
     local view = enemy_view;
     view.fill, view.left = math.min(cycle / 4.0, 1), math.max(4.0 - cycle, 0);
     view.delay, view.learned, view.waiting, view.name, view.tag = 4.0, true, false, 'Goblin Thug', nil;
-    view.holding = nil;
+    view.holding, view.preview = nil, true;
+    if (preview_state == 'blocked') then view.holding = 'spell'; end
+    if (preview_state == 'waiting') then view.waiting, view.fill, view.left = true, 1, 0; end
+    if (preview_state == 'full') then view.fill, view.left = 1, 0; end
     -- Every other round the sample is on you, so the mark's color shows while you pick it.
     view.on_you = math.floor(time / 4.4) % 2 == 1;
 end
@@ -639,7 +829,91 @@ end
 
 -- Does what the settings window asked for this frame. With the sound on, a file picked in the Sound list
 -- opens before the settings are applied, so a file that won't open is tried once and chat says so once.
+local function change_preview(value)
+    local now = os.clock();
+    if (value.paused and not cadence.preview.paused) then
+        cadence.preview_at = now - cadence.preview_offset;
+    elseif (not value.paused and cadence.preview.paused) then
+        cadence.preview_offset = now - cadence.preview_at;
+    end
+    cadence.preview = value;
+end
+
+local function relearn(which)
+    local worked = false;
+    if (which == 'attack') then worked = attack.relearn();
+    elseif (which == 'tp') then worked = tp.relearn();
+    elseif (which == 'enemy') then worked = enemy.relearn(cadence.enemy_id); end
+    cadence.details = nil;
+    if (worked) then say('New observations will replace the previous ' .. which .. ' timing details.');
+    else say('There are no ' .. which .. ' observations to relearn right now.'); end
+end
+
+function ui_tools.undo()
+    if (cadence.unsaved) then ui_tools.changed(); cadence.unsaved = false; end
+    local ok, label = ui_tools.history.undo(cadence.settings);
+    if (not ok) then say('There is no settings change to undo in this session.'); return false; end
+    hud.cancel_layout_gesture();
+    presets.forget_undo();
+    ui_tools.undoing = true;
+    apply_and_save();
+    ui_tools.undoing = nil;
+    say('Undid ' .. label .. '.');
+    return true;
+end
+
+function ui_tools.reset_section(id)
+    local changed, label = ui_tools.history.reset_section(cadence.settings, id, { record = false });
+    if (label == 'section') then
+        say('Type /cadence resetsection attack|resting|timers|enemy|appearance|window|windowcolors|preview|profiles.');
+        return false;
+    end
+    if (changed) then
+        ui_tools.label = label;
+        apply_and_save();
+        say(label .. '. /cadence undo takes it back.');
+    else
+        say('That section already has its default settings.');
+    end
+    return changed;
+end
+
+function ui_tools.apply_layout(id)
+    local ok, layout = ui_tools.layouts.apply(cadence.settings, id);
+    if (not ok) then say('Type /cadence layout minimal|melee|resting|enemy, or /cadence layout preview <name>.'); return false; end
+    profiles.mark_layout(cadence.settings, layout.id);
+    ui_tools.label = 'Apply ' .. layout.name .. ' layout';
+    apply_and_save();
+    say('Applied ' .. layout.name .. '. /cadence undo takes it back.');
+    settings_window.action_message(true, 'Applied ' .. layout.name .. '. Undo last change restores the previous layout.');
+    return true;
+end
+
+function ui_tools.undo_overwrite()
+    local ok, name = profiles.undo_overwrite();
+    if (not ok) then
+        if (name == 'none') then say('There is no overwritten profile to restore.');
+        elseif (name == 'changed' or name == 'missing') then say('That profile changed again, so its newer saved settings were kept.');
+        else say(profiles.problem()); end
+        settings_window.action_message(false, name == 'none' and 'There is no overwritten profile to restore.'
+            or ((name == 'changed' or name == 'missing') and 'The profile changed again, so its newer saved settings were kept.' or profiles.problem()));
+        return false;
+    end
+    profiles.invalidate_status(cadence.settings);
+    say(('The previous saved version of "%s" is restored.'):format(name));
+    settings_window.action_message(true, ('The previous saved version of "%s" is restored.'):format(name));
+    return true;
+end
+
 local function handle_window(result)
+    if (result.label) then ui_tools.label = result.label; end
+    if (result.undo_settings) then ui_tools.undo(); result.changed, result.save = false, false; end
+    if (result.reset_section) then ui_tools.reset_section(result.reset_section); result.changed, result.save = false, false; end
+    if (result.apply_layout) then ui_tools.apply_layout(result.apply_layout); result.changed, result.save = false, false; end
+    if (result.undo_overwrite) then ui_tools.undo_overwrite(); end
+    if (result.save_report and save_report) then save_report(); end
+    if (result.preview) then change_preview(result.preview); end
+    if (result.relearn) then relearn(result.relearn); end
     if (result.show_timers) then
         cadence.hidden = false;
     end
@@ -666,7 +940,7 @@ local function handle_window(result)
     if (result.save) then
         save_settings();
     end
-    if (result.links) then
+    if (result.links and not result.save) then
         save_own();
     end
     if (result.changed or result.save) then
@@ -688,6 +962,9 @@ local function render()
     if (cadence.job_check) then
         check_job();
     end
+    if (entity.Status == STATUS_ENGAGED or entity.Status == STATUS_RESTING or settings_window.is_open()) then
+        check_modifiers(now);
+    end
     track_status(now, entity.Status);
     resting.update(now);
     play_when_full();
@@ -706,6 +983,13 @@ local function render()
     if (s.enemy.enabled and now - cadence.swept_at > SWEEP_SECONDS) then
         cadence.swept_at = now;
         enemy.sweep(now, cadence.enemy_id);
+    end
+    local forced = window_open and cadence.preview.timer ~= 'auto';
+    local preview_now = cadence.preview.paused and cadence.preview_at or (now - cadence.preview_offset);
+    if (forced) then
+        show_resting, show_attack, show_enemy = cadence.preview.timer == 'resting', cadence.preview.timer == 'attack', cadence.preview.timer == 'enemy';
+        resting_sample, attack_sample = show_resting, show_attack;
+        enemy_live = false;
     end
     if (not (show_resting or show_attack or show_enemy or window_open)) then
         -- With nothing on screen, your buffs are only read to see a March, Slow or Elegy wear off.
@@ -738,22 +1022,37 @@ local function render()
     hud.begin_frame();
     hud.join_below(show_enemy and s.enemy.attached and s.attack.enabled);
     if (show_resting) then
-        draw_resting(now, resting_sample);
+        draw_resting(now, resting_sample, forced, cadence.preview.state, preview_now);
     end
     if (show_attack) then
-        draw_attack(now, attack_sample);
+        draw_attack(now, attack_sample, forced, cadence.preview.state, preview_now);
     end
     if (show_enemy) then
         if (not enemy_live) then
-            sample_enemy(now);
+            sample_enemy(preview_now, cadence.preview.state);
         end
         hud.draw_enemy(enemy_view);
     end
-    if (hud.end_frame()) then
+    local need_details = (window_open and settings_window.needs_details()) or hud.needs_details();
+    if (need_details and (cadence.details == nil or now - cadence.details_at >= 0.2)) then
+        cadence.details, cadence.details_at = report_snapshot(now), now;
+    end
+    local moved, before = hud.end_frame(need_details and cadence.details or nil);
+    if (moved) then
+        if (before) then
+            presets.remember_snapshot(before);
+            ui_tools.history.record_patch(s, before, 'Move or resize timers');
+            ui_tools.undoing = true;
+        end
         save_settings();
+        ui_tools.undoing = nil;
     end
 
-    handle_window(settings_window.draw(s, addon.version, cadence.hidden, shift));
+    local window_result = settings_window.draw(s, addon.version, cadence.hidden, shift, cadence.preview, cadence.details);
+    handle_window(window_result);
+    if (cadence.unsaved and (not settings_window.is_open() or (window_result.editing == false and not window_result.changed))) then
+        ui_tools.flush();
+    end
 end
 
 --[[
@@ -774,20 +1073,29 @@ local RESET_ALL_SECONDS = 10;
     characters, which lives in its own file. Preset and Font have commands of their own.
 ]]
 local SETTINGS = {
+    { tab = 'Appearance', section = 'style', word = 'tips', key = 'hover_tips', name = 'Timer hover help' },
+    { tab = 'Appearance', section = 'style', word = 'record', key = 'record_diagnostics', name = 'Record timing details' },
     { tab = 'Timers', section = 'attack',  word = 'seconds',    key = 'show_value',         name = 'Seconds left' },
     { tab = 'Timers', section = 'attack',  word = 'delay',      key = 'show_delay',         name = 'Weapon delay' },
     { tab = 'Timers', section = 'attack',  word = 'tp',         key = 'show_tp',            name = 'Your TP' },
-    { tab = 'Timers', section = 'attack',  word = 'rounds',     key = 'show_tp_rounds',     name = 'Rounds to 1000' },
-    { tab = 'Timers', section = 'attack',  word = 'numbers',    key = 'numbers_only',       name = 'Numbers only' },
+    { tab = 'Preview', section = 'attack', word = 'time', key = 'show_tp_time', name = 'Time to TP goal' },
+    { tab = 'Preview', section = 'resting', word = 'goal', key = 'show_goal', name = 'Recovery goal' },
+    { tab = 'Preview', section = 'style', word = 'guides', key = 'layout_guides', name = 'Alignment guides' },
+    { tab = 'Timers', section = 'attack',  word = 'hits',       key = 'show_tp_hits',       name = 'Successful hits' },
+    { tab = 'Timers', section = 'attack',  word = 'goal',       key = 'tp_goal',           name = 'TP goal', choices = { { 1000, '1000', '1000' }, { 2000, '2000', '2000' }, { 3000, '3000', '3000' } } },
+    { tab = 'Timers', section = 'attack',  word = 'rounds',     key = 'show_tp_rounds',     name = 'Rounds to goal' },
+    { tab = 'Timers', section = 'attack',  word = 'numbers',    key = 'numbers_only',       name = 'Text only' },
     { tab = 'Timers', section = 'attack',  word = 'mark',       key = 'almost_mark',        name = 'Ready mark' },
     { tab = 'Timers', section = 'attack',  word = 'almost',     key = 'almost_ready',       name = 'Almost ready' },
     { tab = 'Timers', section = 'attack',  word = 'range',      key = 'show_reason',        name = 'Range / facing' },
     { tab = 'Timers', section = 'attack',  word = 'why',        key = 'show_why',           name = 'Why it stopped' },
     { tab = 'Timers', section = 'resting', word = 'seconds',    key = 'show_value',         name = 'Seconds left' },
     { tab = 'Timers', section = 'resting', word = 'gains',      key = 'show_gains',         name = 'Last tick gains' },
+    { tab = 'Timers', section = 'resting', word = 'ticks',      key = 'show_ticks',        name = 'Ticks until full' },
+    { tab = 'Timers', section = 'resting', word = 'nextgains',  key = 'show_next_gains',    name = 'Next tick gains' },
     { tab = 'Timers', section = 'resting', word = 'untilfull',  key = 'show_until_full',    name = 'Time until full' },
     { tab = 'Timers', section = 'resting', word = 'fulltimes',  key = 'show_each_full',     name = 'Full times' },
-    { tab = 'Timers', section = 'resting', word = 'numbers',    key = 'numbers_only',       name = 'Numbers only' },
+    { tab = 'Timers', section = 'resting', word = 'numbers',    key = 'numbers_only',       name = 'Text only' },
     { tab = 'Timers', section = 'resting', word = 'hidefull',   key = 'hide_when_full',     name = 'Hide once full' },
     { tab = 'Timers', section = 'resting', word = 'flash',      key = 'flash_on_tick',      name = 'Flash on each tick' },
     { tab = 'Timers', section = 'resting', word = 'why',        key = 'show_why',           name = 'Why it can\'t heal' },
@@ -805,23 +1113,23 @@ local SETTINGS = {
     { tab = 'Enemy',  section = 'enemy',   word = 'effects',    key = 'show_effects',       name = 'Slow and haste' },
     { tab = 'Enemy',  section = 'enemy',   word = 'tpmove',     key = 'show_holds',         name = 'TP move / casting' },
     { tab = 'Enemy',  section = 'enemy',   word = 'onyou',      key = 'show_on_you',        name = 'On you' },
-    { tab = 'Enemy',  section = 'enemy',   word = 'numbers',    key = 'numbers_only',       name = 'Numbers only' },
+    { tab = 'Enemy',  section = 'enemy',   word = 'numbers',    key = 'numbers_only',       name = 'Text only' },
     { tab = 'Enemy',  section = 'enemy',   word = 'mark',       key = 'almost_mark',        name = 'Ready mark' },
     { tab = 'Enemy',  section = 'enemy',   word = 'almost',     key = 'almost_ready',       name = 'Almost ready' },
-    { tab = 'Look',   section = 'style',   word = 'windowlook', key = 'window_matches_look', name = 'Window matches the look' },
-    { tab = 'Look',   section = 'style',   word = 'labels',     key = 'show_labels',        name = 'Show labels' },
-    { tab = 'Look',   section = 'attack',  word = 'label',      key = 'show_label',         name = 'Show its name' },
-    { tab = 'Look',   section = 'resting', word = 'label',      key = 'show_label',         name = 'Show its name' },
-    { tab = 'Look',   section = 'enemy',   word = 'label',      key = 'show_label',         name = 'Show its name' },
-    { tab = 'Look',   section = 'style',   word = 'background', key = 'panel',              name = 'Background' },
-    { tab = 'Look',   section = 'style',   word = 'border',     key = 'border',             name = 'Border' },
-    { tab = 'Look',   section = 'style',   word = 'accent',     key = 'accent',             name = 'Accent stripe' },
-    { tab = 'Look',   section = 'style',   word = 'outline',    key = 'text_outline',       name = 'Text outline' },
-    { tab = 'Look',   section = 'style',   word = 'shadow',     key = 'text_shadow',        name = 'Text shadow' },
-    { tab = 'Look',   section = 'style',   word = 'drain',      key = 'bar_drains',         name = 'Drain instead of fill' },
-    { tab = 'Look',   section = 'style',   word = 'onespot',    key = 'shared_spot',        name = 'Share one spot' },
-    { tab = 'Look',   section = 'style',   word = 'onelayout',  layout = true,              name = 'One layout for all characters' },
-    { tab = 'Look',   section = 'style',   word = 'peek',       key = 'see_through',        name = 'Peek with Shift' },
+    { tab = 'Appearance',   section = 'style',   word = 'windowlook', key = 'window_matches_look', name = 'Window matches the look' },
+    { tab = 'Appearance',   section = 'style',   word = 'labels',     key = 'show_labels',        name = 'Show labels' },
+    { tab = 'Appearance',   section = 'attack',  word = 'label',      key = 'show_label',         name = 'Show its name' },
+    { tab = 'Appearance',   section = 'resting', word = 'label',      key = 'show_label',         name = 'Show its name' },
+    { tab = 'Appearance',   section = 'enemy',   word = 'label',      key = 'show_label',         name = 'Show its name' },
+    { tab = 'Appearance',   section = 'style',   word = 'background', key = 'panel',              name = 'Background' },
+    { tab = 'Appearance',   section = 'style',   word = 'border',     key = 'border',             name = 'Border' },
+    { tab = 'Appearance',   section = 'style',   word = 'accent',     key = 'accent',             name = 'Accent stripe' },
+    { tab = 'Appearance',   section = 'style',   word = 'outline',    key = 'text_outline',       name = 'Text outline' },
+    { tab = 'Appearance',   section = 'style',   word = 'shadow',     key = 'text_shadow',        name = 'Text shadow' },
+    { tab = 'Appearance',   section = 'style',   word = 'drain',      key = 'bar_drains',         name = 'Drain instead of fill' },
+    { tab = 'Appearance',   section = 'style',   word = 'onespot',    key = 'shared_spot',        name = 'Share one spot' },
+    { tab = 'Appearance',   section = 'style',   word = 'onelayout',  layout = true,              name = 'One layout for all characters' },
+    { tab = 'Appearance',   section = 'style',   word = 'peek',       key = 'see_through',        name = 'Peek with Shift' },
 };
 
 --[[
@@ -838,6 +1146,9 @@ local NUMBERS = {
     { tab = 'Timers', section = 'attack', word = 'width', key = 'width', name = 'Width',
         what = 'how wide the timer is',
         said = 'The auto attack timer\'s width is set to %s px.' },
+    { tab = 'Timers', section = 'attack', word = 'height', key = 'height_scale', name = 'Height',
+        places = 2, what = 'how tall the whole timer is, including text and spacing',
+        said = 'The auto attack timer\'s height is set to %sx.' },
     { tab = 'Timers', section = 'attack', word = 'barheight', key = 'bar_height', name = 'Bar height',
         what = 'how thick its bar is',
         said = 'The auto attack timer\'s bar height is set to %s px.' },
@@ -848,6 +1159,9 @@ local NUMBERS = {
     { tab = 'Timers', section = 'resting', word = 'width', key = 'width', name = 'Width',
         what = 'how wide the timer is',
         said = 'The resting timer\'s width is set to %s px.' },
+    { tab = 'Timers', section = 'resting', word = 'height', key = 'height_scale', name = 'Height',
+        places = 2, what = 'how tall the whole timer is, including text and spacing',
+        said = 'The resting timer\'s height is set to %sx.' },
     { tab = 'Timers', section = 'resting', word = 'barheight', key = 'bar_height', name = 'Bar height',
         what = 'how thick its bar is',
         said = 'The resting timer\'s bar height is set to %s px.' },
@@ -861,6 +1175,9 @@ local NUMBERS = {
     { tab = 'Enemy', section = 'enemy', word = 'width', key = 'width', name = 'Width',
         what = 'how wide the timer is',
         said = 'The enemy attack timer\'s width is set to %s px.' },
+    { tab = 'Enemy', section = 'enemy', word = 'height', key = 'height_scale', name = 'Height',
+        places = 2, what = 'how tall the whole timer is, including text and spacing',
+        said = 'The enemy attack timer\'s height is set to %sx.' },
     { tab = 'Enemy', section = 'enemy', word = 'barheight', key = 'bar_height', name = 'Bar height',
         what = 'how thick its bar is',
         said = 'The enemy attack timer\'s bar height is set to %s px.' },
@@ -868,28 +1185,28 @@ local NUMBERS = {
         places = 1,
         what = 'how many seconds before the monster\'s attack the almost ready color starts',
         said = 'The enemy bar turns the almost ready color %s s before the monster attacks.' },
-    { tab = 'Look', section = 'style', word = 'scale', key = 'scale', name = 'Scale', places = 2,
+    { tab = 'Appearance', section = 'style', word = 'scale', key = 'scale', name = 'Scale', places = 2,
         what = 'how big the timers are',
         said = 'The timers\' scale is set to %sx.' },
-    { tab = 'Look', section = 'style', word = 'textsize', key = 'font_size', name = 'Text size',
+    { tab = 'Appearance', section = 'style', word = 'textsize', key = 'font_size', name = 'Text size',
         what = 'how big the numbers are',
         said = 'The timers\' text size is set to %s px.' },
-    { tab = 'Look', section = 'style', word = 'detailsize', key = 'detail_size', name = 'Detail size', auto = 0,
+    { tab = 'Appearance', section = 'style', word = 'detailsize', key = 'detail_size', name = 'Detail size', auto = 0,
         what = 'how big the small text is. Auto follows Text size',
         said = 'The timers\' detail size is set to %s px.', said_auto = 'The timers\' detail size is set to auto.' },
-    { tab = 'Look', section = 'style', word = 'labelsize', key = 'label_size', name = 'Label size', auto = 0,
+    { tab = 'Appearance', section = 'style', word = 'labelsize', key = 'label_size', name = 'Label size', auto = 0,
         what = 'how big the timer names are. Auto follows Text size',
         said = 'The timers\' label size is set to %s px.', said_auto = 'The timers\' label size is set to auto.' },
-    { tab = 'Look', section = 'style', word = 'corners', key = 'rounding', name = 'Corner roundness',
+    { tab = 'Appearance', section = 'style', word = 'corners', key = 'rounding', name = 'Corner roundness',
         what = 'how round the timers\' corners are',
         said = 'The timers\' corner roundness is set to %s px.' },
-    { tab = 'Window', section = 'window_style', word = 'windowfontsize', key = 'font_size', name = 'Font size',
+    { tab = 'Appearance', section = 'window_style', word = 'windowfontsize', key = 'font_size', name = 'Font size',
         what = 'the settings window\'s font size',
         said = 'The settings window\'s font size is set to %s px.' },
-    { tab = 'Window', section = 'window_style', word = 'windowcorners', key = 'rounding', name = 'Corner roundness',
+    { tab = 'Appearance', section = 'window_style', word = 'windowcorners', key = 'rounding', name = 'Corner roundness',
         what = 'how round the settings window\'s corners are',
         said = 'The settings window\'s corner roundness is set to %s px.' },
-    { tab = 'Window', section = 'window_style', word = 'windowspacing', key = 'spacing', name = 'Spacing',
+    { tab = 'Appearance', section = 'window_style', word = 'windowspacing', key = 'spacing', name = 'Spacing',
         what = 'the space between the settings window\'s rows',
         said = 'The space between the settings window\'s rows is set to %s px.' },
 };
@@ -1169,16 +1486,16 @@ local function print_timer_help(key)
     say(('/cadence color %s <rrggbb>  sets one of its colors.'):format(color_words(key)));
 end
 
--- The Look tab's sliders with their ranges, the labels you can type and the colors on the Look tab.
+-- Timer sizes, labels and colors in Appearance.
 local function print_look_help()
     for _, row in ipairs(NUMBERS) do
-        if (row.tab == 'Look') then
+        if (row.tab == 'Appearance' and row.section == 'style') then
             say_number(row);
         end
     end
     say('/cadence attack|resting|enemy labeltext <text>  gives that timer a name of your own, like AA. "" puts its '
         .. 'own name back.');
-    say(('/cadence color %s <rrggbb>  sets one of the Look tab\'s colors. /cadence help colors lists every color.')
+    say(('/cadence color %s <rrggbb>  sets one of the Appearance tab\'s colors. /cadence help colors lists every color.')
         :format(color_words('style')));
 end
 
@@ -1204,15 +1521,16 @@ local function print_preset_help()
     end
     say(('/cadence preset <name>  picks a preset, the same as the Preset list. The presets are %s.')
         :format(listed(names)));
-    say('/cadence undo  puts back the look you had before your last preset or Reset look. It goes back one step.');
+    say('/cadence undo  takes back up to eight settings changes, including timer moves, profile loads and presets. /cadence skin is another name for preset.');
 end
 
--- The Window tab's commands.
+-- Commands for the Window section in Appearance.
 local function print_window_help()
+    say('/cadence tips [on|off]  sets Timer hover help.');
     say(('/cadence windowfont <name>  picks the settings window\'s font, with or without its spaces. The fonts are '
         .. '%s.'):format(listed(WINDOW_FONT_NAMES)));
     for _, row in ipairs(NUMBERS) do
-        if (row.tab == 'Window') then
+        if (row.tab == 'Appearance' and row.section == 'window_style') then
             say_number(row);
         end
     end
@@ -1221,10 +1539,10 @@ local function print_window_help()
     say('/cadence chatcolor <what> <color>  sets one of cadence\'s chat colors. /cadence help chatcolors lists them.');
 end
 
--- The Window colors tab's command, and every color it takes under its heading on that tab.
+-- Window colors in Appearance, grouped by their headings.
 local function print_window_color_help()
     say('/cadence windowcolor <what> <rrggbb>  sets one of the settings window\'s colors. <what> is one of these, '
-        .. 'under the headings on the Window colors tab.');
+        .. 'under the Window colors section in Appearance.');
     for _, group in ipairs(theme.WINDOW_COLOR_GROUPS) do
         local keys = {};
         for _, row in ipairs(group.rows) do
@@ -1248,8 +1566,8 @@ local CHAT_COLORS_PER_LINE = 8;
 
 -- The chat color command, the parts of a line it colors, and every chat color by name and number.
 local function print_chat_color_help()
-    say(('/cadence chatcolor <what> <color>  sets one of cadence\'s chat colors, the same as the CHAT section of the '
-        .. 'Window tab. <what> is %s.'):format(listed(CHAT_PARTS, 'or')));
+    say(('/cadence chatcolor <what> <color>  sets one of cadence\'s chat colors, the same as the CHAT controls under '
+        .. 'Window in Appearance. <what> is %s.'):format(listed(CHAT_PARTS, 'or')));
     say('<color> is one of these names or its number. A name works with or without its spaces, like lawngreen.');
     local names = {};
     for i, entry in ipairs(chat_colors.PALETTE) do
@@ -1300,11 +1618,12 @@ end
 -- The Profiles tab's commands, then the names of your profiles and your job links.
 local function print_profile_help()
     say('/cadence profile save <name>  saves your settings as a new profile. Every character shares your profiles.');
-    say('/cadence profile overwrite <name>  saves your settings over that profile.');
+    say('/cadence profile overwrite <name>  saves your settings over that profile. /cadence profile undooverwrite restores the previous copy if it is unchanged.');
     say('/cadence profile load <name>  loads a profile. It holds every setting but where the settings window sits, '
-        .. 'its size and your job links.');
+        .. 'its size, hidden tabs and your job links.');
     say('/cadence profile rename <old> <new>  gives a profile a new name. Your job links to it follow.');
     say('/cadence profile delete <name>  deletes a profile and your job links to it.');
+    say('/cadence profile undo  restores the last deleted profile and any unchanged job links.');
     say(('/cadence joblink <job> <profile>  loads that profile when you change to that main job and zone. Each '
         .. 'character has its own job links. The jobs are %s.'):format(JOB_LIST));
     say('/cadence joblink <job> none  stops that job loading a profile.');
@@ -1318,7 +1637,7 @@ local function print_reset_help()
     say('/cadence reset  puts every timer back at its default position. On a screen too short for them, they '
         .. 'start higher up.');
     say('/cadence reset look  puts sizes, colors, the card, corner roundness, text shadow and outline, labels, '
-        .. 'font, Numbers only, Ready mark, Drain instead of fill, the chat colors and the settings window\'s look '
+        .. 'font, Text only, Ready mark, Drain instead of fill, the chat colors and the settings window\'s look '
         .. 'and font back to default. /cadence undo takes it back.');
     say(('/cadence reset all  puts every setting back to its default and clears your job links. Your saved '
         .. 'profiles stay. Type it twice within %d seconds.'):format(RESET_ALL_SECONDS));
@@ -1329,7 +1648,7 @@ local function print_help(word)
     if (TIMER_NAMES[word] ~= nil) then
         print_timer_help(word);
         return;
-    elseif (word == 'preset' or word == 'undo') then
+    elseif (word == 'preset' or word == 'skin' or word == 'undo') then
         print_preset_help();
         return;
     elseif (word == 'font') then
@@ -1338,6 +1657,19 @@ local function print_help(word)
         return;
     elseif (word == 'reset') then
         print_reset_help();
+        return;
+    elseif (word == 'ui' or word == 'layout' or word == 'tabs' or word == 'resetsection') then
+        say('/cadence layout minimal|melee|resting|enemy  picks timer readouts and keeps your look and positions.');
+        say('/cadence layout preview <name>  shows the proposed layout before you apply it.');
+        say('/cadence resetsection attack|resting|timers|enemy|appearance|window|windowcolors|preview|profiles  resets one section.');
+        say('/cadence tab <name> on|off  shows or hides a settings tab. Appearance always stays available. /cadence tabs all shows every tab.');
+        say('/cadence preview inline [on|off]  shows a sample inside Appearance. Search Previous and Next step through matching settings.');
+        say('/cadence details [attack|tp|resting|enemy]  opens the matching timing details.');
+        return;
+    elseif (word == 'appearance') then
+        print_look_help();
+        print_window_help();
+        print_window_color_help();
         return;
     elseif (word == 'look') then
         print_look_help();
@@ -1354,15 +1686,24 @@ local function print_help(word)
     elseif (word == 'chatcolors') then
         print_chat_color_help();
         return;
+    elseif (word == 'preview' or word == 'details') then
+        say('/cadence preview auto|attack|resting|enemy [normal|blocked|waiting|full]  selects a sample while settings are open.');
+        say('/cadence preview pause|resume  stops or starts the sample animation. /cadence preview inline [on|off] shows the Appearance sample.');
+        say('/cadence attack time [on|off]  shows estimated seconds to your TP goal.');
+        say('/cadence resting goal [on|off]  shows your recovery goal.');
+        say('/cadence resting goal hp|mp|both percent|amount <number>  picks your recovery goal.');
+        say('/cadence guides [on|off]  shows alignment guides and snaps nearby edges while you move a timer.');
+        say('/cadence relearn attack|tp|enemy  starts fresh observations without moving the current countdown. /cadence details [attack|tp|resting|enemy] opens its details.');
+        return;
     elseif (word == 'profiles' or word == 'profile') then
         print_profile_help();
         return;
     end
 
     say('/cadence  opens or closes the settings window. Leave out on|off and a switch flips.');
-    say('/cadence hide|show  hides the timers until you type it again, or brings them back.');
-    say('/cadence info  says what cadence has worked out about you, like your delay and TP per hit.');
-    say('/cadence help attack|resting|enemy|look|colors|preset|font|reset|window|windowcolors|chatcolors|profiles  '
+    say('/cadence hide|show  hides or shows the timers. /cadence record, /cadence guides and /cadence tips [on|off] set recording, alignment and hover help.');
+    say('/cadence info [details]  explains your timing and bonuses. /cadence report saves a local timing report.');
+    say('/cadence help attack|resting|enemy|appearance|colors|preset|font|reset|chatcolors|profiles|preview|details|ui  '
         .. 'tells you more about one of them.');
     say('/cadence attack|resting|enemy [on|off]  turns a timer on or off.');
     say('Timers tab');
@@ -1373,19 +1714,50 @@ local function print_help(word)
     say_tab('Enemy');
     say('/cadence enemy <part> [on|off]  sets one of its boxes, like /cadence enemy attach on. A slider takes a '
         .. 'number, like /cadence enemy width 300.');
-    say('Look tab');
+    say('Appearance tab');
     say(('/cadence preset %s  picks a preset. /cadence undo takes it back.'):format(table.concat(presets.IDS, '|')));
-    say('/cadence font <name>  picks the font, with or without its spaces.');
+    say('/cadence font <name>  picks the font. /cadence lock|unlock stops or allows moving with Shift + drag.');
     say('/cadence attack|resting|enemy label [on|off]  shows or hides that timer\'s name. Type your own with '
         .. 'labeltext, like /cadence attack labeltext AA.');
-    say_tab('Look');
+    say_tab('Appearance');
     say('/cadence color <what> <rrggbb>  sets one of the timers\' colors. /cadence help colors lists them.');
-    say('/cadence lock|unlock  stops or allows moving with Shift + drag.');
+
     say('/cadence reset [look|all]  puts every timer back at its default position, or the look, or every setting.');
 end
 
 -- What cadence has worked out about you, to check in game or paste into a bug report. Nothing about monsters.
-local function print_info()
+local function print_modifier_details(model)
+    local groups, names = {}, {};
+    for _, row in ipairs(model.contributions or {}) do
+        local field = row.field;
+        if (groups[field] == nil) then groups[field] = {}; names[#names + 1] = field; end
+        local kind = row.kind or 'other';
+        groups[field][kind] = (groups[field][kind] or 0) + row.value;
+    end
+    table.sort(names);
+    for _, field in ipairs(names) do
+        local kinds, parts = {}, {};
+        for kind in pairs(groups[field]) do kinds[#kinds + 1] = kind; end
+        table.sort(kinds);
+        for _, kind in ipairs(kinds) do
+            local value = groups[field][kind];
+            local amount = ('%+g'):format(value);
+            if (field:find('haste', 1, true)) then amount = ('%+g%%'):format(value / 100);
+            elseif (field == 'delay_flat') then amount = amount .. ' ms';
+            elseif (field == 'delay_percent') then amount = amount .. '%'; end
+            parts[#parts + 1] = kind:gsub('_', ' ') .. ' ' .. amount;
+        end
+        say(field:gsub('_', ' ') .. ': ' .. table.concat(parts, ', ') .. '.');
+    end
+    local missing = {};
+    for _, row in ipairs(model.unknown_sources or {}) do
+        local name = row.name or (row.id and ('item ' .. tostring(row.id))) or row.kind or 'input';
+        local text = name:gsub('_', ' ') .. ': ' .. row.reason .. ' (' .. row.field:gsub('_', ' ') .. ').';
+        if (not missing[text]) then say(text); missing[text] = true; end
+    end
+end
+
+local function print_info(detailed)
     local estimate, key, loadout = current_delay();
     local attack_delay, learned, estimated = attack.delay_in_use(estimate, key);
     local kept = attack.kept_count();
@@ -1401,7 +1773,7 @@ local function print_info()
     else
         say(('Your auto attack delay is %.2f s est. It isn\'t learned from your attacks yet.'):format(attack_delay));
     end
-    say(('Your weapons, job and buffs alone say %.2f s.'):format(estimated));
+    say(('Your weapons, known gear, job and buffs say %.2f s.'):format(estimate));
     if (kept == 0) then
         say('cadence has no learned delays saved yet.');
     else
@@ -1431,6 +1803,56 @@ local function print_info()
         say('The resting timer has seen enough ticks to know the 9, 9, 12 pattern.');
     else
         say('The resting timer hasn\'t seen enough ticks to know the 9, 9, 12 pattern yet.');
+    end
+    local model = loadout.modifiers;
+    say(('Known modifiers: Store TP %+d, resting HP %+d, resting MP %+d.'):format(
+        model.store_tp, model.hp_heal, model.mp_heal));
+    say(('Before other recovery, resting starts at %d HP and %d MP, increasing by %d HP and %d MP per tick.'):format(
+        model.hp_base, model.mp_base, model.hp_step, model.mp_step));
+    if (#model.unknown > 0) then
+        say('Still estimated: ' .. table.concat(model.unknown, ', ') .. '. Your actual gains fill in what is missing.');
+    end
+    local next_hp, next_mp, confidence = resting.next_gains();
+    if (next_hp ~= nil) then
+        local estimated_gain = confidence.hp == 'estimated' or confidence.mp == 'estimated'
+            or confidence.hp == 'unknown' or confidence.mp == 'unknown' or confidence.transition;
+        say(('Your next resting tick is %d HP and %d MP%s, before Regen or Refresh.'):format(
+            next_hp, next_mp, estimated_gain and ' est.' or ''));
+    end
+    if (detailed) then
+        say('Modifier sources below describe the model. Observed gains already include their bonuses.');
+        print_modifier_details(model);
+        local a, t = attack.info(os.clock(), estimate, key), tp.info(os.clock());
+        say(('Attack timing: %s, %d recent intervals, %d rejected.'):format(a.source, a.samples, a.rejected));
+        if (a.last_rejection) then say('Last attack interval excluded: ' .. a.last_rejection .. '.'); end
+        if (a.next_interval_changed) then say('Your current countdown is already scheduled. The next attack uses the new speed bonuses.'); end
+        say(('TP: %s, %d accepted samples, %d recent rounds.'):format(t.source, t.samples, t.recent_rounds));
+        if (t.last_rejection) then say('Last TP sample excluded: ' .. t.last_rejection .. '.'); end
+        say(('Rules: %s, source %s.'):format(modifier_data.source.profile, modifier_data.source.ref:sub(1, 12)));
+        say('Use /cadence record on to keep recent timing details, then /cadence report to save a local report.');
+    end
+end
+
+report_snapshot = function (now)
+    local loadout = read_loadout(now);
+    return {
+        addon = { name = addon.name, version = addon.version },
+        source = modifier_data.source,
+        loadout = stat_state.snapshot and stat_state.snapshot() or nil,
+        modifiers = loadout.modifiers,
+        speed = delay.breakdown(loadout),
+        attack = attack.info(now, cadence.delay_estimate, cadence.delay_key), tp = tp.info(now),
+        resting = resting.info and resting.info(now) or nil,
+        enemy = enemy.info and enemy.info(now, cadence.enemy_id) or nil,
+    };
+end
+
+save_report = function ()
+    local path, problem = diagnostics.save(report_snapshot(os.clock()));
+    if (path) then
+        say('Timing report saved to ' .. path);
+    else
+        say(problem);
     end
 end
 
@@ -1470,8 +1892,7 @@ local function run_setting(row, value)
     local timer = TIMER_NAMES[row.section];
     local line = ('%s is %s%s.'):format(row.name, on and 'on' or 'off', timer and (' for ' .. timer:lower()) or '');
     if (row.layout) then
-        share_layout(on);
-        say(line);
+        if (share_layout(on)) then say(line); end
         return;
     end
     cadence.settings[row.section][row.key] = on;
@@ -1515,12 +1936,7 @@ local function set_preset(words)
 end
 
 local function undo_look()
-    if (not presets.undo(cadence.settings)) then
-        say('There\'s nothing to undo. Undo only takes back your last preset or Reset look.');
-        return;
-    end
-    apply_and_save();
-    say('Your look is back to how it was before your last preset or Reset look.');
+    ui_tools.undo();
 end
 
 local function set_font(words)
@@ -1655,7 +2071,7 @@ local function clean_typed(text)
 end
 
 --[[
-    Types a timer's label, the same as its box under LABELS on the Look tab. `text` is everything after
+    Types a timer's label, the same as its box under LABELS on the Appearance tab. `text` is everything after
     labeltext, so it needs no quotes, or nil when nothing follows labeltext. Empty quotes put the
     timer's own name back. Like the box, it keeps up to 23 plain characters.
 ]]
@@ -1752,7 +2168,7 @@ end
     change it.
 ]]
 local PROFILE_USAGE = 'Type /cadence profile save|overwrite|load|delete <name>, or /cadence profile rename <old> '
-    .. '<new>. Put a name with spaces in quotes.';
+    .. '<new>. Put a name with spaces in quotes. /cadence profile undo restores a deletion. /cadence profile undooverwrite restores an overwrite.';
 local NO_PROFILE = 'There\'s no profile called "%s". /cadence help profiles lists yours.';
 
 -- A profile name typed after a command, cleaned. Nil after saying there's nothing in it to use.
@@ -1793,6 +2209,7 @@ local function save_profile(words)
     elseif (not profiles.save(cadence.settings, name)) then
         say(profiles.problem());
     else
+        save_settings();
         say(('Your settings are saved as the profile "%s".'):format(name));
     end
 end
@@ -1806,6 +2223,7 @@ local function overwrite_profile(words)
         say(profiles.problem());
         return;
     end
+    save_settings();
     say(('Your settings are saved over the profile "%s".'):format(name));
 end
 
@@ -1815,7 +2233,10 @@ local function load_profile(words)
     if (name == nil) then
         return;
     end
-    profiles.load(cadence.settings, name);
+    if (not profiles.load(cadence.settings, name)) then
+        say(profiles.problem());
+        return;
+    end
     apply_and_save();
     say(('Your settings now come from the profile "%s".'):format(name));
 end
@@ -1855,29 +2276,45 @@ local function rename_profile(old_words, new_words)
         say(profiles.NO_LINK_NAME:format(new));
         return;
     end
-    local ok, relinked = profiles.rename(cadence.settings, old, new);
+    local ok, relinked, renamed_source = profiles.rename(cadence.settings, old, new);
     if (not ok) then
         say(profiles.problem());
         return;
     end
-    if (relinked) then
+    if (renamed_source) then
+        save_settings();
+    elseif (relinked) then
         save_own();
     end
     say(('The profile "%s" is now called "%s".'):format(old, new));
 end
 
+local function undo_profile_delete()
+    local ok, name, relinked = profiles.undo_delete(cadence.settings);
+    if (not ok) then
+        if (name == 'none') then say('There is no deleted profile to restore.');
+        elseif (name == 'exists') then say('A profile with that name already exists. Rename it before undoing the deletion.');
+        else say(profiles.problem()); end
+        return;
+    end
+    if (relinked) then save_own(); end
+    say(('The profile "%s" is restored.'):format(name));
+end
+
 -- Each profile action by its word.
 local PROFILE_ACTIONS = {
     save = save_profile, overwrite = overwrite_profile, load = load_profile, delete = delete_profile,
-    rename = rename_profile,
+    rename = rename_profile, undo = undo_profile_delete, undooverwrite = ui_tools.undo_overwrite,
 };
 
 -- Rename takes two names. The others take everything after the action word as one name.
 local function run_profile(args)
     local action = args[3] and PROFILE_ACTIONS[args[3]:lower()];
     local rename = action == rename_profile;
+    local no_name = action == undo_profile_delete or action == ui_tools.undo_overwrite;
     local words = table.concat(args, ' ', 4);
-    if (action == nil or words == '' or (rename and #args ~= 5)) then
+    if (action == nil or (not no_name and words == '') or (rename and #args ~= 5)
+        or (no_name and #args ~= 3)) then
         say(PROFILE_USAGE);
         return;
     end
@@ -1972,9 +2409,12 @@ local function reset_all()
     for job in pairs(links) do
         links[job] = nil;
     end
+    hud.cancel_layout_gesture();
     presets.forget_undo();
+    ui_tools.navigation.restore(cadence.settings.window.tabs);
     apply_settings();
     reset_positions();
+    ui_tools.clear();
     save_settings();
     if (shared_layout.is_on()) then
         save_own();
@@ -2012,6 +2452,41 @@ local function set_timer(key, word)
     say(('%s is %s.'):format(TIMER_NAMES[key], timer.enabled and 'on' or 'off'));
 end
 
+local function set_recovery_goal(stat, mode, number)
+    local value = tonumber(number);
+    local maximum = mode == 'percent' and 100 or 99999;
+    if ((stat ~= 'hp' and stat ~= 'mp' and stat ~= 'both') or (mode ~= 'percent' and mode ~= 'amount')
+        or value == nil or value < 1 or value > maximum or value ~= math.floor(value)) then
+        say('Type /cadence resting goal hp|mp|both percent|amount <whole number>. Percent is 1 to 100.');
+        return;
+    end
+    local element = cadence.settings.resting;
+    element.goal_stat, element.goal_mode, element.goal_value, element.show_goal = stat, mode, value, true;
+    apply_and_save();
+    say(('Your recovery goal is %s %d%s.'):format(stat == 'both' and 'HP/MP' or stat:upper(), value, mode == 'percent' and '%' or ''));
+end
+
+local function set_preview(timer, state)
+    local current = cadence.preview;
+    local value = { timer = current.timer, state = current.state, paused = current.paused };
+    if (timer == 'pause' or timer == 'resume') then
+        value.paused = timer == 'pause';
+    elseif (timer == 'auto' or timer == 'attack' or timer == 'resting' or timer == 'enemy') then
+        value.timer = timer;
+        if (state ~= nil) then
+            if (state ~= 'normal' and state ~= 'blocked' and state ~= 'waiting' and state ~= 'full') then
+                say('Preview states are normal, blocked, waiting and full.'); return;
+            end
+            value.state = state;
+        end
+    else
+        say('Type /cadence preview auto|attack|resting|enemy [normal|blocked|waiting|full], or pause|resume.'); return;
+    end
+    change_preview(value);
+    settings_window.set_open(true);
+    cadence.broken = false;
+end
+
 ashita.events.register('command', 'cadence_command', function (e)
     local args = e.command:args();
     if (#args == 0) then
@@ -2025,15 +2500,23 @@ ashita.events.register('command', 'cadence_command', function (e)
 
     local sub = args[2] and args[2]:lower() or nil;
     local word = args[3] and args[3]:lower() or nil;
+    if (cadence.unsaved and sub ~= nil) then
+        if (sub == 'undo') then ui_tools.changed(); cadence.unsaved = false;
+        else ui_tools.flush(); end
+    end
+    if (sub ~= nil) then ui_tools.label = 'Command: ' .. table.concat(args, ' ', 2); end
     -- A timer's part or slider comes after the timer's word. Any other setting is the word itself.
     local timer = TIMER_NAMES[sub] ~= nil;
     local row = timer and find_setting(sub, word) or find_setting('style', sub);
     local number_row = timer and find_number(sub, word) or find_number(nil, sub);
     if (sub == nil) then
+        if (settings_window.is_open()) then ui_tools.flush(); end
         settings_window.set_open(not settings_window.is_open());
         cadence.broken = false;
     elseif (timer and (word == nil or ON_WORDS[word] ~= nil)) then
         set_timer(sub, word);
+    elseif (sub == 'resting' and word == 'goal' and args[4] ~= nil and ON_WORDS[args[4]:lower()] == nil) then
+        set_recovery_goal(args[4]:lower(), args[5] and args[5]:lower(), args[6]);
     elseif (timer and row ~= nil) then
         run_setting(row, args[4] and args[4]:lower());
     elseif (timer and number_row ~= nil) then
@@ -2050,6 +2533,45 @@ ashita.events.register('command', 'cadence_command', function (e)
         run_setting(row, word);
     elseif (number_row ~= nil) then
         set_number(number_row, word);
+    elseif (sub == 'preview' and word == 'inline') then
+        local on = args[4] and ON_WORDS[args[4]:lower()];
+        if (args[4] ~= nil and on == nil) then say('Type /cadence preview inline on|off.');
+        else
+            if (on == nil) then on = not settings_window.inline_preview_enabled(); end
+            settings_window.set_inline_preview(on);
+            settings_window.select_tab('Appearance');
+            settings_window.set_open(true);
+        end
+    elseif (sub == 'preview') then
+        set_preview(word, args[4] and args[4]:lower());
+    elseif (sub == 'details') then
+        if (settings_window.open_details(word)) then settings_window.set_open(true); cadence.broken = false;
+        else say('Type /cadence details [attack|tp|resting|enemy].'); end
+    elseif (sub == 'layout' and word == 'preview') then
+        if (settings_window.preview_layout(args[4])) then settings_window.set_open(true); cadence.broken = false;
+        else say('Type /cadence layout preview minimal|melee|resting|enemy.'); end
+    elseif (sub == 'layout') then
+        ui_tools.apply_layout(word);
+    elseif (sub == 'resetsection') then
+        ui_tools.reset_section(table.concat(args, ' ', 3));
+    elseif (sub == 'tabs' and word == 'all') then
+        ui_tools.navigation.restore(cadence.settings.window.tabs);
+        save_settings();
+        say('Every settings tab is shown.');
+    elseif (sub == 'tab') then
+        local on = args[#args] and ON_WORDS[args[#args]:lower()];
+        local name = #args > 3 and table.concat(args, ' ', 3, #args - 1) or '';
+        local page = ui_tools.navigation.canonical(name);
+        if (on == nil or page == nil or (page == 'Appearance' and not on)) then
+            say('Type /cadence tab timers|enemy|appearance|preview|details|profiles on|off. Appearance always stays available.');
+        else
+            ui_tools.navigation.set_visible(cadence.settings.window.tabs, page, on);
+            save_settings();
+            say('Settings tab visibility updated.');
+        end
+    elseif (sub == 'relearn') then
+        if (word == 'attack' or word == 'tp' or word == 'enemy') then relearn(word);
+        else say('Type /cadence relearn attack|tp|enemy.'); end
     elseif (sub == 'color') then
         set_color(word, args[4]);
     elseif (sub == 'windowfont') then
@@ -2062,7 +2584,7 @@ ashita.events.register('command', 'cadence_command', function (e)
         run_profile(args);
     elseif (sub == 'joblink') then
         set_job_link(args[3], table.concat(args, ' ', 4));
-    elseif (sub == 'preset') then
+    elseif (sub == 'preset' or sub == 'skin') then
         set_preset(table.concat(args, ' ', 3));
     elseif (sub == 'undo') then
         undo_look();
@@ -2078,13 +2600,16 @@ ashita.events.register('command', 'cadence_command', function (e)
         cadence.hidden = sub == 'hide' and not cadence.hidden;
         say(cadence.hidden and 'The timers are hidden. Type /cadence hide again to bring them back.'
             or 'The timers are back.');
+    elseif (sub == 'report') then
+        save_report();
     elseif (sub == 'info') then
-        print_info();
+        print_info(word == 'details');
     elseif (sub == 'help') then
         print_help(word);
     else
         say(('Didn\'t recognize "%s". Type /cadence help to see the commands.'):format(args[2]));
     end
+    ui_tools.label = nil;
 end);
 
 --[[
@@ -2121,10 +2646,14 @@ local function on_my_action(e, category, now)
         attack.on_round(now, estimate, key);
         -- A round means the server let you attack, so any range or facing word starts over from here.
         cadence.battle_id = packets.action_target(e);
+        tp.on_target(cadence.battle_id);
         reach.forget();
         if (tracking_tp()) then
             local hits, hit_back, clean_start = packets.melee_hits(e);
             tp.on_round(now, hits, hit_back, clean_start, loadout);
+            if (diagnostics.is_enabled()) then
+                diagnostics.record('round', now, { hits = hits, counter = hit_back, clean_start = clean_start, attack = attack.info(now), tp = tp.info(now) });
+            end
         end
         return;
     end
@@ -2180,26 +2709,87 @@ local function on_enemy_action(e, actor, category, now)
     end
 end
 
--- Slow, Elegy, Haste or Hundred Fists landing on a monster, or coming off it, from anyone's action.
+-- Only landed effects change the enemy clock. Damage can end an observed Sleep.
 local function watch_effects(e, actor, category, now)
     local count = packets.action_results(e, cadence.results);
     local id = packets.action_param(e);
+    local own, context = actor == cadence.my_id, nil;
+    local function landed(target, message, effect)
+        local info = monster_effects.landed(category, id, message, effect);
+        if (info ~= nil) then
+            if (own and category == packets.CATEGORY.SPELL_FINISH) then
+                context = context or stat_state.effect_context(now, read_inputs());
+                info = monster_effects.landed(category, id, message, effect, context);
+            end
+            enemy.on_effect(now, target, info, own);
+        elseif (monster_effects.removed(message)) then
+            enemy.on_effect_gone(now, target, effect);
+        end
+    end
     for i = 1, count do
         local result = cadence.results[i];
         if (result.target >= FIRST_MONSTER_ID) then
-            local info = monster_effects.landed(category, id, result.message, result.param);
-            if (info ~= nil) then
-                enemy.on_effect(now, result.target, info, actor == cadence.my_id);
-            elseif (monster_effects.removed(result.message)) then
-                enemy.on_effect_gone(now, result.target, result.param);
+            if (monster_effects.is_damage(result.message)) then enemy.on_damage(now, result.target, result.param); end
+            landed(result.target, result.message, result.param);
+            if (result.added and result.added ~= 0) then
+                if (monster_effects.is_damage(result.added)) then enemy.on_damage(now, result.target, result.added_param); end
+                landed(result.target, result.added, result.added_param);
             end
         end
     end
 end
 
+-- Direct recovery and drain results from Phoenix's message table. Status applications are separate.
+local DIRECT_TARGET = {
+    [1] = 1, [2] = 1, [7] = 1, [24] = 1, [25] = 2, [26] = 3, [67] = 1,
+    [102] = 1, [103] = 1, [185] = 1, [224] = 2, [263] = 1, [276] = 2,
+    [318] = 1, [357] = 1, [358] = 2, [362] = 4, [367] = 1, [384] = 1, [409] = 4,
+    [431] = 4, [451] = 2,
+};
+local DIRECT_DRAIN = { [161] = 1, [162] = 2, [165] = 4, [187] = 1, [225] = 2, [226] = 4, [227] = 1, [228] = 2, [454] = 4 };
+local DIRECT_SELF = { [152] = 2, [167] = 1, [238] = 1, [452] = 4, [539] = 1 };
+
+local function direct_resources(actor, target, message)
+    local mask = target == cadence.my_id and (DIRECT_TARGET[message] or 0) or 0;
+    if (actor == cadence.my_id or target == cadence.my_id) then mask = bit.bor(mask, DIRECT_DRAIN[message] or 0); end
+    if (actor == cadence.my_id) then mask = bit.bor(mask, DIRECT_SELF[message] or 0); end
+    return mask;
+end
+
+local function exclude_direct_recovery(now, mask)
+    if (mask ~= 0) then
+        resting.on_direct_change(now, bit.band(mask, 1) ~= 0, bit.band(mask, 2) ~= 0, bit.band(mask, 4) ~= 0);
+    end
+end
+
+-- Spikes act from the defender back onto the attacker. Absorbed damage names who healed.
+local function reaction_resources(actor, target, message)
+    if (message == 132) then
+        return (actor == cadence.my_id or target == cadence.my_id) and 1 or 0;
+    elseif (message == 373) then
+        return target == cadence.my_id and 1 or 0;
+    elseif (message == 383 or message == 44) then
+        return actor == cadence.my_id and 1 or 0;
+    end
+    return direct_resources(target, actor, message);
+end
+
+local function watch_direct_recovery(e, actor, now)
+    if (not resting.is_active()) then return; end
+    local count = packets.action_results(e, cadence.results);
+    local mask = 0;
+    for i = 1, count do
+        local row = cadence.results[i];
+        mask = bit.bor(mask, direct_resources(actor, row.target, row.message),
+            direct_resources(actor, row.target, row.added), reaction_resources(actor, row.target, row.reaction));
+    end
+    exclude_direct_recovery(now, mask);
+end
+
 local function on_action(e)
     local actor, category = packets.action_header(e);
     local now = os.clock();
+    watch_direct_recovery(e, actor, now);
     if (actor == cadence.my_id) then
         on_my_action(e, category, now);
     elseif (actor >= FIRST_MONSTER_ID) then
@@ -2221,6 +2811,9 @@ end
 -- that one, its speed is kept first.
 local function on_message(e)
     local actor, message, target, param = packets.message(e);
+    if (resting.is_active()) then
+        exclude_direct_recovery(os.clock(), direct_resources(actor, target, message));
+    end
     if (actor == cadence.my_id and CANT_ATTACK[message] ~= nil) then
         attack.on_out_of_reach(CANT_ATTACK[message] or nil);
     elseif (target >= FIRST_MONSTER_ID and cadence.settings.enemy.enabled) then
@@ -2242,6 +2835,7 @@ local function on_assist(e)
     local who, monster = packets.assist(e);
     if (who == cadence.my_id and monster >= FIRST_MONSTER_ID) then
         cadence.battle_id = monster;
+        tp.on_target(monster);
     end
 end
 
@@ -2253,8 +2847,16 @@ local function on_vitals(e)
     local now = os.clock();
     local hp, mp, tp_value = packets.vitals(e);
     local hp_max, mp_max = player.max_vitals();
+    stat_state.on_vitals(now, hp, mp, tp_value, hp_max, mp_max);
+    local loadout = read_loadout(now);
+    resting.on_model(loadout.modifiers);
+    if (tracking_tp()) then tp.on_loadout(loadout); end
     resting.on_vitals(now, hp, mp, tp_value, hp_max, mp_max);
     tp.on_vitals(now, tp_value);
+    if (diagnostics.is_enabled()) then
+        diagnostics.record('vitals', now, { hp = hp, mp = mp, tp = tp_value, hp_max = hp_max, mp_max = mp_max,
+            attack = attack.info(now), tp_result = tp.info(now), resting = resting.info and resting.info(now) or nil });
+    end
 end
 
 -- You zoned or logged in. The packet carries your server id.
@@ -2267,10 +2869,15 @@ local function on_zone_in(e)
     cadence.enemy_id = nil;
     cadence.battle_id = nil;
     tp.on_zone();
+    stat_state.on_zone(cadence.my_id);
+    cadence.loadout, cadence.delay_estimate, cadence.delay_key = nil, nil, nil;
+    cadence.modifiers_at = -1;
     cadence.job_check = true;
 end
 
 ashita.events.register('packet_in', 'cadence_packet_in', function (e)
+    if (not packets.valid(e) or e.blocked or e.injected or e.is_injected or e.blocked_original) then return; end
+    stat_state.on_packet(e, os.clock(), cadence.my_id);
     local id = e.id;
     if (id == packets.ID.ACTION) then
         on_action(e);
@@ -2282,6 +2889,14 @@ ashita.events.register('packet_in', 'cadence_packet_in', function (e)
         on_vitals(e);
     elseif (id == packets.ID.ZONE_IN) then
         on_zone_in(e);
+    elseif (id == packets.ID.ENTITY) then
+        local vanished = packets.despawned(e);
+        if (vanished ~= nil) then
+            enemy.on_disappear(vanished);
+            if (cadence.enemy_id == vanished) then cadence.enemy_id, cadence.enemy_status, cadence.enemy_name = nil, nil, nil; end
+            if (cadence.target_id == vanished) then cadence.target_id, cadence.target_status = nil, nil; end
+            if (cadence.battle_id == vanished) then cadence.battle_id = nil; end
+        end
     end
 end);
 
@@ -2302,6 +2917,8 @@ end);
 
 -- Picking the settings opens your sound file, if the sound is on.
 ashita.events.register('load', 'cadence_load', function ()
+    stat_state.reset();
+    cadence.loadout, cadence.delay_estimate, cadence.delay_key = nil, nil, nil;
     hud.load_fonts();
     window_font.load_all();
     sound.make_folder();
@@ -2309,9 +2926,10 @@ ashita.events.register('load', 'cadence_load', function ()
     pick_settings();
 end);
 
--- Only this character's own file. The shared layout is written when something changes, so a character
--- logging out can't undo a change made on another one. The sound file closes.
+-- Finish an active edit, then save this character's own file and close the sound file.
+-- An unchanged shared layout is left alone when a character logs out.
 ashita.events.register('unload', 'cadence_unload', function ()
+    ui_tools.flush();
     defaults.tidy(cadence.own);
     settings.save();
     sound.close();
@@ -2323,15 +2941,31 @@ end);
 -- open settings window moves to their spot and size. Their job is read after the 0x00A, and that
 -- first read only notes it.
 settings.register('settings', 'cadence_settings_update', function (s)
+    -- Ashita has already switched its own file. Finish only the old shared edit here.
+    local keep_pending = false;
+    if ((cadence.unsaved or cadence.save_failed) and shared_layout.is_on()) then
+        defaults.tidy(cadence.settings);
+        keep_pending = not shared_layout.save();
+        if (keep_pending) then
+            say('Could not save the previous character\'s shared edit. It is still on screen. The saved file was kept.');
+        end
+    end
     if (s ~= nil) then
         unshare(s, kept_defaults, defaults.make());
         cadence.own = s;
     end
+    hud.cancel_layout_gesture();
     presets.forget_undo();
     attack.forget_learned();
     tp.forget();
+    stat_state.reset();
+    cadence.loadout, cadence.delay_estimate, cadence.delay_key = nil, nil, nil;
+    diagnostics.reset();
+    cadence.report_key, cadence.details = nil, nil;
+    cadence.preview, cadence.preview_offset, cadence.preview_at = { timer = 'auto', state = 'normal', paused = false }, 0, nil;
+    cadence.modifiers_at = -1;
     enemy.forget_speeds();
-    pick_settings();
+    pick_settings(keep_pending);
     settings_window.place_again();
     cadence.last_job = nil;
 end);

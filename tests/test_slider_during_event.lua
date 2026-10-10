@@ -62,7 +62,7 @@ local shared_saves = 0;
 local save_shared = shared_layout.save;
 shared_layout.save = function ()
     shared_saves = shared_saves + 1;
-    save_shared();
+    return save_shared();
 end
 
 MOCK.now = 100;

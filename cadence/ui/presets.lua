@@ -12,10 +12,10 @@ local hex = theme.hex;
 
 local presets = {};
 
-presets.NAMES = { 'Phoenix', 'Classic FFXI', 'Minimal', 'High contrast', 'Ember', 'Colorblind safe' };
+presets.NAMES = { 'Phoenix', 'Classic FFXI', 'Minimal', 'High contrast', 'Ember', 'Mint', 'Lavender', 'Colorblind safe' };
 
 -- The short name /cadence preset takes for each one, in the same order.
-presets.IDS = { 'phoenix', 'classic', 'minimal', 'contrast', 'ember', 'colorblind' };
+presets.IDS = { 'phoenix', 'classic', 'minimal', 'contrast', 'ember', 'mint', 'lavender', 'colorblind' };
 
 -- What the Preset list says once you change a preset's look, like "Custom (from Phoenix)", by the
 -- preset's short name. Made once, so the settings window builds no text each frame.
@@ -39,9 +39,9 @@ local PRESET_KEYS = {
 local LOOK_KEYS = {
     style = { 'scale', 'font_size', 'detail_size', 'system_font', 'font_name', 'show_labels', 'label_size',
         'bar_drains', 'text_outline', 'outline_color' },
-    attack  = { 'width', 'bar_height', 'numbers_only', 'almost_mark', 'label_text', 'show_label' },
-    resting = { 'width', 'bar_height', 'numbers_only', 'label_text', 'show_label' },
-    enemy   = { 'width', 'bar_height', 'numbers_only', 'almost_mark', 'label_text', 'show_label' },
+    attack  = { 'width', 'height_scale', 'bar_height', 'numbers_only', 'almost_mark', 'label_text', 'show_label' },
+    resting = { 'width', 'height_scale', 'bar_height', 'numbers_only', 'label_text', 'show_label' },
+    enemy   = { 'width', 'height_scale', 'bar_height', 'numbers_only', 'almost_mark', 'label_text', 'show_label' },
     window_style = { 'font', 'font_size' },
 };
 
@@ -133,6 +133,38 @@ local LOOKS = {
             chat    = { tag_brackets = 85, tag_word = 8, replies = 7 },
         };
     end,
+    ['Mint'] = function ()
+        return {
+            style = {
+                panel = true, panel_color = hex('192f29', 0.88),
+                border = true, border_color = hex('8fe3ba', 0.35),
+                accent = true, accent_color = hex('74d9ad'),
+                track_color = hex('233d34'),
+                label_color = hex('b1ebd0'), value_color = hex('edf9f1'), detail_color = hex('9bbbad'),
+                text_shadow = true, rounding = 4, window_look = 'mint',
+            },
+            attack  = { fill_start = hex('32866c'), fill_end = hex('74d9ad'), ready_color = hex('edf9f1'), almost_color = hex('f5c850'), tp_color = hex('9fcfff') },
+            resting = { fill_start = hex('32866c'), fill_end = hex('74d9ad'), full_color = hex('edf9f1'), flash_color = hex('a4edcc', 0.40) },
+            enemy   = { fill_start = hex('626c68'), fill_end = hex('a4b4ad'), ready_color = hex('f07868'), almost_color = hex('f5c850'), on_you_color = hex('ff865e') },
+            chat    = { tag_brackets = 102, tag_word = 88, replies = 90 },
+        };
+    end,
+    ['Lavender'] = function ()
+        return {
+            style = {
+                panel = true, panel_color = hex('262033', 0.88),
+                border = true, border_color = hex('cdb1f4', 0.35),
+                accent = true, accent_color = hex('c3a0ed'),
+                track_color = hex('342b45'),
+                label_color = hex('deccf7'), value_color = hex('f3ecff'), detail_color = hex('b5a5c9'),
+                text_shadow = true, rounding = 4, window_look = 'lavender',
+            },
+            attack  = { fill_start = hex('77629e'), fill_end = hex('c3a0ed'), ready_color = hex('f3ecff'), almost_color = hex('f5c850'), tp_color = hex('a8d9c0') },
+            resting = { fill_start = hex('77629e'), fill_end = hex('c3a0ed'), full_color = hex('f3ecff'), flash_color = hex('e4ccff', 0.40) },
+            enemy   = { fill_start = hex('696271'), fill_end = hex('b3aaba'), ready_color = hex('f07868'), almost_color = hex('f5c850'), on_you_color = hex('ffad70') },
+            chat    = { tag_brackets = 102, tag_word = 105, replies = 90 },
+        };
+    end,
     --[[
         Okabe and Ito's colorblind palette. Filling bars are blue, almost ready is vermillion and ready
         or full is yellow. Each step differs in brightness too, not just in hue. The enemy bar is
@@ -169,7 +201,7 @@ local function build_look(name)
     return built;
 end
 
--- The look from before the last preset or Reset look, for Undo. It's dropped when the addon reloads or
+-- The settings from before the last reversible layout change, for Undo. It's dropped when the addon reloads or
 -- another character logs in.
 local undo = nil;
 
@@ -179,8 +211,8 @@ local function copy_value(value)
         return value;
     end
     local copy = {};
-    for i, part in ipairs(value) do
-        copy[i] = part;
+    for key, part in pairs(value) do
+        copy[key] = copy_value(part);
     end
     return copy;
 end
@@ -196,6 +228,17 @@ local function remember(settings, ...)
             end
         end
     end
+end
+
+-- Keep the latest direct snapshot. Settings actions use ui.history for their eight Undo steps.
+function presets.remember_snapshot(snapshot)
+    undo = copy_value(snapshot);
+end
+
+function presets.capture(settings, sections)
+    local snapshot = {};
+    for _, section in ipairs(sections) do snapshot[section] = copy_value(settings[section]); end
+    return snapshot;
 end
 
 local function copy_keys(settings, source, keys)
@@ -286,7 +329,7 @@ function presets.custom_name(id)
     return CUSTOM_NAMES[id] or 'Custom';
 end
 
--- Puts back the look from before the last preset or Reset look. Returns false when there's nothing to
+-- Puts back the settings from before the last saved change. Returns false when there's nothing to
 -- undo. It's one step, so a second Undo does nothing. What was kept goes back as is, since it's dropped
 -- right after.
 function presets.undo(settings)

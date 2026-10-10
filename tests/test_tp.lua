@@ -284,7 +284,11 @@ local function sample_at(step)
     MOCK.now = 4.2 * (600 + step) + 0.5;
     frames(1);
     local all = '';
-    for _, c in ipairs(MOCK.imgui_calls) do if (c[1] == 'dl:AddText') then all = all .. '|' .. c[6] .. '|'; end end
+    for _, c in ipairs(MOCK.imgui_calls) do
+        -- The Appearance sample is separate from this live-sized HUD preview.
+        if (c[1] == 'Begin' and c[2] == 'cadence##cadence_settings') then break; end
+        if (c[1] == 'dl:AddText') then all = all .. '|' .. c[6] .. '|'; end
+    end
     return all;
 end
 texts = sample_at(0);

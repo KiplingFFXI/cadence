@@ -10,6 +10,7 @@ local imgui       = require('imgui');
 local theme       = require('ui.theme');
 local defaults    = require('ui.defaults');
 local window_font = require('ui.window_font');
+local tips        = require('ui.tips');
 
 local hud = {};
 
@@ -83,18 +84,31 @@ local SIZE = { 0, 0 };
 
 local settings     = nil;
 local colors       = {};
-local size         = {};    -- Pixel sizes at the current scale, rebuilt by hud.refresh().
+local size         = {};    -- Shared pixel sizes, rebuilt by hud.refresh().
+local vertical     = { attack = {}, resting = {}, enemy = {} };
+local size_revision = 0;
+local active_value_px = nil;
 local fonts        = {};    -- Loaded fonts by name.
 local font_names   = {};    -- Their names in list order, for the settings window.
 local chosen_font  = nil;   -- The font picked in the settings, or nil for Ashita's own.
 local face         = nil;   -- The font every element draws with this frame.
 local place        = { attack = true, resting = true, enemy = true };
 local layout_dirty = false;
+local layout_before = nil;
+local gesture_cancelled = false;
+local preview = {};
+local rectangles = {};
+local frame_number = 0;
+local hovered_timer, hover_since = nil, 0;
+local enemy_control = false;
+local hover_details, hover_key, hover_preview, hover_text;
+local HOVER_ORDER = { 'enemy', 'resting', 'attack' };
+local guide_coordinates = {};
 local movable      = false;
 local joined_below = false; -- True while the enemy strip hangs under the card at the auto attack spot.
 
--- Where a drag on a timer's edge started, and the width and bar height it had then.
-local resize = { mouse_x = 0, mouse_y = 0, width = 0, bar_height = 0 };
+-- Where a drag started, and the width, whole height and height scale it had then.
+local resize = { mouse_x = 0, mouse_y = 0, width = 0, height = 0, height_scale = 1 };
 
 -- The card drawn at the auto attack timer's spot this frame. The attached enemy strip hangs under it.
 -- With "Share one spot" on, that's the resting timer while you're resting.
@@ -124,6 +138,31 @@ local function clamp(value, range)
     return math.max(range[1], math.min(range[2], value));
 end
 
+-- Each timer has its own vertical sizes. Horizontal padding and width stay shared.
+local function fill_vertical(metrics, height_scale)
+    metrics.scale = height_scale;
+    metrics.value_px = math.max(1, round(size.value_px * height_scale));
+    metrics.label_px = math.max(1, round(size.label_px * height_scale));
+    metrics.name_px = math.max(1, round(size.name_px * height_scale));
+    metrics.detail_px = math.max(1, round(size.detail_px * height_scale));
+    metrics.pad_y = round(size.pad_y * height_scale);
+    metrics.strip_pad_y = round(size.strip_pad_y * height_scale);
+    metrics.strip_top = round(size.strip_top * height_scale);
+    metrics.gap = round(size.gap * height_scale);
+    metrics.strip_gap = round(size.strip_gap * height_scale);
+    return metrics;
+end
+
+local function vertical_size(key)
+    local metrics = vertical[key];
+    local height_scale = settings[key].height_scale or 1;
+    if (metrics.scale ~= height_scale or metrics.revision ~= size_revision) then
+        fill_vertical(metrics, height_scale);
+        metrics.revision = size_revision;
+    end
+    return metrics;
+end
+
 -- Packs a color partway between two settings colors.
 local function blend(from, to, t)
     return imgui.col32(
@@ -150,11 +189,23 @@ local function dimmed(packed, strength)
     return bit.bor(bit.band(packed, 0xFFFFFF), bit.lshift(round(bit.rshift(packed, 24) * strength), 24));
 end
 
+-- A login or a reset must not finish a drag from the previous layout.
+function hud.cancel_layout_gesture()
+    layout_dirty, layout_before = false, nil;
+    guide_coordinates.x, guide_coordinates.y = nil, nil;
+    rectangles = {};
+    gesture_cancelled = imgui.IsMouseDown(ImGuiMouseButton_Left);
+    hud.place_all();
+end
+
 --[[
     Runs when the settings change. Rebuilds the packed colors and pixel sizes. Only the moving end of
     each bar's gradient and the fading tick flash get packed per frame.
 ]]
 function hud.refresh(settings_table)
+    if (settings ~= nil and settings ~= settings_table) then
+        hud.cancel_layout_gesture();
+    end
     settings = settings_table;
     local style = settings.style;
 
@@ -213,6 +264,7 @@ function hud.refresh(settings_table)
     -- With a border, the attached strip moves up 1 px so it shares the card's bottom border line.
     size.overlap     = style.border and 1 or 0;
 
+    size_revision = size_revision + 1;
     -- A reset, a character switch, the shared layout or the shared spot can all move the timers.
     hud.place_all();
 end
@@ -264,6 +316,11 @@ function hud.font_in_use()
     return fonts[settings.style.font_name] and settings.style.font_name or font_names[1];
 end
 
+-- Embedded samples use the same already-loaded face as the timers.
+function hud.preview_font()
+    return face;
+end
+
 -- Puts every element back at its saved position on the next frame.
 function hud.place_all()
     place.attack, place.resting, place.enemy = true, true, true;
@@ -271,7 +328,8 @@ end
 
 -- Set each frame before drawing. True while you hold Shift, so the timers can take the mouse.
 function hud.set_movable(value)
-    movable = value;
+    if (not imgui.IsMouseDown(ImGuiMouseButton_Left)) then gesture_cancelled = false; end
+    movable = value and not gesture_cancelled;
 end
 
 -- Set each frame before drawing. When the enemy strip will hang under the card at the auto attack
@@ -301,10 +359,31 @@ local function has_detail(key)
         or element.show_effects;
 end
 
+local function has_next_line(key)
+    return key == 'resting' and settings.resting.show_next_gains;
+end
+
+local function has_ticks_line(key)
+    return key == 'resting' and settings.resting.show_ticks;
+end
+
+local function has_goal_line(key)
+    return key == 'resting' and settings.resting.show_goal;
+end
+
+local function has_tp_time_line(key)
+    return key == 'attack' and settings.attack.show_tp and settings.attack.show_tp_time;
+end
+
+local function has_hits_line(key)
+    return key == 'attack' and settings.attack.show_tp and settings.attack.show_tp_hits;
+end
+
 -- True when a timer shows its row of text above the bar. A timer showing just its numbers always does.
 local function has_header(key)
     local element = settings[key];
-    return element.numbers_only or shows_name(key) or element.show_value or has_detail(key);
+    return preview[key] or (element.numbers_only and not (has_next_line(key) or has_ticks_line(key) or has_goal_line(key))) or shows_name(key) or element.show_value or has_detail(key)
+        or (key == 'enemy' and (element.show_holds or enemy_control));
 end
 
 -- True when the enemy timer is the smaller strip attached under the auto attack timer.
@@ -322,12 +401,12 @@ local function has_footer(key)
 end
 
 -- How thick a timer's bar is in pixels, or 0 when it shows just its numbers.
-local function bar_px(key)
+local function bar_px(key, metrics)
     local element = settings[key];
     if (element.numbers_only) then
         return 0;
     end
-    local thickness = element.bar_height * settings.style.scale;
+    local thickness = element.bar_height * settings.style.scale * metrics.scale;
     if (is_strip(key)) then
         thickness = thickness * ATTACHED_BAR;
     end
@@ -335,34 +414,76 @@ local function bar_px(key)
 end
 
 -- How tall a timer's row of text is. A name or small text bigger than the numbers makes it taller.
-local function header_px(key)
-    local row = is_strip(key) and size.label_px or size.value_px;
-    if (shows_name(key)) then
-        row = math.max(row, size.name_px);
+local function header_px(key, metrics)
+    local row = is_strip(key) and metrics.label_px or metrics.value_px;
+    if (shows_name(key) or preview[key]) then
+        row = math.max(row, metrics.name_px);
     end
     if (has_detail(key)) then
-        row = math.max(row, size.detail_px);
+        row = math.max(row, metrics.detail_px);
     end
     return row;
 end
 
--- Width and height of an element in pixels at the current settings. There's a gap between its text
--- row, its bar and the line under the bar.
-function hud.element_size(key)
+-- The drawing and resize handle use the same rounded row sizes.
+local function element_height(key, metrics)
     local strip = is_strip(key);
-    local header = has_header(key) and header_px(key) or 0;
-    local bar = bar_px(key);
-    local footer = (not strip and has_footer(key)) and size.detail_px or 0;
-    local rows = ((header > 0) and 1 or 0) + ((bar > 0) and 1 or 0) + ((footer > 0) and 1 or 0);
-    local gaps = math.max(rows - 1, 0) * (strip and size.strip_gap or size.gap);
+    local header = has_header(key) and header_px(key, metrics) or 0;
+    local bar = bar_px(key, metrics);
+    local next_line = has_next_line(key) and metrics.detail_px or 0;
+    local ticks_line = has_ticks_line(key) and metrics.detail_px or 0;
+    local goal_line = has_goal_line(key) and metrics.detail_px or 0;
+    local tp_time_line = has_tp_time_line(key) and metrics.detail_px or 0;
+    local hits_line = has_hits_line(key) and metrics.detail_px or 0;
+    local footer = (not strip and has_footer(key)) and metrics.detail_px or 0;
+    local rows = ((header > 0) and 1 or 0) + ((bar > 0) and 1 or 0)
+        + ((next_line > 0) and 1 or 0) + ((ticks_line > 0) and 1 or 0)
+        + ((hits_line > 0) and 1 or 0) + ((goal_line > 0) and 1 or 0)
+        + ((tp_time_line > 0) and 1 or 0) + ((footer > 0) and 1 or 0);
+    local gaps = math.max(rows - 1, 0) * (strip and metrics.strip_gap or metrics.gap);
 
     if (strip) then
-        -- As wide as the card above it, with the smaller text size and a thinner bar.
+        return metrics.strip_top + metrics.strip_pad_y + header + bar + gaps;
+    end
+    return metrics.pad_y * 2 + header + bar + next_line + ticks_line + goal_line + hits_line + tp_time_line + footer + gaps;
+end
+
+-- Width stays independent of each timer's vertical scale.
+function hud.element_size(key)
+    local height = element_height(key, vertical_size(key));
+    if (is_strip(key)) then
         local width = host.shown and host.width or hud.element_size('attack');
-        return width, size.strip_top + size.strip_pad_y + header + bar + gaps;
+        return width, height;
     end
     local width = size.accent + size.pad_x * 2 + round(settings[key].width * size.width_scale);
-    return width, size.pad_y * 2 + header + bar + footer + gaps;
+    return width, height;
+end
+
+-- Only used during a drag. No per-frame tables are needed to find the nearest rounded height.
+local resize_metrics = {};
+local function height_at_scale(key, height_scale)
+    return element_height(key, fill_vertical(resize_metrics, height_scale));
+end
+
+local function scale_for_height(key, target)
+    local minimum, maximum = defaults.HEIGHT_SCALE[1], defaults.HEIGHT_SCALE[2];
+    local low_height, high_height = height_at_scale(key, minimum), height_at_scale(key, maximum);
+    if (target <= low_height) then return minimum, low_height; end
+    if (target >= high_height) then return maximum, high_height; end
+    local guess = clamp(resize.height_scale * target / math.max(1, resize.height), defaults.HEIGHT_SCALE);
+    local guessed_height = height_at_scale(key, guess);
+    if (guessed_height == target) then return guess, guessed_height; end
+    local best_scale, best_height = guess, guessed_height;
+    for _ = 1, 18 do
+        local middle = (minimum + maximum) / 2;
+        local height = height_at_scale(key, middle);
+        if (math.abs(height - target) < math.abs(best_height - target)) then
+            best_scale, best_height = middle, height;
+        end
+        if (height == target) then return middle, height; end
+        if (height < target) then minimum = middle; else maximum = middle; end
+    end
+    return best_scale, best_height;
 end
 
 -- The game window's size in pixels.
@@ -377,10 +498,63 @@ local function on_screen(x, y, width, height)
     return math.max(0, math.min(x, screen.width - width)), math.max(0, math.min(y, screen.height - height));
 end
 
+-- Keep only the layout before the first actual movement in this drag.
+local function remember_layout()
+    if (layout_before ~= nil) then return; end
+    layout_before = {};
+    for _, key in ipairs({ 'attack', 'resting', 'enemy' }) do
+        local element = settings[key];
+        layout_before[key] = { x = element.x, y = element.y, width = element.width,
+            bar_height = element.bar_height, height_scale = element.height_scale or 1 };
+    end
+end
+
+-- Screen edges/center and the actual bounds of other visible cards are alignment targets.
+local function alignment_delta(key, axis, points)
+    local maximum = axis == 'x' and screen.width or screen.height;
+    local targets = { 0, maximum / 2, maximum };
+    for other, rect in pairs(rectangles) do
+        if (other ~= key and rect.frame >= frame_number - 1 and anchor(other) ~= anchor(key) and not is_strip(other)) then
+            local start = axis == 'x' and rect.x or rect.y;
+            local length = axis == 'x' and rect.width or rect.height;
+            targets[#targets + 1], targets[#targets + 2], targets[#targets + 3] = start, start + length / 2, start + length;
+        end
+    end
+    local best, target = nil, nil;
+    for _, point in ipairs(points) do
+        for _, at in ipairs(targets) do
+            local difference = at - point;
+            if (math.abs(difference) <= 6 and (best == nil or math.abs(difference) < math.abs(best))) then
+                best, target = difference, at;
+            end
+        end
+    end
+    return best, target;
+end
+
+local function alignment_guide(axis, at)
+    guide_coordinates[axis] = at;
+end
+
+local function draw_alignment_guides()
+    if (not (movable and not settings.style.locked and settings.style.layout_guides
+        and imgui.IsMouseDown(ImGuiMouseButton_Left))) then
+        guide_coordinates.x, guide_coordinates.y = nil, nil;
+        return;
+    end
+    local list = imgui.GetForegroundDrawList();
+    if (list == nil) then return; end
+    for axis, at in pairs(guide_coordinates) do
+        local x1, y1, x2, y2 = 0, at, screen.width, at;
+        if (axis == 'x') then x1, y1, x2, y2 = at, 0, at, screen.height; end
+        list:AddLine(set_point(A, x1, y1), set_point(B, x2, y2), dimmed(colors.outline, 0.6), 1);
+    end
+end
+
 -- The element window already pushed the value size. Other sizes get measured at their own size,
 -- since Ashita's pixel font doesn't scale evenly.
 local function text_width(text, px)
-    if (px == size.value_px) then
+    if (px == active_value_px) then
         local width = imgui.CalcTextSize(text);
         return width;
     end
@@ -407,6 +581,15 @@ local function draw_text(list, x, y, color, text, px)
         end
     end
     list:AddText(face, px, set_point(A, x, y), color, text);
+end
+
+local function remember_rectangle(key, x, y, width, height)
+    local rect = rectangles[key];
+    if (rect == nil) then
+        rect = {};
+        rectangles[key] = rect;
+    end
+    rect.x, rect.y, rect.width, rect.height, rect.frame = x, y, width, height, frame_number;
 end
 
 --[[
@@ -444,11 +627,13 @@ local function begin_element(key, width, height, fixed_x, fixed_y, fit_height)
         return false;
     end
 
-    imgui.PushFont(face, size.value_px);
+    active_value_px = vertical_size(key).value_px;
+    imgui.PushFont(face, active_value_px);
 
     local drawn_x, drawn_y = imgui.GetWindowPos();
     drawn_x, drawn_y = math.floor(drawn_x), math.floor(drawn_y);
     if (fixed_x ~= nil) then
+        remember_rectangle(key, drawn_x, drawn_y, width, height);
         return true, drawn_x, drawn_y, imgui.GetWindowDrawList();
     end
 
@@ -456,9 +641,19 @@ local function begin_element(key, width, height, fixed_x, fixed_y, fit_height)
     -- frame, and not to where it was put this frame.
     local last = seen[key];
     if (dragging and (drawn_x ~= last.x or drawn_y ~= last.y) and (drawn_x ~= x or drawn_y ~= y)) then
+        remember_layout();
+        if (settings.style.layout_guides) then
+            local dx, gx = alignment_delta(key, 'x', { drawn_x, drawn_x + width / 2, drawn_x + width });
+            local dy, gy = alignment_delta(key, 'y', { drawn_y, drawn_y + height / 2, drawn_y + height });
+            drawn_x, drawn_y = round(drawn_x + (dx or 0)), round(drawn_y + (dy or 0));
+            imgui.SetWindowPos(set_point(A, drawn_x, drawn_y), ImGuiCond_Always);
+            alignment_guide('x', gx);
+            alignment_guide('y', gy);
+        end
         spot.x, spot.y = drawn_x, drawn_y;
         layout_dirty = true;
     end
+    remember_rectangle(key, drawn_x, drawn_y, width, height);
     last.x, last.y = drawn_x, drawn_y;
     return true, drawn_x, drawn_y, imgui.GetWindowDrawList();
 end
@@ -531,53 +726,79 @@ local function draw_bar(list, x, y, width, height, fill, from_packed, from, to, 
 end
 
 -- One edge you can drag to resize a timer. It's an invisible button, so grabbing it doesn't move the
--- window. `sideways` drags change the width and `down` drags change the bar height.
+-- window. Sideways changes the width; down changes the whole timer's height.
 local function grip(key, id, x, y, width, height, sideways, down, cursor)
     imgui.SetCursorScreenPos(set_point(A, x, y));
     imgui.InvisibleButton(id, set_point(B, width, height));
     local element = settings[key];
     if (imgui.IsItemActivated()) then
         resize.mouse_x, resize.mouse_y = imgui.GetMousePos();
-        resize.width, resize.bar_height = element.width, element.bar_height;
+        resize.width, resize.height_scale = element.width, element.height_scale or 1;
+        resize.height = select(2, hud.element_size(key));
     end
     if (imgui.IsItemActive()) then
         local mouse_x, mouse_y = imgui.GetMousePos();
+        local next_width, next_scale = element.width, element.height_scale or 1;
+        local rect = rectangles[key];
         if (sideways) then
-            element.width = clamp(round(resize.width + (mouse_x - resize.mouse_x) / size.width_scale), defaults.WIDTH);
+            next_width = clamp(round(resize.width + (mouse_x - resize.mouse_x) / size.width_scale), defaults.WIDTH);
+            if (settings.style.layout_guides and rect) then
+                alignment_guide('x', nil);
+                local edge = rect.x + rect.width + (next_width - element.width) * size.width_scale;
+                local delta, guide = alignment_delta(key, 'x', { edge });
+                if (delta ~= nil) then
+                    local snapped = clamp(round(next_width + delta / size.width_scale), defaults.WIDTH);
+                    if (math.abs(edge + (snapped - next_width) * size.width_scale - guide) <= 1) then
+                        next_width = snapped;
+                        alignment_guide('x', guide);
+                    end
+                end
+            end
         end
         if (down) then
-            -- The attached strip draws its bar thinner, so its drag is scaled the same way to keep the
-            -- edge under the mouse.
-            local bar_scale = settings.style.scale * (is_strip(key) and ATTACHED_BAR or 1);
-            element.bar_height = clamp(round(resize.bar_height + (mouse_y - resize.mouse_y) / bar_scale),
-                defaults.BAR_HEIGHT);
+            local target = resize.height + mouse_y - resize.mouse_y;
+            local next_height;
+            if (mouse_y == resize.mouse_y) then
+                next_scale, next_height = resize.height_scale, resize.height;
+            else
+                next_scale, next_height = scale_for_height(key, target);
+            end
+            if (settings.style.layout_guides and rect) then
+                alignment_guide('y', nil);
+                local edge = rect.y + next_height;
+                local delta, guide = alignment_delta(key, 'y', { edge });
+                if (delta ~= nil) then
+                    local snapped, snapped_height = scale_for_height(key, next_height + delta);
+                    if (math.abs(rect.y + snapped_height - guide) <= 1) then
+                        next_scale = snapped;
+                        alignment_guide('y', guide);
+                    end
+                end
+            end
         end
-        layout_dirty = true;
+        if (next_width ~= element.width or next_scale ~= (element.height_scale or 1)) then
+            remember_layout();
+            element.width, element.height_scale = next_width, next_scale;
+            layout_dirty = true;
+        end
     end
     if (imgui.IsItemHovered() or imgui.IsItemActive()) then
         imgui.SetMouseCursor(cursor);
     end
 end
 
--- The right edge sets the width, the bottom edge the bar height and the corner both. A timer showing
--- just its numbers has no bar, so only its width can change.
+-- The right edge changes width, the bottom changes whole height, and the corner changes both.
 local function resize_grips(key, x, y, width, height)
     local edge = math.max(4, round(GRIP_SIZE * settings.style.scale));
     local ids = GRIP_IDS[key];
-    local has_bar = not settings[key].numbers_only;
     -- The attached strip takes the auto attack timer's width, so it only gets its bottom edge.
     if (is_strip(key)) then
-        if (has_bar) then
-            grip(key, ids.height, x, y + height - edge, width, edge, false, true, ImGuiMouseCursor_ResizeNS);
-        end
+        grip(key, ids.height, x, y + height - edge, width, edge, false, true, ImGuiMouseCursor_ResizeNS);
         return;
     end
-    grip(key, ids.width, x + width - edge, y, edge, height - edge, true, false, ImGuiMouseCursor_ResizeEW);
-    if (has_bar) then
-        grip(key, ids.height, x, y + height - edge, width - edge, edge, false, true, ImGuiMouseCursor_ResizeNS);
-    end
-    grip(key, ids.corner, x + width - edge, y + height - edge, edge, edge, true, has_bar,
-        has_bar and ImGuiMouseCursor_ResizeNWSE or ImGuiMouseCursor_ResizeEW);
+    grip(key, ids.width, x + width - edge, y, edge, math.max(1, height - edge), true, false, ImGuiMouseCursor_ResizeEW);
+    grip(key, ids.height, x, y + height - edge, math.max(1, width - edge), edge, false, true, ImGuiMouseCursor_ResizeNS);
+    grip(key, ids.corner, x + width - edge, y + height - edge, edge, edge, true, true, ImGuiMouseCursor_ResizeNWSE);
 end
 
 -- Two short lines in the bottom right corner, so you can see where to grab.
@@ -590,19 +811,19 @@ end
 
 -- The line under the bar. Nothing is cut mid-word. A narrow card gets the short forms, and then
 -- nothing on the right.
-local function draw_footer(list, timer, left, top, bar_width)
+local function draw_footer(list, timer, left, top, bar_width, metrics)
     local footer, right = timer.footer, timer.footer_right;
-    local room = bar_width - text_width(footer, size.detail_px) - size.spacing;
-    local right_width = right and text_width(right, size.detail_px) or 0;
+    local room = bar_width - text_width(footer, metrics.detail_px) - size.spacing;
+    local right_width = right and text_width(right, metrics.detail_px) or 0;
     if (right ~= nil and right_width > room) then
         footer = timer.footer_left_short or footer;
-        room = bar_width - text_width(footer, size.detail_px) - size.spacing;
+        room = bar_width - text_width(footer, metrics.detail_px) - size.spacing;
         right = timer.footer_short;
-        right_width = text_width(right, size.detail_px);
+        right_width = text_width(right, metrics.detail_px);
     end
-    draw_text(list, left, top, timer.footer_color, footer, size.detail_px);
+    draw_text(list, left, top, timer.footer_color, footer, metrics.detail_px);
     if (right ~= nil and right_width <= room) then
-        draw_text(list, left + bar_width - right_width, top, colors.detail, right, size.detail_px);
+        draw_text(list, left + bar_width - right_width, top, colors.detail, right, metrics.detail_px);
     end
 end
 
@@ -650,16 +871,18 @@ end
         footer = small text under the bar, footer_color = its packed color,
         footer_right, footer_short = text for the right of that line, and a shorter one for narrow cards,
         footer_left_short = a shorter footer for narrow cards, or nil to keep the footer as it is,
+        next_line = the next resting gain, on its own line between the bar and full times,
     }
 ]]
 local function draw_timer(timer)
     local key = timer.key;
+    local metrics = vertical_size(key);
     local width, height = hud.element_size(key);
 
     -- The attached strip uses the smaller text for its value too, and less padding.
     local strip = is_strip(key);
-    local value_px = strip and size.label_px or size.value_px;
-    local gap = strip and size.strip_gap or size.gap;
+    local value_px = strip and metrics.label_px or metrics.value_px;
+    local gap = strip and metrics.strip_gap or metrics.gap;
 
     -- The attached strip hangs under the card at the auto attack spot. That card's bottom corners go
     -- square to meet it. Its window reaches down over the strip, so a drag anywhere on the joined card
@@ -684,14 +907,14 @@ local function draw_timer(timer)
         end
 
         local left = x + size.accent + size.pad_x;
-        local top  = y + (strip and size.strip_top or size.pad_y);
+        local top  = y + (strip and metrics.strip_top or metrics.pad_y);
         local bar_width = width - size.accent - size.pad_x * 2;
         if (has_header(key)) then
             -- Smaller text sits lower in the row by this much, so everything shares a baseline.
-            local row_px = header_px(key);
+            local row_px = header_px(key, metrics);
             local value_top  = top + (row_px - value_px) * 0.75;
-            local name_top   = top + (row_px - size.name_px) * 0.75;
-            local detail_top = top + (row_px - size.detail_px) * 0.75;
+            local name_top   = top + (row_px - metrics.name_px) * 0.75;
+            local detail_top = top + (row_px - metrics.detail_px) * 0.75;
             local value_x = left + bar_width;
             if (timer.value ~= nil) then
                 value_x = value_x - text_width(timer.value, value_px);
@@ -699,13 +922,23 @@ local function draw_timer(timer)
             end
 
             local label = shows_name(key) and timer.label or nil;
+            if (preview[key]) then
+                label = label and (label .. ' (preview)') or 'preview';
+                local detail_width = timer.detail and (size.spacing + text_width(timer.detail, metrics.detail_px)) or 0;
+                if (text_width(label, metrics.name_px) + detail_width > value_x - left - size.spacing) then label = 'preview'; end
+            end
             local detail_x, text_end = left, left;
             if (label ~= nil) then
-                text_end = left + text_width(label, size.name_px);
+                text_end = left + text_width(label, metrics.name_px);
                 detail_x = text_end + size.spacing;
             end
-            if (timer.detail ~= nil) then
-                text_end = detail_x + text_width(timer.detail, size.detail_px);
+            local detail = timer.detail;
+            if (detail ~= nil) then
+                text_end = detail_x + text_width(detail, metrics.detail_px);
+                if (text_end > value_x - size.spacing and timer.detail_short ~= nil) then
+                    detail = timer.detail_short;
+                    text_end = detail_x + text_width(detail, metrics.detail_px);
+                end
             end
 
             -- On a narrow timer the label and detail are cut off before they run into the value.
@@ -715,10 +948,10 @@ local function draw_timer(timer)
                 list:PushClipRect(set_point(A, left, y), set_point(B, room, y + height), true);
             end
             if (label ~= nil) then
-                draw_text(list, left, name_top, timer.mark_as or colors.label, label, size.name_px);
+                draw_text(list, left, name_top, timer.mark_as or colors.label, label, metrics.name_px);
             end
-            if (timer.detail ~= nil) then
-                draw_text(list, detail_x, detail_top, colors.detail, timer.detail, size.detail_px);
+            if (detail ~= nil) then
+                draw_text(list, detail_x, detail_top, colors.detail, detail, metrics.detail_px);
             end
             if (cut) then
                 list:PopClipRect();
@@ -726,7 +959,7 @@ local function draw_timer(timer)
             top = top + row_px + gap;
         end
 
-        local bar_height = bar_px(key);
+        local bar_height = bar_px(key, metrics);
         if (bar_height > 0) then
             -- A draining bar shows the time left. Once it's empty, a bar with a ready color fills
             -- back up in it, so ready still shows.
@@ -746,15 +979,52 @@ local function draw_timer(timer)
                 local scale = settings.style.scale;
                 local mark_x = left + round(bar_width * timer.mark);
                 local mark_width = math.max(1, round(scale));
-                local poke = math.max(1, round(2 * scale));
+                local poke = math.max(1, round(2 * scale * metrics.scale));
                 list:AddRectFilled(set_point(A, mark_x, top - poke),
                     set_point(B, mark_x + mark_width, top + bar_height + poke), timer.mark_color);
             end
             top = top + bar_height + gap;
         end
 
+        if (has_next_line(key)) then
+            if (timer.next_line ~= nil) then
+                list:PushClipRect(set_point(A, left, y), set_point(B, left + bar_width, y + height), true);
+                draw_text(list, left, top, colors.detail, timer.next_line, metrics.detail_px);
+                list:PopClipRect();
+            end
+            top = top + metrics.detail_px + gap;
+        end
+
+        if (has_ticks_line(key)) then
+            if (timer.ticks_line ~= nil) then
+                draw_text(list, left, top, colors.detail, timer.ticks_line, metrics.detail_px);
+            end
+            top = top + metrics.detail_px + gap;
+        end
+        if (has_goal_line(key)) then
+            if (timer.goal_line ~= nil) then
+                list:PushClipRect(set_point(A, left, y), set_point(B, left + bar_width, y + height), true);
+                draw_text(list, left, top, colors.detail, timer.goal_line, metrics.detail_px);
+                list:PopClipRect();
+            end
+            top = top + metrics.detail_px + gap;
+        end
         if (timer.footer ~= nil) then
-            draw_footer(list, timer, left, top, bar_width);
+            draw_footer(list, timer, left, top, bar_width, metrics);
+        end
+        if (has_footer(key)) then
+            top = top + metrics.detail_px + gap;
+        end
+        if (has_hits_line(key) and timer.hits_line ~= nil) then
+            list:PushClipRect(set_point(A, left, y), set_point(B, left + bar_width, y + height), true);
+            draw_text(list, left, top, colors.detail, timer.hits_line, metrics.detail_px);
+            list:PopClipRect();
+        end
+        if (has_hits_line(key)) then top = top + metrics.detail_px + gap; end
+        if (has_tp_time_line(key) and timer.tp_time_line ~= nil) then
+            list:PushClipRect(set_point(A, left, y), set_point(B, left + bar_width, y + height), true);
+            draw_text(list, left, top, colors.detail, timer.tp_time_line, metrics.detail_px);
+            list:PopClipRect();
         end
 
         if (timer.flash ~= nil) then
@@ -814,7 +1084,8 @@ local attack_text = { tenths = -1, text = '' };
 local attack_detail = { delay = -1, learned = false, text = '' };
 local attack_timer = { key = 'attack' };
 local tp_text = { tp = -1, text = '' };
-local rounds_text = { rounds = -1, goal = -1, long = '', short = '' };
+local rounds_text = { rounds = -1, goal = -1, estimated = false, long = '', short = '' };
+local hits_text = { hits = -1, estimated = false, text = nil };
 
 -- What the auto attack timer says instead of the seconds while something stops it. A spell, ranged
 -- attack or item goes by its kind. Sleep, petrification, stun, Sleep II, terror, penalty and Lullaby
@@ -826,9 +1097,18 @@ local STOPPED_WORDS = { spell = 'casting', ranged = 'ranged', item = 'item', [2]
 -- its fill's alpha.
 local STOPPED_DIM = 0.35;
 
+-- Seconds as "20s", or "1:10" from a minute up.
+local function duration_text(seconds)
+    if (seconds >= 60) then
+        return ('%d:%02d'):format(math.floor(seconds / 60), seconds % 60);
+    end
+    return ('%ds'):format(seconds);
+end
+
 -- Fills the TP line under the auto attack bar, like "TP 640" and "1000 TP in ~3 rounds".
 local function fill_tp_line(timer, view)
     timer.footer, timer.footer_right, timer.footer_short, timer.footer_left_short = nil, nil, nil, nil;
+    timer.hits_line, timer.tp_time_line = nil, nil;
     if (view == nil) then
         return;
     end
@@ -837,30 +1117,45 @@ local function fill_tp_line(timer, view)
         tp_text.tp = view.tp;
         tp_text.text = ('TP %d'):format(view.tp);
     end
+    if (view.time_to_goal ~= nil and view.tp < view.goal) then
+        timer.tp_time_line = ('%d TP in ~%s'):format(view.goal, duration_text(math.ceil(view.time_to_goal)));
+    end
     timer.footer = tp_text.text;
     timer.footer_color = (view.tp >= view.goal) and colors.tp or colors.value;
 
     if (view.rounds ~= nil) then
-        if (view.rounds ~= rounds_text.rounds or view.goal ~= rounds_text.goal) then
-            rounds_text.rounds, rounds_text.goal = view.rounds, view.goal;
+        if (view.rounds ~= rounds_text.rounds or view.goal ~= rounds_text.goal or view.estimated ~= rounds_text.estimated) then
+            rounds_text.rounds, rounds_text.goal, rounds_text.estimated = view.rounds, view.goal, view.estimated;
             local unit = (view.rounds == 1) and 'round' or 'rounds';
-            rounds_text.long = ('%d TP in ~%d %s'):format(view.goal, view.rounds, unit);
-            rounds_text.short = ('~%d %s'):format(view.rounds, unit);
+            local suffix = view.estimated and ' est.' or '';
+            rounds_text.long = ('%d TP in ~%d %s%s'):format(view.goal, view.rounds, unit, suffix);
+            rounds_text.short = ('~%d %s%s'):format(view.rounds, unit, suffix);
         end
         timer.footer_right, timer.footer_short = rounds_text.long, rounds_text.short;
+    end
+    if (view.hits ~= nil) then
+        local estimated = view.hits_estimated;
+        if (estimated == nil) then estimated = view.estimated; end
+        if (view.hits ~= hits_text.hits or estimated ~= hits_text.estimated) then
+            hits_text.hits, hits_text.estimated = view.hits, estimated;
+            hits_text.text = ('%d successful %s%s'):format(view.hits, view.hits == 1 and 'hit' or 'hits',
+                estimated and ' est.' or '');
+        end
+        timer.hits_line = hits_text.text;
     end
 end
 
 --[[
     Draws the auto attack timer from how full the bar is (0..1), the seconds left, the delay in use
-    and whether that delay was learned from your attacks. `tp_view` is { tp, goal, rounds } for the TP
-    line under the bar. `rounds` is nil once you're at the goal. A nil tp_view leaves the line off.
+    and whether that delay was learned from your attacks. `tp_view` supplies tp, goal, rounds, hits,
+    estimated, hits_estimated and time_to_goal for the optional lines under the bar. `rounds` is nil once you're at the goal. A nil tp_view leaves the line off.
     `reason` is why you aren't attacking from the server's message, like "too far", or nil. It only
     shows once the attack is due. `reach` is "too far" or "not facing" from where you stand, or nil,
     and shows any time. `why` is what stopped the timer, a key in STOPPED_WORDS, or nil. `left` is nil
     while the next attack's time isn't known, and shows "--".
 ]]
-function hud.draw_attack(fill, left, delay, learned, tp_view, reason, why, reach)
+function hud.draw_attack(fill, left, delay, learned, tp_view, reason, why, reach, is_preview)
+    preview.attack = is_preview == true;
     local element = settings.attack;
     local stopped = element.show_why and STOPPED_WORDS[why] or nil;
     local ready = left ~= nil and left <= 0;
@@ -914,7 +1209,8 @@ function hud.draw_attack(fill, left, delay, learned, tp_view, reason, why, reach
 end
 
 local resting_text = { tenths = -1, text = '' };
-local resting_detail = { hp = -1, mp = -1, until_full = -1, text = '' };
+local resting_detail = { hp = -1, mp = -1, until_full = -1, estimated = false, text = '' };
+local resting_next = { hp = -1, mp = -1, estimated = false, text = nil };
 local resting_timer = { key = 'resting' };
 
 -- What the resting timer says instead of the seconds while disease, plague or the curse that stops
@@ -922,21 +1218,13 @@ local resting_timer = { key = 'resting' };
 local CANT_HEAL_WORDS = { [8] = 'diseased', [31] = 'plagued', [20] = 'cursed' };
 local each_full = { hp = -2, mp = -2, has_mp = nil, hp_text = '', hp_short = '', mp_text = '', mp_short = '' };
 
--- Seconds as "20s", or "1:10" from a minute up.
-local function duration_text(seconds)
-    if (seconds >= 60) then
-        return ('%d:%02d'):format(math.floor(seconds / 60), seconds % 60);
-    end
-    return ('%ds'):format(seconds);
-end
-
 -- "HP full in 20s", "HP full" once it is, or "HP full in --" before it can be worked out. The short
 -- form is "HP 20s".
-local function full_text(stat, seconds)
+local function full_text(stat, seconds, estimated)
     if (seconds == 0) then
         return stat .. ' full', stat .. ' full';
     end
-    local time = (seconds < 0) and '--' or duration_text(seconds);
+    local time = (seconds < 0) and '--' or ((estimated and '~' or '') .. duration_text(seconds));
     return ('%s full in %s'):format(stat, time), ('%s %s'):format(stat, time);
 end
 
@@ -950,11 +1238,15 @@ local function fill_full_line(timer, view)
 
     local hp = view.hp_full_in and math.ceil(view.hp_full_in) or -1;
     local mp = view.mp_full_in and math.ceil(view.mp_full_in) or -1;
+    local meta = view.full_meta or {};
+    local hp_estimated, mp_estimated = meta.hp_confidence == 'estimated', meta.mp_confidence == 'estimated';
     local last = each_full;
-    if (hp ~= last.hp or mp ~= last.mp or view.has_mp ~= last.has_mp) then
+    if (hp ~= last.hp or mp ~= last.mp or view.has_mp ~= last.has_mp
+        or hp_estimated ~= last.hp_estimated or mp_estimated ~= last.mp_estimated) then
         last.hp, last.mp, last.has_mp = hp, mp, view.has_mp;
-        last.hp_text, last.hp_short = full_text('HP', hp);
-        last.mp_text, last.mp_short = full_text('MP', mp);
+        last.hp_estimated, last.mp_estimated = hp_estimated, mp_estimated;
+        last.hp_text, last.hp_short = full_text('HP', hp, hp_estimated);
+        last.mp_text, last.mp_short = full_text('MP', mp, mp_estimated);
     end
     timer.footer, timer.footer_left_short = last.hp_text, last.hp_short;
     timer.footer_color = (hp == 0) and colors.full or colors.value;
@@ -968,10 +1260,13 @@ local function resting_detail_text(element, view)
     local hp = element.show_gains and view.gained_hp or 0;
     local mp = element.show_gains and view.gained_mp or 0;
     local until_full = (element.show_until_full and view.until_full) and math.ceil(view.until_full) or -1;
-    if (hp == resting_detail.hp and mp == resting_detail.mp and until_full == resting_detail.until_full) then
+    local estimated = view.full_meta and view.full_meta.confidence == 'estimated' or false;
+    if (hp == resting_detail.hp and mp == resting_detail.mp and until_full == resting_detail.until_full
+        and estimated == resting_detail.estimated) then
         return resting_detail.text;
     end
     resting_detail.hp, resting_detail.mp, resting_detail.until_full = hp, mp, until_full;
+    resting_detail.estimated = estimated;
 
     local parts = {};
     if (hp > 0) then
@@ -981,10 +1276,24 @@ local function resting_detail_text(element, view)
         table.insert(parts, ('+%d MP'):format(mp));
     end
     if (until_full >= 0) then
-        table.insert(parts, 'full in ' .. duration_text(until_full));
+        table.insert(parts, 'full in ' .. (estimated and '~' or '') .. duration_text(until_full));
     end
     resting_detail.text = (#parts > 0) and table.concat(parts, '  ') or nil;
     return resting_detail.text;
+end
+
+-- Next gains have their own row, so they leave room for the last tick and full time above the bar.
+local function resting_next_text(view)
+    local hp, mp, estimated = view.next_hp or 0, view.next_mp or 0, view.next_estimated == true;
+    if (hp == resting_next.hp and mp == resting_next.mp and estimated == resting_next.estimated) then
+        return resting_next.text;
+    end
+    resting_next.hp, resting_next.mp, resting_next.estimated = hp, mp, estimated;
+    local parts = {};
+    if (hp > 0) then table.insert(parts, ('+%d HP'):format(hp)); end
+    if (mp > 0) then table.insert(parts, ('+%d MP'):format(mp)); end
+    resting_next.text = #parts > 0 and ('next ' .. table.concat(parts, ' ') .. (estimated and ' est.' or '')) or nil;
+    return resting_next.text;
 end
 
 --[[
@@ -994,11 +1303,16 @@ end
         fill = 0..1, left = seconds to the next tick, gained_hp, gained_mp = what the last tick
         restored, full = true at full HP and MP, until_full = seconds until full or nil,
         hp_full_in, mp_full_in = seconds until each is full, 0 once it is, or nil,
+        full_meta = confidence and the remaining resting ticks for those full times,
+        goal = optional { label, seconds, reached, confidence } for a partial recovery target,
+        preview = true for sample values, waiting = true while a sample waits for evidence,
         has_mp = false for a job with no MP, flash = 0..1 strength of the tick flash,
+        next_hp, next_mp = the next resting gain, next_estimated = true while some bonuses are unknown,
         why = the buff id of what keeps ticks from healing you, a key in CANT_HEAL_WORDS, or nil,
     }
 ]]
 function hud.draw_resting(view)
+    preview.resting = view.preview == true;
     local element = settings.resting;
     -- Full needs no healing, so it wins.
     local cant = (element.show_why and not view.full) and CANT_HEAL_WORDS[view.why] or nil;
@@ -1011,7 +1325,7 @@ function hud.draw_resting(view)
     resting_timer.value_color = view.full and colors.full or nil;
     resting_timer.value = nil;
     if (element.show_value) then
-        resting_timer.value = view.full and 'full' or seconds_text(resting_text, view.left);
+        resting_timer.value = view.full and 'full' or (view.waiting and 'waiting') or seconds_text(resting_text, view.left);
         if (cant ~= nil) then
             resting_timer.value, resting_timer.value_color = cant, colors.detail;
         end
@@ -1019,6 +1333,28 @@ function hud.draw_resting(view)
     -- The gains and the full times aren't true while ticks heal nothing. Their rows stay, so the card
     -- keeps its size.
     resting_timer.detail = (cant == nil) and resting_detail_text(element, view) or nil;
+    resting_timer.detail_short = resting_timer.detail and resting_timer.detail:gsub('full in ', 'full ') or nil;
+    resting_timer.next_line = (element.show_next_gains and cant == nil) and resting_next_text(view) or nil;
+    local meta = view.full_meta;
+    resting_timer.ticks_line = nil;
+    if (element.show_ticks and cant == nil and not view.full and meta and meta.ticks ~= nil) then
+        resting_timer.ticks_line = meta.ticks == 0 and 'full before next tick'
+            or ('%s%d %s to full'):format(meta.confidence == 'estimated' and '~' or '',
+                meta.ticks, meta.ticks == 1 and 'tick' or 'ticks');
+    end
+    resting_timer.goal_line = nil;
+    local goal = view.goal;
+    if (element.show_goal and goal ~= nil) then
+        local label = goal.label or 'Recovery';
+        if (goal.reached) then
+            resting_timer.goal_line = label .. ' reached';
+        elseif (cant == nil and goal.seconds ~= nil) then
+            resting_timer.goal_line = ('%s in %s%s'):format(label, goal.confidence == 'estimated' and '~' or '',
+                duration_text(math.ceil(goal.seconds)));
+        elseif (cant == nil) then
+            resting_timer.goal_line = label .. ' in --';
+        end
+    end
     fill_full_line(resting_timer, view);
     if (cant ~= nil) then
         resting_timer.footer = nil;
@@ -1035,7 +1371,9 @@ end
 local enemy_text = { tenths = -1, text = '' };
 
 -- What the enemy timer says instead of the seconds while the monster readies a TP move or casts.
-local HOLD_WORDS = { tp_move = 'TP move', spell = 'casting' };
+local HOLD_WORDS = { tp_move = 'TP move', spell = 'casting', sleep = 'asleep', stun = 'stunned',
+    petrification = 'petrified', terror = 'terror', observing = 'waiting' };
+local CONTROL_HOLDS = { sleep = true, stun = true, petrification = true, terror = true, observing = true };
 local enemy_detail = { name = nil, delay = -1, learned = false, tag = nil, show_name = false, show_delay = false,
     show_effects = false, text = nil };
 local enemy_timer = { key = 'enemy' };
@@ -1075,12 +1413,15 @@ end
         waiting = true once it's overdue by a whole delay, like while it's asleep or chasing you,
         tag = the effects on it, like "slow", or nil,
         holding = 'tp_move' or 'spell' while one holds its timer, or nil,
-        on_you = true when its last attack was on you,
+        on_you = true when its last attack was on you, preview = true for sample values,
     }
 ]]
 function hud.draw_enemy(view)
+    preview.enemy = view.preview == true;
     local element = settings.enemy;
-    local ready = view.left <= 0 and not view.waiting;
+    local control = CONTROL_HOLDS[view.holding];
+    enemy_control = control == true;
+    local ready = view.left <= 0 and not view.waiting and not control;
     local almost = not ready and not view.waiting and element.almost_ready and view.left <= element.almost_seconds;
     local state_color = (ready and colors.enemy_ready) or (almost and colors.enemy_almost) or nil;
 
@@ -1092,9 +1433,9 @@ function hud.draw_enemy(view)
     enemy_timer.value_color = view.waiting and colors.detail or state_color;
     enemy_timer.value = nil;
     if (element.show_value) then
-        enemy_timer.value = (view.waiting and '--') or (ready and 'ready') or seconds_text(enemy_text, view.left);
+        enemy_timer.value = (view.waiting and 'waiting') or (ready and 'ready') or seconds_text(enemy_text, view.left);
     end
-    if (element.show_holds and view.holding ~= nil) then
+    if ((element.show_holds or control) and view.holding ~= nil) then
         enemy_timer.value, enemy_timer.value_color = HOLD_WORDS[view.holding], colors.enemy_almost;
     end
     enemy_timer.detail = enemy_detail_text(element, view);
@@ -1127,8 +1468,47 @@ function hud.draw_enemy(view)
     draw_timer(enemy_timer);
 end
 
+-- No mouse capture is needed to explain a click-through timer.
+local function timer_under_mouse()
+    if (not settings or not settings.style.hover_tips or movable or imgui.IsAnyMouseDown()
+        or imgui.IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) then return nil; end
+    local x, y = imgui.GetMousePos();
+    for _, key in ipairs(HOVER_ORDER) do
+        local rect = rectangles[key];
+        if (rect and rect.frame == frame_number and x >= rect.x and x < rect.x + rect.width
+            and y >= rect.y and y < rect.y + rect.height) then return key; end
+    end
+    return nil;
+end
+
+function hud.needs_details()
+    local key = timer_under_mouse();
+    return key ~= nil and not preview[key];
+end
+
+local function draw_hover(details)
+    local key = timer_under_mouse();
+    if (key ~= hovered_timer) then hovered_timer, hover_since = key, os.clock(); end
+    if (key == nil or os.clock() - hover_since < 0.2) then return; end
+    local look = settings.window_style;
+    imgui.PushStyleColor(ImGuiCol_PopupBg, look.dropdowns);
+    imgui.PushStyleColor(ImGuiCol_Text, look.text);
+    if (imgui.BeginTooltip()) then
+        imgui.PushTextWrapPos(360);
+        if (hover_details ~= details or hover_key ~= key or hover_preview ~= preview[key]) then
+            hover_details, hover_key, hover_preview = details, key, preview[key];
+            hover_text = tips.text(key, details, preview[key]);
+        end
+        imgui.TextUnformatted(hover_text);
+        imgui.PopTextWrapPos();
+        imgui.EndTooltip();
+    end
+    imgui.PopStyleColor(2);
+end
+
 -- Everything the HUD draws in a frame goes between begin_frame() and end_frame().
 function hud.begin_frame()
+    frame_number = frame_number + 1;
     host.shown, host.hovered = false, false;
     face = chosen_font or imgui.GetFont();
     screen.width, screen.height = hud.screen_size();
@@ -1138,12 +1518,16 @@ function hud.begin_frame()
     imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
 end
 
--- Returns true once a drag has finished and the new positions should be saved.
-function hud.end_frame()
+-- Returns true and the layout from before the gesture once a drag finishes, for saving and Undo.
+function hud.end_frame(details)
+    draw_alignment_guides();
     imgui.PopStyleVar(4);
+    draw_hover(details);
     if (layout_dirty and not imgui.IsMouseDown(ImGuiMouseButton_Left)) then
         layout_dirty = false;
-        return true;
+        local before = layout_before;
+        layout_before = nil;
+        return true, before;
     end
     return false;
 end

@@ -248,7 +248,7 @@ check('Shift shows all three grips', ids['##grip_width_attack'] and ids['##grip_
 s.attack.numbers_only = true;
 drawn(0.5, 1.5);
 ids = grips();
-check('numbers only has no bar height grip', ids['##grip_width_attack'] and not ids['##grip_height_attack']);
+check('numbers only keeps its whole-height grip', ids['##grip_width_attack'] and ids['##grip_height_attack']);
 s.attack.numbers_only = false;
 s.style.locked = true;
 drawn(0.5, 1.5);
@@ -341,23 +341,33 @@ end
 local saved = drag_grip('##grip_width_attack', 60, 10);
 check('the right edge sets the width', s.attack.width == 300 and s.attack.bar_height == 5, s.attack.width .. ' ' .. s.attack.bar_height);
 check('letting go saves it', saved == true);
+local before_height = select(2, hud.element_size('attack'));
 drag_grip('##grip_height_attack', 60, 10);
-check('the bottom edge sets the bar height', s.attack.width == 300 and s.attack.bar_height == 15, s.attack.width .. ' ' .. s.attack.bar_height);
+check('the bottom edge sets whole height without changing thickness', s.attack.width == 300
+    and s.attack.bar_height == 5 and math.abs(select(2, hud.element_size('attack')) - before_height - 10) <= 2);
+before_height = select(2, hud.element_size('attack'));
 drag_grip('##grip_corner_attack', -20, -5);
-check('the corner sets both', s.attack.width == 280 and s.attack.bar_height == 10, s.attack.width .. ' ' .. s.attack.bar_height);
+check('the corner sets width and whole height', s.attack.width == 280 and s.attack.bar_height == 5
+    and math.abs(select(2, hud.element_size('attack')) - before_height + 5) <= 2);
+
 drag_grip('##grip_corner_attack', -900, -900);
-check('a drag stops at the smallest size', s.attack.width == 120 and s.attack.bar_height == 2, s.attack.width .. ' ' .. s.attack.bar_height);
+check('a drag stops at the smallest size', s.attack.width == 120 and s.attack.height_scale == 0.5
+    and s.attack.bar_height == 5);
 drag_grip('##grip_corner_attack', 5000, 5000);
-check('and at the largest', s.attack.width == 640 and s.attack.bar_height == 32, s.attack.width .. ' ' .. s.attack.bar_height);
+check('and at the largest', s.attack.width == 640 and s.attack.height_scale == 2.5
+    and s.attack.bar_height == 5);
 s.style.scale = 2.0;
-s.attack.width, s.attack.bar_height = 240, 5;
+s.attack.width, s.attack.bar_height, s.attack.height_scale = 240, 5, 1;
+hud.refresh(s);
+before_height = select(2, hud.element_size('attack'));
 drag_grip('##grip_corner_attack', 60, 10);
-check('at scale 2 a drag moves half as far', s.attack.width == 270 and s.attack.bar_height == 10, s.attack.width .. ' ' .. s.attack.bar_height);
+check('scale 2 keeps the height drag in screen pixels', s.attack.width == 270 and s.attack.bar_height == 5
+    and math.abs(select(2, hud.element_size('attack')) - before_height - 10) <= 2);
 s.style.scale = 1.0;
 
--- The strip's bar is drawn at 0.6 of its setting, so its drag moves the setting further.
+-- The separate enemy strip changes its whole height too, preserving the thinner progress bar setting.
 s.attack.enabled = false;
-s.enemy.enabled, s.enemy.attached, s.enemy.bar_height = true, true, 5;
+s.enemy.enabled, s.enemy.attached, s.enemy.bar_height, s.enemy.height_scale = true, true, 5, 1;
 local function drag_strip(dy)
     drag.id, drag.started = '##grip_height_enemy', false;
     mouse[1], mouse[2] = 900, 700;
@@ -372,9 +382,13 @@ local function drag_strip(dy)
     end
     drag.id = nil;
 end
+hud.refresh(s);
+before_height = select(2, hud.element_size('enemy'));
 drag_strip(6);
-check('the strip\'s bottom edge follows the mouse', s.enemy.bar_height == 15, s.enemy.bar_height);
+check('the strip bottom edge follows the mouse without changing bar thickness', s.enemy.height_scale > 1
+    and s.enemy.bar_height == 5 and math.abs(select(2, hud.element_size('enemy')) - before_height - 6) <= 2);
 s.attack.enabled = true;
+s.attack.height_scale = 1;
 s.enemy.enabled, s.enemy.attached, s.enemy.bar_height = false, false, 5;
 for _, name in ipairs({ 'InvisibleButton', 'IsItemActivated', 'IsItemActive', 'GetMousePos' }) do rawset(imgui, name, nil); end
 hud.set_movable(false);

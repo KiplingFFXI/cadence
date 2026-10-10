@@ -23,6 +23,22 @@ local hud = require('ui.hud');
 local ME, OTHER, MOB = 1001, 2001, 0x01000200;
 local SPELL, TP_MOVE, PET = 4, 11, 13;
 
+do
+    enemy.reset();
+    enemy.on_round(0, MOB, ME);
+    enemy.on_effect(1, MOB, effects.landed(SPELL, 57, 230, 33), false);
+    enemy.on_paralyzed(182, MOB, ME);
+    local _, left, interval = enemy.progress(182, MOB);
+    check('a paralyzed round expires old haste before scheduling', near(left, 4) and near(interval, 4));
+    enemy.reset();
+    enemy.on_round(0, MOB, ME);
+    enemy.on_effect(1, MOB, effects.landed(SPELL, 57, 230, 33), false);
+    enemy.on_hold_end(182, MOB, false);
+    _, left, interval = enemy.progress(182, MOB);
+    check('an instant enemy attack expires old haste before scheduling', near(left, 6) and near(interval, 4));
+    enemy.reset();
+end
+
 -- What counts as landing ------------------------------------------------------------------------
 local slow = effects.landed(SPELL, 56, 236, 13);
 check('Slow landing', slow and slow.effect == 13 and slow.power == 1825 and not slow.exact);
@@ -171,6 +187,39 @@ check('yours stays until it wears off', select(3, state(MOB)) == 'slow');
 now = now + 10;
 check('and goes if the wear-off never comes', select(3, state(MOB)) == nil);
 
+-- Troubadour and song gear can keep Elegy on past the old timeout. Those attacks must never be
+-- saved as the monster's plain speed, whether the cast was yours or someone else's.
+for i, song in ipairs({
+    { id = 421, gap = 5.0, duration = 288, backstop = 360 },
+    { id = 422, gap = 6.0, duration = 432, backstop = 540 },
+    { id = 9999, gap = 6.0, duration = 432, backstop = 540 },
+}) do
+    for _, mine in ipairs({ true, false }) do
+        local id = MOB + 30 + i * 2 + (mine and 0 or 1);
+        local name = 'Long Elegy ' .. id;
+        enemy.on_engage(now, id);
+        rounds(id, 4.0, 4);
+        enemy.on_effect(now, id, effects.landed(SPELL, song.id, 237, 194), mine);
+        rounds(id, 4.0, 1);
+        rounds(id, song.gap, math.floor((song.duration - 4) / song.gap));
+        delay, learned, tag = state(id);
+        local label = tostring(song.id) .. (mine and ' yours' or ' another player');
+        check('extended Elegy stays tracked ' .. label,
+            near(delay, song.gap) and tag == (mine and 'elegy' or 'elegy?'), tostring(tag));
+        enemy.remember(id, name);
+        enemy.on_effect_gone(now, id, 194);
+        check('wear-off restores plain speed ' .. label, near(state(id), 4.0));
+        enemy.forget(id);
+        enemy.on_engage(now, id);
+        enemy.recall(now, id, name);
+        check('extended Elegy never enters saved speed ' .. label, near(state(id), 4.0), state(id));
+        enemy.on_effect(now, id, effects.landed(SPELL, song.id, 237, 194), mine);
+        now = now + song.backstop + (mine and 11 or 1);
+        check('Elegy still has a backstop ' .. label, select(3, state(id)) == nil);
+        enemy.forget(id);
+    end
+end
+
 -- A monster slowed from the pull has no plain gaps. Its slowed gaps, with the Slow worked back out,
 -- stand in for them.
 local FRESH = MOB + 5;
@@ -287,6 +336,7 @@ check('turned off, no tag', detail(view):find('slow', 1, true) == nil);
 -- The tag is enough to give the timer its text row.
 s.enemy.show_name, s.enemy.show_delay, s.enemy.show_value, s.style.show_labels = false, false, false, false;
 s.enemy.show_effects = true;
+s.enemy.show_holds = false;
 hud.refresh(s);
 local _, with_tag = hud.element_size('enemy');
 s.enemy.show_effects = false;
@@ -295,6 +345,7 @@ local _, without = hud.element_size('enemy');
 check('the tag alone keeps the text row', with_tag > without, with_tag .. ' vs ' .. without);
 s.enemy.show_name, s.enemy.show_delay, s.enemy.show_value, s.style.show_labels = true, true, true, true;
 s.enemy.show_effects = true;
+s.enemy.show_holds = true;
 view.tag = nil;
 check('no effects, no tag', detail(view):find('|Goblin  4.73s est.|', 1, true) ~= nil, detail(view));
 

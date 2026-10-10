@@ -28,7 +28,7 @@ do
     enemy.reset();
     enemy.on_round(0, MOB, TANK);
     enemy.on_hold_begin(1, MOB, 'spell');
-    check('a spell starting counts', enemy.active(10.9, MOB) and not enemy.active(11.1, MOB));
+    check('an active spell remains followed beyond the ordinary quiet window', enemy.active(10.9, MOB) and enemy.active(30, MOB));
     enemy.on_hold_end(8, MOB, false);
     check('and so does it ending', enemy.active(12.9, MOB) and enemy.active(17.9, MOB) and not enemy.active(18.1, MOB));
 

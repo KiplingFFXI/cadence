@@ -45,9 +45,8 @@ check('vermillion for almost ready, yellow for ready', same(s.attack.almost_colo
 check('yellow once full', same(s.resting.full_color, 0xf0, 0xe4, 0x42));
 check('a grey enemy bar', same(s.enemy.fill_end, 0xbd, 0xbd, 0xbd));
 
--- Ember, as picked, with every color typed out so a slip shows up. It comes right before Colorblind safe.
-check('Ember is on the list', presets.NAMES[#presets.NAMES - 1] == 'Ember'
-    and presets.IDS[#presets.IDS - 1] == 'ember');
+-- Ember, as picked, with every color typed out so a slip shows up.
+check('Ember keeps its place on the list', presets.NAMES[5] == 'Ember' and presets.IDS[5] == 'ember');
 presets.apply(s, 'Ember');
 local EMBER = {
     style   = { panel_color = { '2a1d12', 0.88 }, border_color = { 'ffb070', 0.25 }, accent_color = { 'e8742a' },
@@ -126,7 +125,7 @@ check('and Custom from it once you change it', shown == 'Custom (from Classic FF
 -- Custom names the last preset you picked, typed out so a slip shows up. No row is marked, since your
 -- look isn't any of them.
 local FROM = { 'Custom (from Phoenix)', 'Custom (from Classic FFXI)', 'Custom (from Minimal)',
-    'Custom (from High contrast)', 'Custom (from Ember)', 'Custom (from Colorblind safe)' };
+    'Custom (from High contrast)', 'Custom (from Ember)', 'Custom (from Mint)', 'Custom (from Lavender)', 'Custom (from Colorblind safe)' };
 for i, name in ipairs(presets.NAMES) do
     presets.apply(s, name);
     s.style.rounding = s.style.rounding + 1;
@@ -291,12 +290,14 @@ local function undo_greyed()
 end
 MOCK.fire('command', { command = '/cadence' });
 check('greyed out with nothing to undo', undo_greyed() == true);
-presets.apply(s, 'Minimal');
-check('live after a preset', undo_greyed() == false);
+MOCK.fire('command', { command = '/cadence preset minimal' });
+check('live after a preset command enters unified history', undo_greyed() == false
+    and require('ui.history').status(s) ~= nil);
 rawset(imgui, 'SmallButton', function (label) return label == 'Undo'; end);
 MOCK.frame(1 / 60);
 rawset(imgui, 'SmallButton', nil);
-check('pressing it undoes the preset', not presets.can_undo() and s.style.rounding ~= 3);
+check('pressing it undoes the preset through unified history', require('ui.history').status(s) == nil
+    and not presets.can_undo() and s.style.rounding ~= 3);
 MOCK.fire('command', { command = '/cadence' });
 
 local errors = nil;

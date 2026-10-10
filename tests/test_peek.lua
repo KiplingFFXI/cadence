@@ -174,6 +174,20 @@ check('still solid on the frame you let go', not see_through(state), describe(st
 state = window_state(frames(1));
 check('see-through on the next one', see_through(state) and state.alpha == 0.25, describe(state));
 
+-- A control in a scrolling page belongs to a child window.
+local nav = require('ui.navigation');
+local original_navigation = nav.draw;
+nav.draw = MOCK.real_navigation_draw;
+nav.select('Appearance');
+MOCK.key_shift = false;
+rawset(imgui, 'IsAnyItemActive', function () return true; end);
+rawset(imgui, 'IsWindowFocused', function (flags) return flags == ImGuiFocusedFlags_RootAndChildWindows; end);
+frames(1);
+MOCK.key_shift = true;
+state = window_state(frames(2));
+check('a focused page control keeps Shift from enabling click-through', state ~= nil and not see_through(state), describe(state));
+nav.draw = original_navigation;
+
 -- A timer you're dragging is active in its own window. That keeps the window see-through.
 rawset(imgui, 'IsAnyItemActive', function () return true; end);
 rawset(imgui, 'IsWindowFocused', function () return false; end);
@@ -184,7 +198,7 @@ rawset(imgui, 'IsAnyItemActive', nil);
 rawset(imgui, 'IsWindowFocused', nil);
 MOCK.key_shift = false;
 
--- The box sits on the Look tab next to Reset positions, with its (?).
+-- The box sits on the Appearance tab next to Reset positions, with its (?).
 local calls = frames(1);
 local order = {};
 for _, c in ipairs(calls) do

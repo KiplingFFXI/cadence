@@ -120,7 +120,7 @@ for _, name in ipairs(presets.NAMES) do
     local packed = theme.u32(s.enemy.on_you_color);
     if (not seen[packed]) then seen[packed], distinct = true, distinct + 1; end
 end
-check('every look has its own mark color', distinct == #presets.NAMES, distinct);
+check('all eight looks have their own mark color', #presets.NAMES == 8 and distinct == #presets.NAMES, distinct);
 presets.reset(s);
 check('reset look puts the default back', theme.u32(s.enemy.on_you_color) == theme.u32(theme.palette.ember));
 

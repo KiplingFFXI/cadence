@@ -20,6 +20,13 @@ local depth = 0;      -- How many tips, lists and popups deep the drawing is ins
 local items = {};
 local problems = 0;
 
+-- Inspect controls inside groups that start folded in the normal window.
+local header = imgui.CollapsingHeader;
+imgui.CollapsingHeader = function (label, ...)
+    imgui.SetNextItemOpen(true, ImGuiCond_Always);
+    return header(label, ...);
+end
+
 local function report(words)
     problems = problems + 1;
     PREVIEW_PY.log(words);
@@ -61,6 +68,17 @@ for _, name in ipairs({ 'Checkbox', 'Button', 'SmallButton', 'SliderInt', 'Slide
         record(name, label);
         return unpack(results);
     end
+end
+
+local options_opened = {};
+local small_button = imgui.SmallButton;
+imgui.SmallButton = function (label, ...)
+    local clicked = small_button(label, ...);
+    if (label:find('^Options##readout_') and not options_opened[label]) then
+        options_opened[label] = true;
+        return true;
+    end
+    return clicked;
 end
 
 -- TextColored takes its color first and its words second.
@@ -120,6 +138,24 @@ imgui.EndListBox = function (...)
     end
     end_list(...);
     record('ListBox', '##list');
+end
+
+-- The page scrolls under fixed navigation. Check its controls normally; the nested Details
+-- area is clipped separately, so only its visible rectangle can overlap surrounding controls.
+local begin_child, end_child = imgui.BeginChild, imgui.EndChild;
+local child_depths = {};
+imgui.BeginChild = function (id, ...)
+    local shown = begin_child(id, ...);
+    local clipped = inside and not tostring(id):find('##page_', 1, true);
+    child_depths[#child_depths + 1] = clipped;
+    if (clipped) then depth = depth + 1; end
+    return shown;
+end
+imgui.EndChild = function (...)
+    local clipped = table.remove(child_depths);
+    if (clipped) then depth = depth - 1; end
+    end_child(...);
+    if (clipped) then record('Child', '##details'); end
 end
 
 -- A closed dropdown is an item. Its text runs from its left padding to its arrow, which is as wide as the

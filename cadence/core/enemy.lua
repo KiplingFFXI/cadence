@@ -9,7 +9,8 @@
     4 s. That's the first guess until its own attacks show the real one. A monster with the same name
     as one learned earlier in that zone starts from that one's delay instead.
     TP moves and spells pause the timer while they run. It picks up about 2 s after they finish.
-    Sleep, stun and a monster chasing you can't be seen either. A bar that runs out shows ready. It
+    Observed control effects stop learning. Their end waits for a new attack to set the clock.
+    A monster chasing you still has no visible pause. A bar that runs out shows ready. It
     shows waiting once a whole delay goes by with no attack. The next attack puts it back in step.
     Slow, Elegy and Haste change a monster's delay. Its gaps with none of them on are kept apart from
     its gaps with them on. Going back and forth doesn't mix up what was learned.
@@ -50,9 +51,6 @@ local LONGEST_GAP_RATIO = 2.5;
 -- monsters are 500 delay. Slow and Elegy can double that.
 local LONGEST_DELAY = 500 * 2 / 60;
 
--- How long a monster counts as attacking you after its last round.
-local ATTACKER_SECONDS = 10;
-
 -- How long a monster counts as active after its last round, TP move or spell. A long spell and the
 -- 2 s after it can keep a monster from attacking for over 10 s. A monster that attacks slower than
 -- that, like a slow one under Slow and Elegy, gets one and a half of its own delay instead.
@@ -63,6 +61,7 @@ local ACTIVE_DELAYS  = 1.5;
 -- and NPC fighters get clocks too.
 local FORGET_SECONDS = 30;
 local MOST_CLOCKS    = 64;
+local CONTROL_ORDER = { 7, 28, 10, 2 };
 
 -- How many monster names keep their delay. Past this the oldest one saved goes.
 local MOST_SPEEDS = 64;
@@ -84,8 +83,12 @@ local function new_clock(now)
         delay         = DEFAULT_DELAY,   -- The delay in use, with any effects on it.
         base_gaps     = {},     -- Recent clean gaps with no effects on.
         base_guess    = DEFAULT_DELAY,   -- Its delay with no effects, until base_gaps shows it.
+        recalled      = false,
         effect_gaps   = {},     -- Recent clean gaps with the effects it has on now.
         effects       = {},     -- [effect id] = { power, exact, sure_until, ends_at }
+        controls      = {},     -- Observed attack-preventing effects, with uncertain durations.
+        control_since = nil,
+        resync        = false,  -- A control ended; only another attack can set the next due time.
         changes       = 0,      -- Goes up each time an effect lands or comes off.
         round_changes = 0,      -- `changes` and whether it had any effects when it last attacked.
         round_plain   = true,
@@ -157,6 +160,7 @@ local function learned_delay(gaps)
 end
 
 local function remember_gap(gaps, gap)
+    if (gap <= 0) then return; end
     local longest = LONGEST_DELAY;
     if (#gaps >= GAPS_TO_TRUST) then
         longest = learned_delay(gaps) * LONGEST_GAP_RATIO;
@@ -266,8 +270,21 @@ local function after_change(clock)
     update_tag(clock);
 end
 
--- Takes off effects that can't still be on.
+-- Removing a control gives no exact next-attack time.
+local function control_gone(clock, effect)
+    if (effect == 19 or effect == 193) then effect = 2; end
+    if (clock.controls[effect] == nil) then return false; end
+    clock.controls[effect] = nil;
+    clock.clean, clock.resync = false, true;
+    if (next(clock.controls) == nil) then clock.control_since = nil; end
+    return true;
+end
+
+-- Takes off effects that can't still be on. Control expiry remains an estimate.
 local function expire(clock, now)
+    for effect, on in pairs(clock.controls) do
+        if (now >= on.ends_at) then control_gone(clock, effect); end
+    end
     local gone = false;
     for _, on in pairs(clock.effects) do
         if (now > on.ends_at) then
@@ -305,9 +322,11 @@ end
 function enemy.on_round(now, id, target)
     local clock = clock_for(now, id);
     expire(clock, now);
-    if (clock.clean) then
+    if (clock.clean and not clock.resync and next(clock.controls) == nil) then
         file_gap(clock, now - clock.last_attack);
     end
+    for effect in pairs(clock.controls) do clock.controls[effect] = nil; end
+    clock.control_since, clock.resync = nil, false;
     clock.round_changes, clock.round_plain = clock.changes, next(clock.effects) == nil;
     clock.last_attack = now;
     clock.last_action = now;
@@ -324,6 +343,15 @@ end
 ]]
 function enemy.on_effect(now, id, info, mine)
     local clock = clock_for(now, id);
+    if (info.control ~= nil) then
+        clock.controls[info.effect] = { control = info.control, ends_at = now + info.lasts,
+            duration_estimate = info.duration_estimate, duration_basis = info.duration_basis,
+            inputs_known = info.inputs_known, cast_inputs = info.cast_inputs };
+        clock.control_since = clock.control_since or now;
+        clock.clean, clock.resync = false, true;
+        clock.held_since, clock.held_by = nil, nil;
+        return;
+    end
     before_change(clock);
     local effects = clock.effects;
     if (info.effect == SLOW) then
@@ -336,6 +364,9 @@ function enemy.on_effect(now, id, info, mine)
         exact      = info.exact,
         sure_until = mine and math.huge or (now + info.sure_for),
         ends_at    = now + info.lasts + (mine and WEAR_OFF_SLACK or 0),
+        duration_estimate = info.duration_estimate, duration_basis = info.duration_basis,
+        duration_uncertain = info.duration_uncertain,
+        inputs_known = info.inputs_known, cast_inputs = info.cast_inputs,
     };
     after_change(clock);
 end
@@ -343,6 +374,7 @@ end
 -- An effect wore off the monster, or something took it off.
 function enemy.on_effect_gone(now, id, effect)
     local clock = clocks[id];
+    if (clock ~= nil and control_gone(clock, effect)) then clock.seen = now; return; end
     if (clock == nil or clock.effects[effect] == nil) then
         return;
     end
@@ -352,10 +384,19 @@ function enemy.on_effect_gone(now, id, effect)
     after_change(clock);
 end
 
+-- Positive damage wakes an observed Sleep. Bind is not an attack-preventing effect.
+function enemy.on_damage(now, id, damage)
+    local clock = clocks[id];
+    if (clock ~= nil and damage > 0 and control_gone(clock, 2)) then clock.seen = now; end
+end
+
 -- A paralyzed or intimidated round. It uses up the timer and shows who the monster was attacking.
 -- Its gap isn't learned.
 function enemy.on_paralyzed(now, id, target)
     local clock = clock_for(now, id);
+    expire(clock, now);
+    for effect in pairs(clock.controls) do clock.controls[effect] = nil; end
+    clock.control_since, clock.resync = nil, false;
     clock.last_attack = now;
     clock.last_action = now;
     clock.next_attack = now + clock.delay;
@@ -391,6 +432,7 @@ function enemy.on_hold_end(now, id, stunned)
     if (clock == nil or clock.next_attack == nil) then
         return;
     end
+    expire(clock, now);
     if (clock.held_since == nil and clock.next_attack - now <= TICK_SECONDS) then
         -- Some monsters, like flying wyrms, attack with TP moves. The attack used up its delay.
         clock.last_attack = now;
@@ -431,6 +473,7 @@ end
 
 -- The monster stopped fighting, died or is gone.
 enemy.forget = forget;
+enemy.on_disappear = forget;
 
 function enemy.has(id)
     return clocks[id] ~= nil;
@@ -442,7 +485,8 @@ function enemy.active(now, id)
     if (clock == nil or clock.last_action == nil) then
         return false;
     end
-    return now - clock.last_action < math.max(ACTIVE_SECONDS, clock.delay * ACTIVE_DELAYS);
+    return next(clock.controls) ~= nil or clock.held_since ~= nil
+        or now - clock.last_action < math.max(ACTIVE_SECONDS, clock.delay * ACTIVE_DELAYS);
 end
 
 -- The server id of who the monster attacked last, or nil before its first round.
@@ -467,8 +511,15 @@ function enemy.progress(now, id)
     end
     expire(clock, now);
 
-    -- The bar doesn't move while a TP move or spell holds the timer.
-    local clock_now = clock.held_since or now;
+    if (clock.resync and next(clock.controls) == nil) then
+        return 1, 0, clock.delay, false, true, clock.tag, 'observing';
+    end
+    local control;
+    for _, effect in ipairs(CONTROL_ORDER) do
+        if (clock.controls[effect] ~= nil) then control = clock.controls[effect].control; break; end
+    end
+    -- Both kinds of hold preserve the last phase without predicting when a control will end.
+    local clock_now = clock.control_since or clock.held_since or now;
     local span = clock.next_attack - clock.last_attack;
     local left = clock.next_attack - clock_now;
     local waiting = left < -clock.delay;
@@ -488,7 +539,8 @@ function enemy.progress(now, id)
         end
     end
     local learned = #gaps_in_use(clock) >= GAPS_TO_TRUST or sure_of_effects(clock);
-    return fill, left, clock.delay, learned, waiting, tag, clock.held_since and clock.held_by;
+    return fill, left, clock.delay, learned and not clock.resync, waiting, tag,
+        control or (clock.held_since and clock.held_by);
 end
 
 --[[
@@ -499,13 +551,13 @@ end
 function enemy.attacking(now, me, current)
     local followed = clocks[current];
     if (followed ~= nil and followed.target == me and followed.last_attack ~= nil
-        and now - followed.last_attack < ATTACKER_SECONDS) then
+        and enemy.active(now, current)) then
         return current;
     end
 
-    local found, latest = nil, now - ATTACKER_SECONDS;
+    local found, latest = nil, -math.huge;
     for id, clock in pairs(clocks) do
-        if (clock.target == me and clock.last_attack ~= nil and clock.last_attack > latest) then
+        if (clock.target == me and clock.last_attack ~= nil and clock.last_attack > latest and enemy.active(now, id)) then
             found, latest = id, clock.last_attack;
         end
     end
@@ -517,7 +569,7 @@ end
 function enemy.sweep(now, keep)
     for id, clock in pairs(clocks) do
         expire(clock, now);
-        if (id ~= keep and now - clock.seen > FORGET_SECONDS and next(clock.effects) == nil) then
+        if (id ~= keep and now - clock.seen > FORGET_SECONDS and next(clock.effects) == nil and next(clock.controls) == nil) then
             forget(id);
         end
     end
@@ -557,6 +609,7 @@ function enemy.remember(id, name)
         return;
     end
     local key = speed_key(id, name);
+    clock.speed_key = key;
     local speed = speeds[key];
     if (speed == nil) then
         speed = {};
@@ -581,11 +634,13 @@ function enemy.recall(now, id, name)
         return;
     end
     local clock = clocks[id] or clock_for(now, id);
+    clock.speed_key = speed_key(id, name);
     -- Once it has a gap of its own with no effects on, the guess isn't used.
     if (#clock.base_gaps > 0) then
         return;
     end
     clock.base_guess = speed.delay;
+    clock.recalled = true;
     update_delay(clock);
     -- A round with nothing on it set its next one from the plain speed, even when an effect landed after.
     if (clock.clean and clock.round_plain) then
@@ -593,6 +648,46 @@ function enemy.recall(now, id, name)
     elseif (clock.clean and clock.round_changes == clock.changes) then
         clock.next_attack = clock.last_attack + clock.delay;
     end
+end
+
+-- Keep its current action and effects, but start its measured and remembered speeds again.
+function enemy.relearn(id)
+    local clock = clocks[id];
+    if (clock == nil) then return false; end
+    if (clock.speed_key ~= nil and speeds[clock.speed_key] ~= nil) then
+        speeds[clock.speed_key] = nil;
+        speed_count = speed_count - 1;
+    end
+    forget_gaps(clock.base_gaps);
+    forget_gaps(clock.effect_gaps);
+    clock.base_guess, clock.recalled, clock.clean = DEFAULT_DELAY, false, false;
+    update_delay(clock);
+    return true;
+end
+
+function enemy.info(now, id)
+    local clock = clocks[id];
+    if (clock == nil) then return nil; end
+    local _, left, delay, learned, waiting, tag, holding = enemy.progress(now, id);
+    local effects = {};
+    for effect, on in pairs(clock.effects) do
+        effects[#effects + 1] = { id = effect, power = on.power, exact = on.exact,
+            uncertain = now > on.sure_until, ends_at = on.ends_at,
+            duration_estimate = on.duration_estimate, duration_basis = on.duration_basis,
+            duration_uncertain = on.duration_uncertain,
+            inputs_known = on.inputs_known, cast_inputs = on.cast_inputs };
+    end
+    for effect, on in pairs(clock.controls) do
+        effects[#effects + 1] = { id = effect, control = on.control, uncertain = true,
+            ends_at = on.ends_at, duration_estimate = on.duration_estimate,
+            duration_basis = on.duration_basis, inputs_known = on.inputs_known, cast_inputs = on.cast_inputs };
+    end
+    table.sort(effects, function (a, b) return a.id < b.id; end);
+    return { delay = delay, left = left, learned = learned, waiting = waiting, holding = holding,
+        source = (#gaps_in_use(clock) >= GAPS_TO_TRUST and 'observed')
+            or (sure_of_effects(clock) and 'known effects') or (clock.recalled and 'same name') or 'estimated',
+        samples = #gaps_in_use(clock), last_attack = clock.last_attack, last_seen = clock.seen,
+        tag = tag, effects = effects, awaiting_attack = clock.resync };
 end
 
 -- Another character logged in.

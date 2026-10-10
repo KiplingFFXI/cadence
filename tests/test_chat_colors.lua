@@ -1,6 +1,6 @@
 -- cadence's chat colors. The palette, every line printed in your colors and the very same line as
 -- Ashita's at the defaults, the colors each preset sets, Undo and Reset look, the settings check, the
--- CHAT section of the Window tab with its lists and Print a sample, the chatcolor command and what it
+-- CHAT controls under Window in Appearance with its lists and Print a sample, the chatcolor command and what it
 -- says back, and /cadence help chatcolors.
 local out, fails = {}, 0;
 local function check(name, cond, detail)
@@ -134,7 +134,8 @@ end
 -- checkmate's skins, by the same names. Minimal is all cream and High contrast white with a yellow word.
 local PRESET_CHAT = {
     ['Phoenix'] = { 81, 6, 106 }, ['Classic FFXI'] = { 81, 6, 106 }, ['Minimal'] = { 106, 106, 106 },
-    ['High contrast'] = { 1, 69, 1 }, ['Ember'] = { 85, 8, 7 }, ['Colorblind safe'] = { 81, 6, 106 },
+    ['High contrast'] = { 1, 69, 1 }, ['Ember'] = { 85, 8, 7 }, ['Mint'] = { 102, 88, 90 },
+    ['Lavender'] = { 102, 105, 90 }, ['Colorblind safe'] = { 81, 6, 106 },
 };
 local function chat_is(want)
     return s.chat.tag_brackets == want[1] and s.chat.tag_word == want[2] and s.chat.replies == want[3];
@@ -168,7 +169,7 @@ check('and Undo takes that back too', s.chat.tag_word == 69 and s.chat.replies =
 presets.apply(s, 'Phoenix');
 presets.forget_undo();
 
--- The CHAT section of the Window tab -----------------------------------------------------------------------
+-- The CHAT controls under Window in Appearance -----------------------------------------------------------------------
 local function frames(n)
     MOCK.imgui_calls = {};
     MOCK.record_imgui = true;
@@ -184,14 +185,14 @@ local function find(name, label, from)
 end
 MOCK.fire('command', { command = '/cadence' });
 
--- The section from its heading to the end of the tab, as one line per call that places something.
+-- The section from its heading to the next heading, as one line per call that places something.
 local function chat_section()
     local calls = MOCK.imgui_calls;
     local at = find('TextColored', 'CHAT');
     local steps = {};
     for i = (at or #calls) + 1, #calls do
         local c = calls[i];
-        if (c[1] == 'EndTabItem') then break; end
+        if (c[1] == 'EndTabItem' or (c[1] == 'TextColored' and c[3] == 'TIMING DETAILS')) then break; end
         if (c[1] == 'ColorButton') then table.insert(steps, 'swatch ' .. c[2]);
         elseif (c[1] == 'SameLine') then table.insert(steps, 'same' .. (c[2] and (' ' .. c[2]) or '')
             .. (c[3] and (' ' .. c[3]) or ''));
@@ -208,7 +209,7 @@ frames(1);
 local heading_at, steps = chat_section();
 local spacing_at = find('SliderInt', 'Spacing##window');
 local table_end = spacing_at and find('EndTable', nil, spacing_at);
-check('CHAT comes on the Window tab after the FONT and SHAPE columns', heading_at ~= nil and table_end ~= nil
+check('CHAT comes on the Window section after the FONT and SHAPE columns', heading_at ~= nil and table_end ~= nil
     and table_end < heading_at, tostring(heading_at));
 -- The mock's column is 792 wide, so the second column starts (792 + 24) / 2 in.
 local TWO = 'swatch ##chat_tag_brackets | same 0 4 | width 190 | Tag brackets=Dark orchid | same | (?) | same 408 | '
@@ -416,8 +417,8 @@ presets.apply(s, 'Phoenix');
 -- Help -------------------------------------------------------------------------------------------------------
 lines = said('/cadence help chatcolors');
 local HELP = {
-    '/cadence chatcolor <what> <color>  sets one of cadence\'s chat colors, the same as the CHAT section of the Window '
-        .. 'tab. <what> is tag_brackets, tag_word or replies.',
+    '/cadence chatcolor <what> <color>  sets one of cadence\'s chat colors, the same as the CHAT controls under '
+        .. 'Window in Appearance. <what> is tag_brackets, tag_word or replies.',
     '<color> is one of these names or its number. A name works with or without its spaces, like lawngreen.',
     'Cream 106, White 1, Lawn green 2, Slate blue 3, Magenta 5, Cyan 6, Moccasin 7, Coral 8',
     'Dim grey 65, Grey 67, Salmon 68, Yellow 69, Royal blue 71, Dark magenta 72, Violet 73, Tomato 76',

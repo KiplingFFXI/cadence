@@ -18,8 +18,8 @@ Usage
   --addon DIR          folder with cadence.lua, ui/, core/ (read only, never written).
                        Defaults to ../../cadence.
   --out PNG            where the PNG goes (not written when the run fails)
-  --tab NAME           tab to show, matched to the visible tab label, any case ("Timers", "Look").
-                       Sent as ImGuiTabItemFlags_SetSelected until that tab opens. The run fails if
+  --tab NAME           tab to show, matched to the visible tab label, any case ("Timers", "Appearance").
+                       Selects the matching wrapping navigation button. The run fails if
                        no tab has that label, and lists the labels it saw.
   --size W H           game screen size (ImGui display size), default 1600 1200
   --frames N           frames drawn before the screenshot, default 4. Auto-fit windows are hidden on
@@ -52,7 +52,7 @@ Usage
 Examples
 
   python preview.py --tab Timers --out timers.png
-  python preview.py --tab Look --out look_big.png --set style.scale=1.5
+  python preview.py --tab Appearance --out look_big.png --set style.scale=1.5
   python preview.py --tab Timers --out wide.png --window-size 900 480
   python preview.py --tab Timers --out small_screen.png --size 1280 720
 
@@ -64,15 +64,18 @@ Fit gate
 
   python fit_gate.py [--addon DIR] [--jobs N]
 
-Checks that every tab of the settings window fits its default size, 920x680, with no scrollbar. Each
-tab is drawn in every preset at Ashita's 18 px font in three states. Shown has the timers showing.
+Checks that every tab of the settings window fits its default size, 920x680, with no outer scrollbar.
+Pages scroll below fixed navigation. Each tab is drawn in every preset at Ashita's 18 px font in three states. Shown has the timers showing.
 Hidden has /cadence hide on, which adds a line at the top. Off is hidden with the auto attack and
 resting timers turned off too, so the Timers tab adds a note under each of their headings. That's the
 tallest a tab gets, and the state 680 was picked for. Each check runs the whole addon (--full), picks
 the preset with /cadence preset and stops if it didn't go on, then stops if the timers didn't go off.
 
-Then the overlap pass draws every tab in a window 920 wide and 1300 tall, so nothing scrolls, in every
-window font at 18 px and in Ashita's font at 12, 20, 21 and 24 px. overlap_probe.lua runs with --exec.
+Then the overlap pass draws every tab 920 wide, in a window tall enough to show every control.
+Appearance is 4200 tall, Timers 2600, Profiles 2200 and the other tabs 1300. Every group is opened for
+this inspection. Each runs in every window font at 18 px and in Ashita's font at 12, 20, 21 and 24 px.
+overlap_probe.lua runs with --exec. The desktop can cap a tall screenshot's pixel height, but the probe
+still checks every submitted control rectangle. Inspect normal-size captures for the visible result.
 It logs each item that runs into another one and each closed dropdown too narrow for the choice it
 shows, like a font name cut off. Items in tips and open lists don't count. The PNGs go in ../out/fit/.
 
@@ -86,8 +89,9 @@ an ImFont for GetIO() ("has no field" or "has no attribute"), or an access viola
 fails the second time too.
 
 Each line gives the tab, the preset, the state, the content height, and "fits" or what went wrong. A
-check fails on a scrollbar, a failed render, a window not drawn at 920x680, or a hidden window no
-taller than the shown one (then /cadence hide added nothing, so that check proved nothing). Then come
+check fails on an outer scrollbar, a failed render, or a window not drawn at 920x680. Each page
+uses a clipped scrolling child: its hidden check verifies the notice draws and the child shrinks,
+and overlap checks measure the child rectangle against the surrounding controls. Then come
 the tallest tab and a line for each tab, font and size of the overlap pass, with "clear" or the count
 and each thing the probe found under it. An overlap check fails on anything found, a failed render or
 a probe that saw nothing. The last line counts the failures. The exit code is 1 when any check failed.
@@ -245,3 +249,14 @@ cells at screen x 54..428 and 452..826 (cadence's CellPadding.x 12 each side, so
 - SetNextWindowSizeConstraints({600,300},{1000,FLT_MAX}) on a resizable window: --window-size
   400 200 gives 600x300, 1400 900 gives 1000x900. On an AlwaysAutoResize window a min {500,0}
   widens the auto-fit size to 500.
+
+Checkmate UI port scenes
+------------------------
+
+  python preview.py --tab Details --script port_scene.lua --out details.png
+  python preview.py --tab Timers --script port_scene.lua --exec "SCENE_MODE = 'search'" --out search.png
+  python preview.py --script port_scene.lua --exec "SCENE_MODE = 'hover'" --no-crop --size 900 480 --frames 8 --out hover.png
+
+These scenes use synthetic evidence and mouse positions. They verify rendering, not live gameplay.
+The fit gate keeps navigation outside each scrolling page, checks that the hidden-timer notice
+reduces the page height, and checks control overlaps inside pages in every supported window font.

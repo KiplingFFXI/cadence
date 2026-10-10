@@ -82,7 +82,7 @@ function M.draw(settings, version)
                 end
                 imgui.EndTabItem();
             end
-            if (imgui.BeginTabItem('Look')) then
+            if (imgui.BeginTabItem('Appearance')) then
                 imgui.SetNextItemWidth(200);
                 if (imgui.BeginCombo('Preset', 'Pick a look')) then
                     imgui.Selectable('Phoenix', false);

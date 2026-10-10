@@ -7,6 +7,7 @@
 local theme       = require('ui.theme');
 local window_font = require('ui.window_font');
 local chat_colors = require('ui.chat_colors');
+local navigation = require('ui.navigation');
 
 local P = theme.palette;
 
@@ -20,6 +21,7 @@ local defaults = {};
 -- The smallest and largest a timer can be, from the settings window or a drag on its edge.
 defaults.WIDTH      = { 120, 640 };
 defaults.BAR_HEIGHT = { 2, 32 };
+defaults.HEIGHT_SCALE = { 0.5, 2.5 };
 
 -- The size of the timer names, like AUTO ATTACK, and of the small text next to them and under the
 -- bars. Below the smallest it's auto, which follows the text size.
@@ -30,10 +32,10 @@ defaults.DETAIL_SIZE = { 8, 32 };
 -- Label size and Detail size start one below their smallest, at auto.
 local ALMOST_SECONDS = { 0.1, 2.0 };
 defaults.RANGES = {
-    attack  = { width = defaults.WIDTH, bar_height = defaults.BAR_HEIGHT, almost_seconds = ALMOST_SECONDS },
-    resting = { width = defaults.WIDTH, bar_height = defaults.BAR_HEIGHT, flash_seconds = { 0.2, 1.5 },
+    attack  = { width = defaults.WIDTH, height_scale = defaults.HEIGHT_SCALE, bar_height = defaults.BAR_HEIGHT, almost_seconds = ALMOST_SECONDS },
+    resting = { width = defaults.WIDTH, height_scale = defaults.HEIGHT_SCALE, bar_height = defaults.BAR_HEIGHT, flash_seconds = { 0.2, 1.5 },
         sound_volume = { 0, 100 } },
-    enemy   = { width = defaults.WIDTH, bar_height = defaults.BAR_HEIGHT, almost_seconds = ALMOST_SECONDS },
+    enemy   = { width = defaults.WIDTH, height_scale = defaults.HEIGHT_SCALE, bar_height = defaults.BAR_HEIGHT, almost_seconds = ALMOST_SECONDS },
     style   = {
         scale       = { 0.5, 2.5 },
         font_size   = { 10, 28 },
@@ -50,6 +52,9 @@ defaults.RANGES = {
 
 -- The longest label you can type for a timer.
 defaults.LABEL_LENGTH = 23;
+defaults.TP_GOALS = { 1000, 2000, 3000 };
+defaults.GOAL_PERCENT = { 1, 100 };
+defaults.GOAL_AMOUNT = { 1, 99999 };
 
 -- What Follows can be, as its settings value, its name in the settings window and its word for
 -- /cadence enemy follow.
@@ -83,6 +88,7 @@ function defaults.make()
             x              = 780,
             y              = 664,
             width          = 240,
+            height_scale   = 1.0,
             bar_height     = 5,
             show_value     = true,
             show_delay     = true,
@@ -96,6 +102,9 @@ function defaults.make()
             almost_color   = color(P.gold),
             show_tp        = true,
             show_tp_rounds = true,
+            show_tp_hits   = false,
+            show_tp_time   = false,
+            tp_goal        = 1000,
             tp_color       = color(P.success),
             numbers_only   = false,
             almost_mark    = false,
@@ -109,10 +118,17 @@ function defaults.make()
             x               = 780,
             y               = 620,
             width           = 240,
+            height_scale    = 1.0,
             bar_height      = 5,
             show_value      = true,
             show_gains      = true,
+            show_next_gains = false,
+            show_ticks      = false,
             show_until_full = true,
+            show_goal       = false,
+            goal_stat       = 'mp',
+            goal_mode       = 'percent',
+            goal_value      = 100,
             fill_start      = color(P.royal),
             fill_end        = color(P.ember),
             full_color      = color(P.mint),
@@ -139,6 +155,7 @@ function defaults.make()
             x              = 780,
             y              = 724,
             width          = 240,
+            height_scale   = 1.0,
             bar_height     = 5,
             show_value     = true,
             show_name      = true,
@@ -164,8 +181,12 @@ function defaults.make()
             y      = 10,
             width  = 920,
             height = 680,
+            tabs   = navigation.normalize({}),
         },
         style = T{
+            hover_tips         = true,
+            record_diagnostics = false,
+            layout_guides      = false,
             scale              = 1.0,
             font_size          = 14,
             detail_size        = 0,
@@ -213,6 +234,7 @@ function defaults.make()
         -- The profile each main job loads, by the job's short name, like BLM = 'Nuker'. They stay with
         -- each character. Profiles and the shared layout leave them out.
         job_links = T{},
+        profile_source = T{ kind = '', name = '' },
     };
 end
 
@@ -287,11 +309,17 @@ function defaults.tidy(settings)
     local fresh = defaults.make();
     for name, section in pairs(fresh) do
         local mine = settings[name];
+        if (type(mine) ~= 'table') then mine = section; settings[name] = mine; end
         local ranges = defaults.RANGES[name];
         for key, default in pairs(section) do
             local value = mine[key];
             local range = ranges and ranges[key];
-            if (kind(value) ~= type(default)) then
+            if (name == 'window' and key == 'tabs') then
+                local clean = navigation.normalize(value);
+                if (type(value) ~= 'table') then value = {}; mine[key] = value; end
+                for tab in pairs(value) do value[tab] = nil; end
+                for tab, shown in pairs(clean) do value[tab] = shown; end
+            elseif (kind(value) ~= type(default)) then
                 mine[key] = default;
             elseif (type(value) == 'table') then
                 mine[key] = tidy_color(value, default);
@@ -310,6 +338,17 @@ function defaults.tidy(settings)
         element.label_text = element.label_text:gsub('[^\32-\126]', ''):sub(1, defaults.LABEL_LENGTH);
     end
     settings.resting.sound_file = tidy_sound_file(settings.resting.sound_file);
+    if (settings.resting.goal_stat ~= 'hp' and settings.resting.goal_stat ~= 'mp' and settings.resting.goal_stat ~= 'both') then
+        settings.resting.goal_stat = fresh.resting.goal_stat;
+    end
+    if (settings.resting.goal_mode ~= 'percent' and settings.resting.goal_mode ~= 'amount') then
+        settings.resting.goal_mode = fresh.resting.goal_mode;
+    end
+    local goal_range = settings.resting.goal_mode == 'amount' and defaults.GOAL_AMOUNT or defaults.GOAL_PERCENT;
+    settings.resting.goal_value = math.floor(math.max(goal_range[1], math.min(goal_range[2], settings.resting.goal_value)));
+    if (settings.attack.tp_goal ~= 1000 and settings.attack.tp_goal ~= 2000 and settings.attack.tp_goal ~= 3000) then
+        settings.attack.tp_goal = fresh.attack.tp_goal;
+    end
     if (not is_follows(settings.enemy.which)) then
         settings.enemy.which = fresh.enemy.which;
     end
@@ -323,6 +362,9 @@ function defaults.tidy(settings)
         end
     end
     tidy_job_links(settings);
+    local source = settings.profile_source;
+    if (source.kind ~= 'profile' and source.kind ~= 'layout') then source.kind, source.name = '', ''; end
+    source.name = source.name:gsub('[^\32-\126]', ''):sub(1, 32);
 end
 
 return defaults;

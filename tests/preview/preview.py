@@ -281,6 +281,8 @@ class Preview:
         """Runs inside hello_imgui's font-loading callback, so hud.load_fonts() may add fonts."""
         L = self.lua
         L.execute(LUA_FULL if self.args.full else LUA_DIRECT)
+        if self.args.tab:
+            L.execute("require('ui.navigation').select(...)", self.args.tab)
         if L.eval('#PREVIEW.hud.font_names()') == 0:
             self.warn('hud.load_fonts() found no fonts, so the Font list only has Ashita')
         set_fn = L.eval('function (...) ' + LUA_SET + ' end')

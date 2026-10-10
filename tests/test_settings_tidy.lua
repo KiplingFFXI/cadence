@@ -1,5 +1,5 @@
 -- The settings window's greyed out sliders, the Fill label, a timer that's off drawn faint, Show
--- them, Undo and Reset look on the PRESET heading, Drain instead of fill on the Look tab, the footer,
+-- them, Undo and Reset look on the PRESET heading, Drain instead of fill on the Appearance tab, the footer,
 -- a color dropped on a swatch saving, and what chat says.
 local out, fails = {}, 0;
 local function check(name, cond, detail)
@@ -118,6 +118,8 @@ for _, slider in ipairs({ 'Bar height##attack', 'Width##enemy', 'Label size' }) 
         tostring(off) .. ' ' .. tostring(tip_off));
 end
 check('Bar height##resting stays live', greyed('SliderInt', 'Bar height##resting') == false);
+check('Height stays live for a text-only timer', greyed('SliderFloat', 'Height##attack') == false);
+check('Height stays live for the attached enemy timer', greyed('SliderFloat', 'Height##enemy') == false);
 s.attack.numbers_only, s.enemy.attached, s.style.show_labels = false, false, true;
 seen = walk(frames(1));
 for _, slider in ipairs({ 'Bar height##attack', 'Width##enemy', 'Label size' }) do
@@ -142,11 +144,11 @@ end
 check('the enemy timer is off by default', s.enemy.enabled == false);
 check('its settings are faint', find(seen, 'BeginCombo', 'Follows##enemy').alpha < 1
     and find(seen, 'Checkbox', 'On you').alpha < 1, find(seen, 'BeginCombo', 'Follows##enemy').alpha);
-check('its bar settings too', find(seen, 'Checkbox', 'Numbers only##enemy').alpha < 1
+check('its bar settings too', find(seen, 'Checkbox', 'Text only##enemy').alpha < 1
     and find(seen, 'SliderFloat', 'Almost ready at##enemy').alpha < 1);
 check('faint isn\'t greyed out, so they still work', not find(seen, 'BeginCombo', 'Follows##enemy').disabled
     and not find(seen, 'Checkbox', 'Keep the last monster').disabled
-    and not find(seen, 'Checkbox', 'Numbers only##enemy').disabled);
+    and not find(seen, 'Checkbox', 'Text only##enemy').disabled);
 local _, chip = find(seen, 'Button', 'OFF##enemy');
 local note, at = find(seen, 'TextUnformatted', OFF_NOTE);
 local _, follows = find(seen, 'BeginCombo', 'Follows##enemy');
@@ -156,7 +158,7 @@ check('the heading, its chip and that line are at full strength', note ~= nil an
 check('only one line for it', notes(seen) == 1, notes(seen));
 check('the timers that are on aren\'t faint', find(seen, 'Checkbox', 'Seconds left##attack').alpha == 1
     and find(seen, 'Checkbox', 'Seconds left##resting').alpha == 1);
-check('the Look tab isn\'t faint', find(seen, 'SliderFloat', 'Scale').alpha == 1);
+check('the Appearance tab isn\'t faint', find(seen, 'SliderFloat', 'Scale').alpha == 1);
 
 s.enemy.enabled = true;
 seen = walk(frames(1));
@@ -302,11 +304,11 @@ check('Reset look still resets the look', s.style.scale == 1.0 and s.attack.widt
     s.style.scale .. ' ' .. s.attack.width);
 
 -- Drain instead of fill ----------------------------------------------------------------------------
-local _, look_at = find(seen, 'BeginTabItem', 'Look');
+local _, look_at = find(seen, 'BeginTabItem', 'Appearance');
 local _, drain_at = find(seen, 'Checkbox', 'Drain instead of fill');
 local _, font_at = find(seen, 'BeginCombo', 'Font');
 local _, lock_at = find(seen, 'Checkbox', 'Lock in place');
-check('Drain instead of fill is on the Look tab, under Font', look_at and drain_at and drain_at > look_at
+check('Drain instead of fill is on the Appearance tab, under Font', look_at and drain_at and drain_at > look_at
     and drain_at > font_at and drain_at < lock_at, tostring(look_at) .. ' ' .. tostring(drain_at));
 local _, drain_help = help_after(seen, drain_at);
 check('with a (?)', drain_help ~= nil and drain_help < lock_at);

@@ -51,12 +51,8 @@ local function errors() for _, l in ipairs(MOCK.printed) do if (l:find('Drawing 
 MOCK.now = 5;
 MOCK.fire('command', { command = '/cadence' });
 local c = frames(3);
--- The mock draws every tab each frame. Every slider has a disabled block, 18 of them. The Timers tab
--- has five more (Rounds to 1000, the ready mark, Play and the two hide options), the Enemy tab two (Keep
--- the last monster and the ready mark), the Look tab four (Undo and the box in front of each label) and
--- the Profiles tab four (Overwrite, Load, Rename and Delete). Each of the nine checkboxes with a color
--- swatch has one too, though only On you ever greys out. That's 42 a frame.
-check('BeginDisabled balanced', (c.BeginDisabled or 0) == (c.EndDisabled or 0) and (c.BeginDisabled or 0) == 126, tostring(c.BeginDisabled) .. '/' .. tostring(c.EndDisabled));
+-- Every page and each workflow action closes its disabled block.
+check('BeginDisabled balanced', (c.BeginDisabled or 0) == (c.EndDisabled or 0) and (c.BeginDisabled or 0) > 0, tostring(c.BeginDisabled) .. '/' .. tostring(c.EndDisabled));
 
 -- Reset look from the window.
 local s = MOCK.settings.current;

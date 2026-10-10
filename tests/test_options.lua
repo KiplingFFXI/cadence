@@ -206,7 +206,8 @@ do
         and count('Begin', function (c) return c[2] == '##cadence_resting'; end) == 1);
     MOCK.fire('command', { command = '/cadence' });
 
-    -- "full in" switches to minutes past 60 seconds, and a long detail on a narrow timer is cut off.
+    -- Tight cards shorten "full in" to "full" while keeping the time and uncertainty visible.
+    -- A wide card keeps the complete phrase, even beside a longer custom label.
     local function drawn_text(view)
         MOCK.imgui_calls = {};
         MOCK.record_imgui = true;
@@ -221,9 +222,28 @@ do
         return table.concat(texts, '|');
     end
     local view = { fill = 0.5, left = 5, gained_hp = 24, gained_mp = 31, full = false, until_full = 95, flash = 0 };
-    check('full in uses minutes', drawn_text(view):find('full in 1:35', 1, true) ~= nil, drawn_text(view));
+    s.resting.width = 240;
+    hud.refresh(s);
+    local text = drawn_text(view);
+    check('compact full time keeps the minutes', text:find('full 1:35', 1, true) ~= nil
+        and not text:find('full in 1:35', 1, true), text);
     view.until_full = 42;
-    check('full in uses seconds under a minute', drawn_text(view):find('full in 42s', 1, true) ~= nil, drawn_text(view));
+    text = drawn_text(view);
+    check('compact full time keeps seconds under a minute', text:find('full 42s', 1, true) ~= nil, text);
+    view.full_meta = { confidence = 'estimated' };
+    text = drawn_text(view);
+    check('compact full time keeps its uncertainty marker', text:find('full ~42s', 1, true) ~= nil, text);
+    local old_label = s.resting.label_text;
+    s.resting.width, s.resting.label_text = 640, 'Recovery timing';
+    hud.refresh(s);
+    view.until_full, view.full_meta = 95, nil;
+    text = drawn_text(view);
+    check('a wide card keeps full in and minutes beside a longer label',
+        text:find('Recovery timing', 1, true) and text:find('full in 1:35', 1, true), text);
+    view.until_full, view.full_meta = 42, { confidence = 'estimated' };
+    text = drawn_text(view);
+    check('a wide card keeps full in and estimated seconds', text:find('full in ~42s', 1, true) ~= nil, text);
+    s.resting.label_text = old_label;
     s.resting.width = 120;
     hud.refresh(s);
     drawn_text(view);

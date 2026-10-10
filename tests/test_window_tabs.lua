@@ -1,5 +1,5 @@
--- The Window and Window colors tabs. The settings window's font, font size, corners and spacing on the
--- Window tab, and every window color as rows of swatches on the Window colors tab. Then the commands that
+-- The Window and Window colors sections in Appearance. The settings window's font, font size, corners and spacing on the
+-- Window section, and every window color as rows of swatches on the Window colors section. Then the commands that
 -- set them, windowfont, windowfontsize, windowcorners, windowspacing and windowcolor, what each one says
 -- back, and /cadence help window and windowcolors.
 local out, fails = {}, 0;
@@ -112,7 +112,7 @@ for _, entry in ipairs(flat) do
 end
 check('each swatch has its own name', wrong_name == nil, wrong_name);
 
--- The Window tab --------------------------------------------------------------------------------------------
+-- The Window section --------------------------------------------------------------------------------------------
 s.window_style.font, s.window_style.font_size = 'consolas', 18;
 frames(1);
 local font_at, font_combo = find('BeginCombo', 'Font##window');
@@ -141,14 +141,14 @@ check('at 24 px the others grow and Font size keeps its 18 px width, so dragging
     width_before(font_at) .. ' ' .. width_before(size_at));
 s.window_style.font_size = 18;
 
--- Each (?) on the Window tab says what its control does, and whether a preset changes it.
+-- Each (?) on the Window section says what its control does, and whether a preset changes it.
 rawset(imgui, 'IsItemHovered', function () return true; end);
 frames(1);
 rawset(imgui, 'IsItemHovered', nil);
 local window_tips, control = {}, nil;
 for _, c in ipairs(MOCK.imgui_calls) do
     if ((c[1] == 'BeginCombo' or c[1] == 'SliderInt') and tostring(c[2]):find('##window$')) then control = c[2]; end
-    -- The Look tab's slider of the same name, for the timers.
+    -- The Appearance tab's slider of the same name, for the timers.
     if (c[1] == 'SliderInt' and c[2] == 'Corner roundness') then control = c[2]; end
     if (c[1] == 'TextUnformatted' and control ~= nil and window_tips[control] == nil
         and tostring(c[2]):find(' ', 1, true)) then
@@ -162,7 +162,7 @@ local function tip_says(label, ...)
     return true;
 end
 check('the Font tip names the timers\' own font and says presets leave it', tip_says('Font##window',
-    'This window\'s font', 'Look tab', 'A preset never changes it'), window_tips['Font##window']);
+    'This window\'s font', 'Appearance tab', 'A preset never changes it'), window_tips['Font##window']);
 check('and that a wide font stacks the sections and may scroll', tip_says('Font##window',
     'A wide one like Consolas stacks the sections, so the window may scroll'), window_tips['Font##window']);
 check('the Font size tip says the layout grows', tip_says('Font size##window', 'How big this window\'s text is',
@@ -170,7 +170,7 @@ check('the Font size tip says the layout grows', tip_says('Font size##window', '
 check('the corners and spacing tips say a preset sets them', tip_says('Corner roundness##window', 'How round the corners',
     'Window matches the look') and tip_says('Spacing##window', 'The space between this window\'s rows',
     'Window matches the look'), window_tips['Spacing##window']);
-check('the Look tab\'s Corner roundness tip says it\'s for the timers, so the two can\'t be mixed up',
+check('the Appearance tab\'s Corner roundness tip says it\'s for the timers, so the two can\'t be mixed up',
     tip_says('Corner roundness', 'The timers\' corners'), window_tips['Corner roundness']);
 
 -- The Font list lists every font, Ashita's first, and marks the one you have.
@@ -217,7 +217,7 @@ presets.apply(s, 'Phoenix');
 check('and picking the preset puts them back', s.window_style.spacing == 7 and s.window_style.rounding == 0
     and presets.current(s) == 'Phoenix');
 
--- The Window colors tab ---------------------------------------------------------------------------------------
+-- The Window colors section ---------------------------------------------------------------------------------------
 -- Every swatch, with the table and flags it was given.
 local swatches = {};
 rawset(imgui, 'ColorEdit4', function (label, value, flags)
@@ -258,7 +258,7 @@ local i = start and find('BeginTable', '##window_color_sections', start) or #cal
 local row = nil;
 while (i <= #calls and not (calls[i][1] == 'EndTable')) do
     local c = calls[i];
-    if (c[1] == 'TextColored') then table.insert(headings, c[3]); end
+    if (c[1] == 'CollapsingHeader') then table.insert(headings, (c[2]:gsub('##.*', ''))); end
     if (c[1] == 'TableNextColumn') then columns = columns + 1; table.insert(headings, '|'); end
     if (c[1] == 'TextUnformatted' and calls[i - 1][1] == 'AlignTextToFramePadding') then
         row = { name = c[2], keys = {} };
@@ -278,7 +278,7 @@ while (i <= #calls and not (calls[i][1] == 'EndTable')) do
     end
     i = i + 1;
 end
-check('two sections, the second starting at BOXES AND BUTTONS', columns == 2
+check('two columns with independently folded color groups', columns == 2
     and table.concat(headings, ' ') == '| TEXT WINDOW | BOXES AND BUTTONS TABS', table.concat(headings, ' '));
 local drawn = {};
 for _, r in ipairs(rows) do table.insert(drawn, r.name .. ': ' .. table.concat(r.keys, ' ')); end
@@ -440,7 +440,7 @@ end)());
 check('and the Preset list says Custom', presets.current(s) == nil);
 presets.apply(s, 'Phoenix');
 
--- Every slider on the Window tab has its command.
+-- Every slider on the Window section has its command.
 frames(1);
 local COMMAND_OF = { ['Font size##window'] = 'windowfontsize', ['Corner roundness##window'] = 'windowcorners',
     ['Spacing##window'] = 'windowspacing' };
@@ -452,7 +452,7 @@ for _, c in ipairs(MOCK.imgui_calls) do
         if (word == nil or #said('/cadence ' .. word .. ' 13') ~= 1) then uncommanded = c[2]; end
     end
 end
-check('every slider on the Window tab has a command', sliders == 3 and uncommanded == nil, uncommanded or sliders);
+check('every slider on the Window section has a command', sliders == 3 and uncommanded == nil, uncommanded or sliders);
 presets.apply(s, 'Phoenix');
 s.window_style.font_size = 18;
 
@@ -494,6 +494,7 @@ presets.apply(s, 'Phoenix');
 -- Help ---------------------------------------------------------------------------------------------------
 local lines = said('/cadence help window');
 local WINDOW_HELP = {
+    '/cadence tips [on|off]  sets Timer hover help.',
     '/cadence windowfont <name>  picks the settings window\'s font, with or without its spaces. The fonts are Ashita, '
         .. 'Segoe UI, Arial, Tahoma, Verdana, Calibri and Consolas.',
     '/cadence windowfontsize <12-24>  sets the settings window\'s font size.',
@@ -507,7 +508,7 @@ check('help window', table.concat(lines, '\n') == table.concat(WINDOW_HELP, '\n'
 lines = said('/cadence help windowcolors');
 local COLORS_HELP = {
     '/cadence windowcolor <what> <rrggbb>  sets one of the settings window\'s colors. <what> is one of these, under the '
-        .. 'headings on the Window colors tab.',
+        .. 'Window colors section in Appearance.',
     'TEXT  text, faded_text, headings, heading_lines, notes, done_messages, problem_messages, selected_text, '
         .. 'text_cursor',
     'WINDOW  background, border, title_bar, title_bar_unfocused, resize_corner, resize_corner_hovered, '
@@ -520,11 +521,16 @@ local COLORS_HELP = {
 };
 check('help windowcolors lists every window color under its heading', table.concat(lines, '\n')
     == table.concat(COLORS_HELP, '\n'), table.concat(lines, ' / '));
+local appearance = said('/cadence help appearance');
+local look = said('/cadence help look');
+check('help appearance joins timer style, window and window colors, and the old help aliases still work',
+    table.concat(appearance, '\n') == table.concat(look, '\n') .. '\n'
+        .. table.concat(WINDOW_HELP, '\n') .. '\n' .. table.concat(COLORS_HELP, '\n'));
 lines = said('/cadence help');
 local pointer, timers_at = nil, nil;
 for n, line in ipairs(lines) do
-    if (line == '/cadence help attack|resting|enemy|look|colors|preset|font|reset|window|windowcolors|chatcolors|'
-        .. 'profiles  tells you more about one of them.') then
+    if (line == '/cadence help attack|resting|enemy|appearance|colors|preset|font|reset|chatcolors|profiles|preview|details|ui  '
+        .. 'tells you more about one of them.') then
         pointer = n;
     end
     if (line == 'Timers tab') then timers_at = n; end

@@ -124,6 +124,9 @@ local function bytes_per_draw()
     collectgarbage('collect');
     collectgarbage('stop');
     local before = collectgarbage('count');
+    -- Draw once with these locals in place before counting repeated frames.
+    for _ = 1, 1 do settings_window.draw(s, addon.version, false, false); end
+    before = collectgarbage('count');
     for _ = 1, 100 do settings_window.draw(s, addon.version, false, false); end
     local made = (collectgarbage('count') - before) * 1024 / 100;
     collectgarbage('restart');
@@ -202,7 +205,7 @@ check('and what the gone one shows is made once, not every frame', gone_made == 
     ('made %d times in 10 frames'):format(gone_made));
 s.job_links.BLM, s.job_links.THF = nil, nil;
 os.remove(PROFILES_FILE);
--- Verdana isn't in the mock's fonts folder, so the Window tab says so under Font size.
+-- Verdana isn't in the mock's fonts folder, so the Window section says so under Font size.
 s.window_style.font, s.window_style.font_size = 'verdana', 24;
 local big_font = bytes_per_draw();
 check('nor at 24 px with a note about a font that didn\'t load', big_font < 8, ('%.1f bytes a frame'):format(big_font));

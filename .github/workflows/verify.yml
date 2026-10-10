@@ -1,0 +1,63 @@
+name: Verify
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: python -m pip install -r tools/requirements.txt
+
+      - name: Read the pinned Ashita libraries
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: AshitaXI/Ashita-v4beta
+          ref: 4171c74c8ddb2ca2a31654f199e6c1cee40d7256
+          path: .ci/ashita
+          sparse-checkout: addons/libs
+          persist-credentials: false
+
+      - name: Read the reviewed Phoenix revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: phoenixffxi/Phoenix
+          ref: 465ac4c076aebd70170fe8fde032e5066ce0737e
+          path: .ci/phoenix
+          persist-credentials: false
+
+      - name: Check source parity and generated data
+        run: |
+          python tools/check_source.py --server .ci/phoenix
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/generate_modifiers.py --server .ci/phoenix --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/generate_effects.py --server .ci/phoenix --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run tool mutations and addon tests
+        env:
+          ASHITA_LIBS: ${{ github.workspace }}/.ci/ashita/addons/libs
+          CADENCE_SOURCE_REPO: ${{ github.workspace }}/.ci/phoenix
+        run: |
+          python -m unittest discover -s tools/tests -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/run.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check release packaging and workflow behavior
+        run: python tests/test_release.py

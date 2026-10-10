@@ -28,22 +28,34 @@ LUA = [
     'cadence/cadence.lua',
     'cadence/core/attack.lua',
     'cadence/core/delay.lua',
+    'cadence/core/diagnostics.lua',
     'cadence/core/enemy.lua',
+    'cadence/core/file_store.lua',
     'cadence/core/monster_effects.lua',
+    'cadence/core/modifiers.lua',
     'cadence/core/packets.lua',
     'cadence/core/player.lua',
     'cadence/core/reach.lua',
     'cadence/core/resting.lua',
     'cadence/core/shared_layout.lua',
+    'cadence/core/stat_state.lua',
     'cadence/core/tp.lua',
+    'cadence/data/phoenix_modifiers.lua',
+    'cadence/data/phoenix_effects.lua',
     'cadence/ui/chat_colors.lua',
     'cadence/ui/defaults.lua',
+    'cadence/ui/history.lua',
     'cadence/ui/hud.lua',
+    'cadence/ui/layouts.lua',
+    'cadence/ui/navigation.lua',
     'cadence/ui/presets.lua',
+    'cadence/ui/preview.lua',
     'cadence/ui/profiles.lua',
+    'cadence/ui/search.lua',
     'cadence/ui/settings_window.lua',
     'cadence/ui/sound.lua',
     'cadence/ui/theme.lua',
+    'cadence/ui/tips.lua',
     'cadence/ui/window_font.lua',
 ]
 SOUNDS = ['cadence/sounds/FF IX Moogle.mp3', 'cadence/sounds/FF VII Save.mp3']
@@ -88,7 +100,7 @@ def set_version(folder, version):
 def copy_project(folder):
     """A copy of the parts of the project the tools and the job read."""
     skip = shutil.ignore_patterns('__pycache__', 'dist')
-    for name in ('cadence', 'tools', '.github'):
+    for name in ('cadence', 'tools', '.github', 'docs'):
         shutil.copytree(os.path.join(ROOT, name), os.path.join(folder, name), ignore=skip)
     for name in ('CHANGELOG.md', 'LICENSE', 'README.md'):
         shutil.copy2(os.path.join(ROOT, name), os.path.join(folder, name))
@@ -109,6 +121,11 @@ def tree(folder):
 def tree_file(folder, name):
     with open(os.path.join(folder, name), 'rb') as handle:
         return handle.read()
+
+
+def archive_bytes(folder, name):
+    data = tree_file(folder, 'LICENSE' if name == 'cadence/LICENSE' else name)
+    return data if name.endswith('.mp3') else data.replace(b'\r\n', b'\n')
 
 
 def python(folder, script, *args):
@@ -220,8 +237,12 @@ def test_zip(scratch):
               sorted(set(names) ^ set(wanted)))
         with zipfile.ZipFile(path) as archive:
             changed = [name for name in names if name in wanted
-                       and archive.read(name) != tree_file(ROOT, 'LICENSE' if name == 'cadence/LICENSE' else name)]
-        check('each file in the zip %s matches the project\'s, LICENSE at cadence/LICENSE' % label, not changed,
+                       and archive.read(name) != archive_bytes(ROOT, name)]
+            entry = archive.read('cadence/cadence.lua').decode('ascii')
+            check('the zip %s keeps the public author and project link' % label,
+                  re.search(r"^addon\.author\s*=\s*'Kipling';", entry, re.M)
+                  and "https://github.com/KiplingFFXI/cadence" in entry)
+        check('each file in the zip %s matches the project with canonical text newlines, LICENSE at cadence/LICENSE' % label, not changed,
               changed)
         with open(path, 'rb') as handle:
             digest = hashlib.sha256(handle.read()).hexdigest()
@@ -229,28 +250,43 @@ def test_zip(scratch):
               ('Wrote %s with %d files' % (path, len(wanted))) in result.stdout
               and ('SHA-256 %s' % digest) in result.stdout, result.stdout)
 
-    # A copy with a new version and stray files. Only .lua files and the sounds folder's .mp3 and .wav files go
-    # in, so nothing from tests or tools does either.
+    # An unlisted file fails the build before it can replace a prior release.
     copy = copy_project(os.path.join(scratch, 'strays'))
     set_version(copy, '9.8.7')
-    for name in ('cadence/notes.txt', 'cadence/core/attack.lua.bak', 'cadence/ui/__pycache__/x.pyc',
-                 'cadence/sounds/readme.txt', 'cadence/sounds/Bell.WAV', 'cadence/sounds/old/x.mp3',
-                 'tests/test_fake.lua', 'tools/fake.lua', 'fake.lua'):
-        write(os.path.join(copy, name), 'x')
     result = python(copy, 'build_release.py')
     path = os.path.join(copy, 'dist', 'cadence-9.8.7.zip')
-    check('without --out it writes dist\\cadence-<version>.zip, with the version from cadence.lua',
+    check('without --out it writes dist with the version from cadence.lua',
           result.returncode == 0 and os.path.exists(path), result.stderr)
-    if os.path.exists(path):
-        names = zip_names(path)
-        wanted = WITH_SOUNDS + ['cadence/sounds/Bell.WAV']
-        check('stray files stay out, and a .wav in the sounds folder goes in', same_list(names, wanted),
-              sorted(set(names) ^ set(wanted)))
+    before = tree_file(copy, 'dist/cadence-9.8.7.zip') if os.path.exists(path) else None
+    for name in ('cadence/notes.txt', 'cadence/core/attack.lua.bak', 'cadence/test_fake.lua',
+                 'cadence/sounds/readme.txt', 'cadence/sounds/Bell.WAV'):
+        stray = os.path.join(copy, name)
+        write(stray, 'not part of the release')
+        result = python(copy, 'build_release.py')
+        check('unlisted file is rejected: ' + name, result.returncode != 0 and 'Unexpected' in result.stderr)
+        check('rejection preserves the previous archive: ' + name,
+              before is not None and tree_file(copy, 'dist/cadence-9.8.7.zip') == before)
+        os.remove(stray)
+    # Project files outside the runtime tree are never included.
+    for name in ('tests/test_fake.lua', 'tools/fake.lua', 'fake.lua'):
+        write(os.path.join(copy, name), 'x')
     result = python(copy, 'build_release.py', '--no-sounds')
-    if os.path.exists(path):
-        names = zip_names(path)
-        check('--no-sounds leaves out every file in the sounds folder', result.returncode == 0
-              and same_list(names, NO_SOUNDS), sorted(set(names) ^ set(NO_SOUNDS)))
+    check('--no-sounds keeps only the runtime and license', result.returncode == 0
+          and same_list(zip_names(path), NO_SOUNDS), result.stderr)
+
+    source = os.path.join(copy, 'cadence', 'core', 'attack.lua')
+    original = read(source)
+    before = tree_file(copy, 'dist/cadence-9.8.7.zip')
+    for private in ('config/addons/cadence/ExamplePlayer_1234/settings.lua',
+                    r'config\addons\cadence\ExamplePlayer_1234\settings.lua',
+                    r'config\\addons\\cadence\\ExamplePlayer_1234\\settings.lua'):
+        write(source, original + '\n-- ' + private + '\n')
+        result = python(copy, 'build_release.py')
+        check('a character-specific settings path is rejected', result.returncode != 0
+              and 'Private path' in result.stderr and 'ExamplePlayer' not in result.stderr)
+        check('a rejected private path preserves the previous archive',
+              tree_file(copy, 'dist/cadence-9.8.7.zip') == before)
+    write(source, original)
 
 
 def bumped(version):
@@ -337,6 +373,15 @@ def test_bump(scratch):
 
 def test_job(scratch, bumped_copy, crlf_copy, new):
     text = read(WORKFLOW)
+    verify = read(os.path.join(ROOT, '.github', 'workflows', 'verify.yml'))
+    check('drafting requires the read-only Verify job', 'uses: ./.github/workflows/verify.yml' in text
+          and 'needs: verify' in text and 'contents: read' in text)
+    check('Verify runs addon, packaging and source checks', all(step in verify for step in (
+          'python tests/run.py', 'python tests/test_release.py', 'python tools/check_source.py',
+          'python tools/generate_modifiers.py', 'python tools/generate_effects.py',
+          "python -m unittest discover -s tools/tests")))
+    check('Verify never schedules or publishes changes', 'schedule:' not in verify
+          and 'git push' not in verify and 'git commit' not in verify and 'contents: write' not in verify)
     check('the job runs on a push to main that touches cadence.lua, on a version tag and by hand, one at a time',
           'branches: [main]' in text and 'paths: [cadence/cadence.lua]' in text and "tags: ['v[0-9]*']" in text
           and 'workflow_dispatch:' in text and 'cancel-in-progress: false' in text)
@@ -367,9 +412,12 @@ def test_job(scratch, bumped_copy, crlf_copy, new):
     code, said, outputs, _, commands = check_version()
     check('a run by hand drafts the version on main', code == 0 and outputs.get('draft') == 'true'
           and not commands, (code, said, outputs, commands))
-    code, said, outputs, _, _ = check_version(BEFORE='abc123')
+    code, said, outputs, _, commands = check_version(BEFORE='0' * 40)
     check('so does the first push of main, with no commit before it to read', code == 0
-          and outputs.get('draft') == 'true', (code, said, outputs))
+          and outputs.get('draft') == 'true' and not commands, (code, said, outputs, commands))
+    code, said, outputs, _, _ = check_version(BEFORE='abc123')
+    check('an unreadable previous commit stops the job before drafting', code != 0
+          and 'draft' not in outputs and 'Could not read the previous commit' in said, (code, said, outputs))
     code, said, outputs, _, _ = check_version(BEFORE='abc123', STUB_OLD_VERSION='0.0.1',
                                               STUB_RELEASES='v0.0.1 v%s' % version)
     check('a version that already has a release drafts nothing', code == 0 and 'draft' not in outputs

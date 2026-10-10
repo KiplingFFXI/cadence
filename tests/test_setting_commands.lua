@@ -61,20 +61,24 @@ end
 MOCK.fire('command', { command = '/cadence' });
 
 --[[
-    Every slider on the Timers, Enemy and Look tabs. Its label, what you type, its section and key, its
+    Every slider on the Timers, Enemy and Appearance tabs. Its label, what you type, its section and key, its
     lowest and highest number, one in between, its decimal places, whether its left end is auto, and the
-    answer with %s for the number. The Window tab's sliders are tested in test_window_tabs.lua, so they
+    answer with %s for the number. The Window section's sliders are tested in test_window_tabs.lua, so they
     only come into the check that every slider has a command.
 ]]
 local SLIDERS = {
     { 'Width##attack', 'attack width', 'attack', 'width', 120, 640, 300, 0, false,
         'The auto attack timer\'s width is set to %s px.' },
+    { 'Height##attack', 'attack height', 'attack', 'height_scale', 0.5, 2.5, 1.25, 2, false,
+        'The auto attack timer\'s height is set to %sx.' },
     { 'Bar height##attack', 'attack barheight', 'attack', 'bar_height', 2, 32, 9, 0, false,
         'The auto attack timer\'s bar height is set to %s px.' },
     { 'Almost ready at##attack', 'attack almostat', 'attack', 'almost_seconds', 0.1, 2.0, 1.3, 1, false,
         'The auto attack bar turns the almost ready color %s s before your attack.' },
     { 'Width##resting', 'resting width', 'resting', 'width', 120, 640, 333, 0, false,
         'The resting timer\'s width is set to %s px.' },
+    { 'Height##resting', 'resting height', 'resting', 'height_scale', 0.5, 2.5, 1.5, 2, false,
+        'The resting timer\'s height is set to %sx.' },
     { 'Bar height##resting', 'resting barheight', 'resting', 'bar_height', 2, 32, 12, 0, false,
         'The resting timer\'s bar height is set to %s px.' },
     { 'Flash length', 'resting flashlength', 'resting', 'flash_seconds', 0.2, 1.5, 0.8, 1, false,
@@ -83,6 +87,8 @@ local SLIDERS = {
         'The resting sound\'s volume is set to %s%%.' },
     { 'Width##enemy', 'enemy width', 'enemy', 'width', 120, 640, 280, 0, false,
         'The enemy attack timer\'s width is set to %s px.' },
+    { 'Height##enemy', 'enemy height', 'enemy', 'height_scale', 0.5, 2.5, 0.75, 2, false,
+        'The enemy attack timer\'s height is set to %sx.' },
     { 'Bar height##enemy', 'enemy barheight', 'enemy', 'bar_height', 2, 32, 7, 0, false,
         'The enemy attack timer\'s bar height is set to %s px.' },
     { 'Almost ready at##enemy', 'enemy almostat', 'enemy', 'almost_seconds', 0.1, 2.0, 0.7, 1, false,
@@ -98,7 +104,7 @@ local SLIDERS = {
         'The timers\' corner roundness is set to %s px.' },
 };
 local COMMAND_OF = { ['Font size##window'] = 'windowfontsize', ['Corner roundness##window'] = 'windowcorners',
-    ['Spacing##window'] = 'windowspacing' };
+    ['Spacing##window'] = 'windowspacing', ['Goal##recovery'] = 'resting goal mp percent' };
 for _, row in ipairs(SLIDERS) do COMMAND_OF[row[1]] = row[2]; end
 
 -- Each slider and its command set the same thing --------------------------------------------------------
@@ -107,7 +113,7 @@ local drawn = {};
 for _, c in ipairs(MOCK.imgui_calls) do
     if (c[1] == 'SliderInt' or c[1] == 'SliderFloat') then table.insert(drawn, c); end
 end
-check('the window drew every slider', #drawn == #SLIDERS + 3, #drawn);
+check('the window drew every slider', #drawn == #SLIDERS + 4, #drawn);
 -- A command takes a slider's highest number with the decimal places the slider shows, and its lowest, or
 -- auto when that end is auto. Its answer shows the number the same way. One step past either end is
 -- refused. The next frame's slider shows what the command set.
@@ -145,6 +151,11 @@ for _, c in ipairs(drawn) do
 end
 check('every slider in the window has a command', #uncommanded == 0, table.concat(uncommanded, ', '));
 check('which sets it over the same range with the same decimal places', #unequal == 0, table.concat(unequal, ' | '));
+MOCK.fire('command', { command = '/cadence resting goal mp amount 99999' });
+frames(1);
+local goal_slider = last('SliderInt', 'Goal##recovery');
+check('an amount goal uses its separate slider range and command', goal_slider and goal_slider[3][1] == 99999
+    and goal_slider[4] == 1 and goal_slider[5] == 99999);
 presets.reset(s);
 presets.forget_undo();
 
@@ -187,14 +198,14 @@ check('every number command sets its number, says what it did and refuses what i
 check('any case works', answers('/CADENCE Attack WIDTH 410', 'The auto attack timer\'s width is set to 410 px.')
     and s.attack.width == 410);
 check('so does /cad', answers('/cad Scale 1.5', 'The timers\' scale is set to 1.50x.') and s.style.scale == 1.5);
--- A whole number written with a decimal point is still whole. The README says what's refused.
-local readme_file = assert(io.open(ADDON_DIR .. '/../README.md'));
-local readme = readme_file:read('*a');
-readme_file:close();
-check('a whole-number slider takes 300.0, and the README refuses only a number that isn\'t whole',
+-- A whole number written with a decimal point is still whole. The guide says what's refused.
+local guide_file = assert(io.open(ADDON_DIR .. '/../docs/GUIDE.md'));
+local guide = guide_file:read('*a');
+guide_file:close();
+check('a whole-number slider takes 300.0, and the guide refuses only a number that isn\'t whole',
     answers('/cadence attack width 300.0', 'The auto attack timer\'s width is set to 300 px.') and s.attack.width == 300
-    and readme:find('or a number that isn\'t whole for a slider that only takes whole numbers', 1, true) ~= nil
-    and not readme:find('decimal point', 1, true));
+    and guide:find('or a number that isn\'t whole for a slider that only takes whole numbers', 1, true) ~= nil
+    and not guide:find('decimal point', 1, true));
 check('a timer\'s slider works while the timer is off', (function ()
     MOCK.fire('command', { command = '/cadence enemy off' });
     local ok = answers('/cadence enemy barheight 20', 'The enemy attack timer\'s bar height is set to 20 px.');
@@ -204,13 +215,13 @@ end)());
 -- A slider word needs its timer's word, and a timer only takes its own sliders.
 local RESTING_USAGE = 'Type /cadence resting on|off, /cadence resting <part> on|off, /cadence resting <slider> '
     .. '<number>, /cadence resting labeltext <text>, /cadence resting soundfile <name> or /cadence resting playsound. '
-    .. 'The parts are seconds, gains, untilfull, fulltimes, numbers, hidefull, flash, why, sound and label. The '
-    .. 'sliders are width, barheight, flashlength and soundvolume.';
+    .. 'The parts are goal, seconds, gains, ticks, nextgains, untilfull, fulltimes, numbers, hidefull, flash, why, sound and label. The '
+    .. 'sliders are width, height, barheight, flashlength and soundvolume.';
 local ok, detail = refuses('/cadence resting almostat 1', RESTING_USAGE);
 check('resting has no almostat', ok, detail);
-ok, detail = refuses('/cadence attack flashlength 1', 'Type /cadence attack on|off, /cadence attack <part> on|off, '
-    .. '/cadence attack <slider> <number> or /cadence attack labeltext <text>. The parts are seconds, delay, tp, rounds, '
-    .. 'numbers, mark, almost, range, why and label. The sliders are width, barheight and almostat.');
+ok, detail = refuses('/cadence attack flashlength 1', 'Type /cadence attack on|off, /cadence attack goal 1000|2000|3000, /cadence attack <part> on|off, '
+    .. '/cadence attack <slider> <number> or /cadence attack labeltext <text>. The parts are seconds, delay, tp, time, hits, rounds, '
+    .. 'numbers, mark, almost, range, why and label. The sliders are width, height, barheight and almostat.');
 check('and attack has no flashlength', ok, detail);
 ok, detail = refuses('/cadence width 300', 'Didn\'t recognize "width". Type /cadence help to see the commands.');
 check('width needs a timer\'s word', ok, detail);
@@ -258,7 +269,7 @@ local COLORS = {
     { 'bar_track',          'style',   'track_color',   'Bar track##text' },
     { 'outline',            'style',   'outline_color', '##outline_colorText outline' },
 };
--- The settings window's own colors have swatches named ## and their key, on the Window colors tab.
+-- The settings window's own colors have swatches named ## and their key, on the Window colors section.
 local WINDOW_SWATCH = {};
 for _, entry in ipairs(theme.WINDOW_COLORS) do WINDOW_SWATCH['##' .. entry.key] = true; end
 -- Each timer color swatch drawn this frame, by its label, with the table it edits.
@@ -332,6 +343,10 @@ presets.forget_undo();
 -- The enemy timer is off by default, and only a timer that's on draws its sample.
 MOCK.fire('command', { command = '/cadence enemy on' });
 -- Each label box in the window, by the timer it names.
+-- Leave room for the preview marker as well as the custom label and live detail fields.
+for _, timer in ipairs({ 'attack', 'resting', 'enemy' }) do
+    MOCK.fire('command', { command = '/cadence ' .. timer .. ' width 640' });
+end
 local BOXES = { attack = 'Auto attack##label', resting = 'Resting##label', enemy = 'Enemy##label' };
 local function box_text(key)
     frames(1);
@@ -341,7 +356,7 @@ end
 -- True when the timers draw `text` this frame.
 local function drawn_text(text)
     for _, c in ipairs(MOCK.imgui_calls) do
-        if (c[1] == 'dl:AddText' and c[6] == text) then return true; end
+        if (c[1] == 'dl:AddText' and c[6] == text .. ' (preview)') then return true; end
     end
     return false;
 end
@@ -396,16 +411,18 @@ local function help_lines(word, from)
     return table.concat(lines, '\n', from or 1), #lines;
 end
 local HELP = {
-    attack = { 3, 7, {
+    attack = { 4, 9, {
         '/cadence attack width <120-640>  sets how wide the timer is.',
+        '/cadence attack height <0.50-2.50>  sets how tall the whole timer is, including text and spacing.',
         '/cadence attack barheight <2-32>  sets how thick its bar is.',
         '/cadence attack almostat <0.1-2.0>  sets how many seconds before your attack the almost ready color starts.',
         '/cadence attack labeltext <text>  gives it a name of your own, like AA. "" puts its own name back.',
         '/cadence color attack_tp|attack_fill_start|attack_fill_end|attack_ready|attack_almost <rrggbb>  sets one of its '
             .. 'colors.',
     } },
-    resting = { 3, 10, {
+    resting = { 3, 11, {
         '/cadence resting width <120-640>  sets how wide the timer is.',
+        '/cadence resting height <0.50-2.50>  sets how tall the whole timer is, including text and spacing.',
         '/cadence resting barheight <2-32>  sets how thick its bar is.',
         '/cadence resting flashlength <0.2-1.5>  sets how many seconds the flash on each tick lasts.',
         '/cadence resting soundvolume <0-100>  sets how loud the sound is, from silent to full.',
@@ -416,8 +433,9 @@ local HELP = {
         '/cadence resting playsound  plays the sound now, so you can hear it.',
         '/cadence color resting_fill_start|resting_fill_end|resting_full|resting_flash <rrggbb>  sets one of its colors.',
     } },
-    enemy = { 4, 8, {
+    enemy = { 4, 9, {
         '/cadence enemy width <120-640>  sets how wide the timer is.',
+        '/cadence enemy height <0.50-2.50>  sets how tall the whole timer is, including text and spacing.',
         '/cadence enemy barheight <2-32>  sets how thick its bar is.',
         '/cadence enemy almostat <0.1-2.0>  sets how many seconds before the monster\'s attack the almost ready color '
             .. 'starts.',
@@ -433,7 +451,7 @@ local HELP = {
         '/cadence corners <0-12>  sets how round the timers\' corners are.',
         '/cadence attack|resting|enemy labeltext <text>  gives that timer a name of your own, like AA. "" puts its own '
             .. 'name back.',
-        '/cadence color background|border|accent|labels|values|details|bar_track|outline <rrggbb>  sets one of the Look '
+        '/cadence color background|border|accent|labels|values|details|bar_track|outline <rrggbb>  sets one of the Appearance '
             .. 'tab\'s colors. /cadence help colors lists every color.',
     } },
     colors = { 1, 8, {
@@ -454,20 +472,20 @@ for _, word in ipairs({ 'attack', 'resting', 'enemy', 'look', 'colors' }) do
     check('help ' .. word, count_now == total and text == table.concat(lines, '\n'), text:gsub('\n', ' / '));
 end
 check('help color is the same as help colors', help_lines('color') == help_lines('colors'));
--- The whole help has the Look tab's sliders and the color command under the Look tab.
+-- The whole help has the Appearance tab's sliders and the color command under the Appearance tab.
 local help = said('/cadence help');
 local look_at, numbers_at, colors_at = nil, nil, nil;
 for i, line in ipairs(help) do
-    if (line == 'Look tab') then look_at = i; end
-    if (line == '/cadence scale|textsize|detailsize|labelsize|corners <number>  sets Scale, Text size, Detail size, Label '
-        .. 'size or Corner roundness.') then
+    if (line == 'Appearance tab') then look_at = i; end
+    if (line == '/cadence scale|textsize|detailsize|labelsize|corners|windowfontsize|windowcorners|windowspacing <number>  '
+        .. 'sets Scale, Text size, Detail size, Label size, Corner roundness, Font size, Corner roundness or Spacing.') then
         numbers_at = i;
     end
     if (line == '/cadence color <what> <rrggbb>  sets one of the timers\' colors. /cadence help colors lists them.') then
         colors_at = i;
     end
 end
-check('the whole help lists the Look tab\'s sliders and the color command under the Look tab', look_at and numbers_at
+check('the whole help lists the Appearance tab\'s sliders and the color command under the Appearance tab', look_at and numbers_at
     and colors_at and look_at < numbers_at and look_at < colors_at, tostring(numbers_at) .. ' ' .. tostring(colors_at));
 check('and says a timer\'s slider takes a number', table.concat(help, ' '):find('A slider takes a number, like /cadence '
     .. 'attack width 300.', 1, true) ~= nil and table.concat(help, ' '):find('A slider takes a number, like /cadence '
