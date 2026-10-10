@@ -2,10 +2,11 @@ cadence release tools
 =====================
 
 These get a new version of cadence ready to release. build_release.py builds the zip players download,
-bump_version.py sets a new version, and a job on GitHub drafts the release. None of it is part of the addon, so
-don't copy it into the game.
+bump_version.py sets a new version, refresh_data.py prepares guarded Phoenix data updates, and GitHub drafts
+the release after a human merges an update. None of it is part of the addon, so don't copy it into the game.
 
-You need Python 3.12 on PATH. Neither script needs anything from pip. Run them from the project folder.
+You need Python 3.12 on PATH. Building a zip and bumping a version need no pip packages. Data refreshes and
+source checks need tools\requirements.txt. Run the tools from the project folder.
 
 
 Building the zip
@@ -170,18 +171,83 @@ cannot disappear when whitespace and comments are ignored.
 
 To review a later revision without updating anything, add --ref <revision> to check_source.py. Do not refresh the
 expected hashes just to make a failure disappear. Read the changed rules, update the calculations or recorded
-limits, then update the guarded snapshot and the fixture cases together. REF, source_guards.json and Verify's
-Phoenix revision must agree when the reviewed pin changes.
+limits, then update the guarded snapshot and the fixture cases together. REF and source_guards.json's ref must
+agree when the reviewed pin changes. Verify reads REF directly and checks out that full commit.
 
 Verify runs tool tests, source checks, both generated-data checks, the offline addon suite and release checks
-on Windows. Draft release depends on it. Tests use pinned Ashita libraries and pinned Phoenix source. There is
-no scheduled refresh, automatic source update, commit or push job. UI fit checks remain a local preview gate;
-passing CI does not establish in-game behavior.
+on Windows. Draft release depends on it. Tests use pinned Ashita libraries and pinned Phoenix source. The weekly
+refresh runs the same gates on its prepared update before opening a pull request. UI fit checks remain a local
+preview gate; passing CI does not establish in-game behavior.
 
 The tool fixtures deliberately change source formulas, addon formulas, module lists and packaging inputs to
 confirm that the checks fail. On Windows, native file-store tests also use the real replacement call and a
 locked temporary destination. Other systems skip those two native checks. CADENCE_SOURCE_REPO selects a local
 Phoenix Git repository for source fixtures; ASHITA_LIBS selects its json.lua for the native save tests.
+
+
+Weekly Phoenix data refresh
+---------------------------
+
+.github\workflows\weekly-data.yml checks Phoenix live every Monday at 12:17 UTC. GitHub may start scheduled
+runs late. To run it now, choose Weekly data refresh in Actions, click Run workflow, and leave the branch on
+main. Runs on another branch are skipped. The repository must allow Actions to create pull requests under
+Settings > Actions > General > Workflow permissions. The job requests contents and pull-request write access
+for its generated branch; it does not need a personal token.
+
+The job fetches the current live commit and the existing reviewed commit. refresh_data.py compares them,
+checks guarded source dependencies, and prepares both generated data files from one exact candidate revision.
+Changes to the calculation rules, module loading, parser assumptions or unsupported inputs stop the run for
+review. The helper never replaces guard hashes just to accept changed mechanics.
+
+Automatic updates are limited to supported INSERT rows in the known base SQL files: item_basic, item_equipment,
+item_mods, item_latents, traits, blue_traits, spell_list, blue_spell_list, blue_spell_mods and augments. SQL schema
+changes need review. Changed imported Lua, including food and equipment-set scripts, also needs review. Any
+code or data change in an enabled module stops the refresh, even if that module does not name a tracked
+modifier. The workflow does not automatically accept every kind of Phoenix data change.
+
+No meaningful data changes means no release-file changes, version bump, pull request or release. A new Phoenix commit
+or changed source hashes alone do not count. A supported data change updates the generated modifier and effect
+tables, their source pin, the guard snapshot's ref metadata, addon.version and CHANGELOG.md. Existing Unreleased
+notes move into the new version's notes so they are included in the draft. The helper writes a report explaining
+what changed. It reads Git objects without changing Git history or contacting GitHub. It publishes nothing.
+
+The workflow then runs source parity, both generated-data checks, tool mutation tests, the offline addon suite
+and release checks on Windows. Only after those pass does it commit those six allowed files to a branch named
+data-refresh-<source commit> and open a pull request into main. Any unexpected tracked changes stop the job.
+If main changes during validation, the job stops so the next run can validate the new base.
+
+Only one open data-refresh- pull request is allowed at a time. Review and merge or close it before requesting
+another update; this prevents competing patch versions. Pushes never force or overwrite branch history. If a
+previous run left the refresh branch behind, the workflow reuses it only when its entire file tree matches the
+newly verified result. Otherwise, review and delete that obsolete branch in GitHub before rerunning. A failed
+push or pull request command may leave a branch, but never a release.
+
+Read the report and the full diff before merging. Confirm the Weekly data refresh run passed. Pull request
+workflows opened with GITHUB_TOKEN require maintainer approval, which is why the job runs every Verify gate
+before the push. Select Approve workflows on the pull request to run Verify, and wait for the required checks.
+Verify can also be run manually on the refresh branch from Actions. Keep branch protection requirements in
+place. GitHub documents the token behavior here:
+
+  https://docs.github.com/en/actions/concepts/security/github_token
+
+Merging changes addon.version and starts Draft release, which runs Verify again before building the zip.
+Read the draft and publish it manually using the release steps above. The weekly job never merges a pull
+request or publishes a release. The run summary includes the report even when source review or verification
+fails. A scheduled failure is available in Actions and follows your GitHub workflow notification preferences.
+
+To prepare a candidate locally, fetch both commits into a Phoenix clone, then run:
+
+  python -m pip install -r tools\requirements.txt
+  python tools\refresh_data.py --server ..\Phoenix --ref phoenix/live --report ..\cadence-refresh.md
+
+This writes a supported update into the current Cadence checkout. Start with a clean checkout and review its
+diff afterward. Use a full commit for --ref when reviewing a specific revision. The optional --github-output
+FILE writes changed, source and branch values for the workflow, plus version when changed is true. It does not
+make an approval decision or grant permission to commit or push from a local session.
+
+After a guard failure, inspect the listed source changes and update the affected calculations, parser or
+fixtures in a separate reviewed change. Do not turn off checks or refresh expected hashes blindly. Rerun the
+weekly job after that review has reached main.
 
 
 Release readiness

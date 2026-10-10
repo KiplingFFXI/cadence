@@ -1,0 +1,183 @@
+# Prepares a data-only pull request. A human merge starts the existing draft release workflow.
+name: Weekly data refresh
+
+on:
+  schedule:
+    # Mondays at 12:17 UTC, matching Checkmate.
+    - cron: '17 12 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    permissions:
+      contents: write
+      pull-requests: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Look for a pending data refresh
+        id: pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pending=$(gh pr list --base main --state open --limit 1000 --json headRefName --jq '.[] | select(.headRefName | startswith("data-refresh-")) | .headRefName')
+          if [ -n "$pending" ]; then
+            echo "A data refresh is already awaiting review. Merge or close it before preparing another."
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.pending.outputs.found != 'true'
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        if: steps.pending.outputs.found != 'true'
+        run: python -m pip install -r tools/requirements.txt
+
+      - name: Read Phoenix live and the reviewed revision
+        if: steps.pending.outputs.found != 'true'
+        id: phoenix
+        run: |
+          git clone --quiet --depth 1 --branch live --origin phoenix --no-checkout \
+            https://github.com/phoenixffxi/Phoenix "$RUNNER_TEMP/Phoenix"
+          source=$(git -C "$RUNNER_TEMP/Phoenix" rev-parse HEAD)
+          reviewed=$(python -c "import sys; sys.path.insert(0, 'tools'); from generate_modifiers import REF; print(REF)")
+          [[ "$source" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$reviewed" =~ ^[0-9a-f]{40}$ ]]
+          git -C "$RUNNER_TEMP/Phoenix" fetch --quiet --depth 1 phoenix "$reviewed"
+          echo "source=$source" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare a guarded data refresh
+        if: steps.pending.outputs.found != 'true'
+        id: refresh
+        env:
+          SOURCE: ${{ steps.phoenix.outputs.source }}
+        run: |
+          python tools/refresh_data.py --server "$RUNNER_TEMP/Phoenix" --ref "$SOURCE" \
+            --report "$RUNNER_TEMP/cadence-refresh.md" --github-output "$GITHUB_OUTPUT"
+
+      - name: Read the pinned Ashita libraries
+        if: steps.refresh.outputs.changed == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: AshitaXI/Ashita-v4beta
+          ref: 4171c74c8ddb2ca2a31654f199e6c1cee40d7256
+          path: .ci/ashita
+          sparse-checkout: addons/libs
+          persist-credentials: false
+
+      # GITHUB_TOKEN pull request checks require maintainer approval. Run every Verify gate here first.
+      - name: Verify the prepared source and generated data
+        if: steps.refresh.outputs.changed == 'true'
+        run: |
+          python tools/check_source.py --server "$RUNNER_TEMP/Phoenix"
+          python tools/generate_modifiers.py --server "$RUNNER_TEMP/Phoenix" --check
+          python tools/generate_effects.py --server "$RUNNER_TEMP/Phoenix" --check
+
+      - name: Run tool mutations and addon tests
+        if: steps.refresh.outputs.changed == 'true'
+        env:
+          ASHITA_LIBS: ${{ github.workspace }}/.ci/ashita/addons/libs
+          CADENCE_SOURCE_REPO: ${{ runner.temp }}/Phoenix
+        run: |
+          python -m unittest discover -s tools/tests -p 'test_*.py'
+          python tests/run.py
+
+      - name: Check release packaging and workflow behavior
+        if: steps.refresh.outputs.changed == 'true'
+        id: verified
+        run: python tests/test_release.py
+
+      - name: Commit the verified data and open a pull request
+        if: steps.refresh.outputs.changed == 'true'
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ steps.refresh.outputs.source }}
+          VERSION: ${{ steps.refresh.outputs.version }}
+          BRANCH: ${{ steps.refresh.outputs.branch }}
+        run: |
+          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [ "$BRANCH" = "data-refresh-${SOURCE:0:12}" ]
+          test -s "$RUNNER_TEMP/cadence-refresh.md"
+          pending=$(gh pr list --base main --state open --limit 1000 --json headRefName --jq '.[] | select(.headRefName | startswith("data-refresh-")) | .headRefName')
+          if [ -n "$pending" ]; then
+            echo "A data refresh was opened while this run was verifying. No branch was pushed."
+            exit 0
+          fi
+          git fetch --quiet origin main
+          if [ "$(git rev-parse FETCH_HEAD)" != "$(git rev-parse HEAD)" ]; then
+            echo "main changed while this run was verifying. Run the workflow again on the new main."
+            exit 1
+          fi
+          expected=$(printf '%s\n' CHANGELOG.md cadence/cadence.lua cadence/data/phoenix_effects.lua \
+            cadence/data/phoenix_modifiers.lua tools/generate_modifiers.py tools/source_guards.json | sort)
+          if [ "$(git diff --name-only HEAD -- | sort)" != "$expected" ]; then
+            echo "The prepared changes do not match the six allowed data refresh files. No branch was pushed."
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --create "$BRANCH"
+          git add -- CHANGELOG.md cadence/cadence.lua cadence/data/phoenix_effects.lua \
+            cadence/data/phoenix_modifiers.lua tools/generate_modifiers.py tools/source_guards.json
+          git commit --quiet --message "Refresh Phoenix data for cadence $VERSION"
+          existing=$(git ls-remote --heads origin "refs/heads/$BRANCH")
+          if [ -n "$existing" ]; then
+            git fetch --quiet origin "refs/heads/$BRANCH"
+            if [ "$(git rev-parse 'HEAD^{tree}')" != "$(git rev-parse 'FETCH_HEAD^{tree}')" ]; then
+              echo "The existing refresh branch differs from the verified files. Review it before retrying."
+              exit 1
+            fi
+            echo "The existing branch already has the verified files. Reusing it for the pull request."
+          else
+            # Credentials apply only to this push. Existing branch history is never overwritten.
+            auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\r\n')
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+              push origin "HEAD:refs/heads/$BRANCH"
+          fi
+          gh pr create --base main --head "$BRANCH" --body-file "$RUNNER_TEMP/cadence-refresh.md" \
+            --title "cadence $VERSION, Phoenix data ${SOURCE:0:12}"
+          echo 'opened=true' >> "$GITHUB_OUTPUT"
+
+      - name: Record the refresh result
+        if: always() && steps.pending.outputs.found != 'true'
+        env:
+          CHANGED: ${{ steps.refresh.outputs.changed }}
+          STATUS: ${{ job.status }}
+          VERIFIED: ${{ steps.verified.outcome }}
+          OPENED: ${{ steps.publish.outputs.opened }}
+        run: |
+          if [ -s "$RUNNER_TEMP/cadence-refresh.md" ]; then
+            cat "$RUNNER_TEMP/cadence-refresh.md" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$CHANGED" = false ]; then
+            echo 'No relevant Phoenix data changes. No version or release was created.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'The refresh stopped before it could write a report. Read the failed step for details.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$STATUS" != success ]; then
+            if [ "$VERIFIED" != success ]; then
+              echo 'Refresh or verification failed. No pull request was opened by this run.' >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo 'The verified update could not finish opening a pull request. Check the logs and any existing branch before retrying.' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          elif [ "$CHANGED" = true ] && [ "$OPENED" != true ]; then
+            echo 'Another data refresh is awaiting review. This run did not open a pull request.' >> "$GITHUB_STEP_SUMMARY"
+          fi

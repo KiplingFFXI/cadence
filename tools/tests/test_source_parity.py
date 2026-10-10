@@ -2,7 +2,9 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -28,7 +30,8 @@ class ChangedSource:
         return text
 
     def candidates(self):
-        return self.source.candidates() + list(self.added)
+        return self.source.candidates() + [path for path, text in self.added.items()
+                                           if re.search(parity.MODULE_RULES, text, re.I)]
 
 
 class FingerprintTests(unittest.TestCase):
@@ -53,6 +56,41 @@ class FingerprintTests(unittest.TestCase):
         body = parity.function_body('int A::f(bool p) { if(p) { return 1; } return 2; }\nint g() {}', 'A::f')
         self.assertTrue(body.endswith('return 2; }'))
         self.assertNotIn('int g', body)
+
+    def test_yaml_mapping_indentation_changes_the_guard(self):
+        self.assertNotEqual(parity.fingerprint('mods:\n  hpheal: 10\n  mpheal: 5\n', 'data'),
+                            parity.fingerprint('mods:\n  hpheal: 10\nmpheal: 5\n', 'data'))
+
+    def test_yaml_comments_and_value_spacing_do_not_change_the_guard(self):
+        self.assertEqual(parity.fingerprint('mods:\n  hpheal: 10 # value\n', 'data'),
+                         parity.fingerprint('# another note\nmods:\n  hpheal:   10\n', 'data'))
+        self.assertNotEqual(parity.fingerprint('name: "#one"\n', 'data'),
+                            parity.fingerprint('name: "#two"\n', 'data'))
+
+    def test_yaml_scalar_contents_remain_exact(self):
+        for before, after in (('note: |\n  #one\n', 'note: |\n  #two\n'),
+                              ('note: >\n  first word\n', 'note: >\n  first  word\n'),
+                              ('note: "first\n  next line"\n', 'note: "first\n  next  line"\n')):
+            with self.subTest(before=before):
+                self.assertNotEqual(parity.fingerprint(before, 'data'), parity.fingerprint(after, 'data'))
+
+    def test_sql_comments_are_ignored_but_values_are_not(self):
+        self.assertEqual(parity.fingerprint('UPDATE traits SET value=2; -- note\n', 'sql'),
+                         parity.fingerprint('/* another note */ UPDATE traits SET value = 2; # tail\n', 'sql'))
+        self.assertNotEqual(parity.fingerprint("SELECT '#one';", 'sql'),
+                            parity.fingerprint("SELECT '#two';", 'sql'))
+
+    def test_sql_executable_comments_and_adjacent_minus_signs_remain_rules(self):
+        for before, after in (('UPDATE traits SET value=value--1;', 'UPDATE traits SET value=value--2;'),
+                              ('/*! UPDATE traits SET value=1; */', '/*! UPDATE traits SET value=2; */')):
+            with self.subTest(before=before):
+                self.assertNotEqual(parity.fingerprint(before, 'sql'), parity.fingerprint(after, 'sql'))
+
+    def test_module_patterns_include_signed_delay_recovery_and_duration_inputs(self):
+        for token in ('DELAY', 'REGEN', 'REFRESH', 'REGEN_DOWN', 'REFRESH_DOWN', 'INHIBIT_TP',
+                      'SONG_DURATION_BONUS', 'ENF_MAG_DURATION', 'xi.effect.FOOD', 'xi.aftermath'):
+            with self.subTest(token=token):
+                self.assertRegex(token, parity.MODULE_RULES)
 
 
 REPOSITORY = Path(os.environ.get('CADENCE_SOURCE_REPO', parity.ROOT.parent / 'Phoenix'))
@@ -92,6 +130,54 @@ class SourceParityTests(unittest.TestCase):
         changed = ChangedSource(self.source, {path: ('0.4375f', '0.44f')})
         with self.assertRaisesRegex(RuntimeError, 'Source review required for rules'):
             parity.check_guards(changed)
+
+    def test_changed_generator_assumptions_require_review(self):
+        changes = {
+            'scripts/globals/job_utils/corsair.lua': ('8, 32, 10, 12, 14', '9, 32, 10, 12, 14'),
+            'scripts/globals/aftermath.lua': ('tp * 0.02', 'tp * 0.03'),
+            'data/enums/mod.yaml': ('storetp:                   73', 'storetp:                   74'),
+            'data/enums/latent.yaml': ('hp_under_percent:        0', 'hp_under_percent:        1'),
+            'data/enums/weather.yaml': ('hot_spell:      4', 'hot_spell:      5'),
+            'data/merits.yaml': ('id:           0x0444', 'id:           0x0445'),
+            'settings/default/main.lua': ('DELAY_REDUCTION_CAP = 0.80', 'DELAY_REDUCTION_CAP = 0.90'),
+        }
+        for path, replacement in changes.items():
+            with self.subTest(path=path), self.assertRaisesRegex(RuntimeError, re.escape(path)):
+                parity.check_guards(ChangedSource(self.source, {path: replacement}))
+
+    def test_changed_shared_source_helper_requires_review(self):
+        path = 'scripts/globals/item_utils.lua'
+        changed = ChangedSource(self.source, {path: ('local result     = 0', 'local result     = 1')})
+        with self.assertRaisesRegex(RuntimeError, re.escape(path)):
+            parity.check_guards(changed)
+
+    def test_supported_base_sql_data_remains_refreshable(self):
+        path = 'sql/item_mods.sql'
+        changed = ChangedSource(self.source, added={path: self.source.read(path) +
+                                '\nINSERT INTO `item_mods` VALUES (99999,73,10);\n'})
+        parity.check_guards(changed)
+
+    def test_loaded_yaml_and_header_overrides_require_review(self):
+        for path, text in (
+                ('modules/phoenix/data/recovery.yaml', 'mods:\n  regen: 5\n'),
+                ('modules/era/data/recovery.yml', 'mods:\n  refresh_down: 1\n'),
+                ('modules/phoenix/cpp/timing.h', 'constexpr auto mod = xi::Mod::DELAY;'),
+                ('modules/phoenix/cpp/timing.hpp', 'constexpr auto mod = xi::Mod::REFRESH;')):
+            with self.subTest(path=path), self.assertRaisesRegex(RuntimeError, re.escape(path)):
+                parity.check_guards(ChangedSource(self.source, added={path: text}))
+
+    def test_actual_git_scan_includes_lowercase_recovery_module(self):
+        path = 'modules/phoenix/lua/globals/disable_sanction_bonuses.lua'
+        self.assertIn(path, self.source.candidates())
+        self.assertIn(path, self.manifest['modules'])
+
+    def test_changed_yaml_module_nesting_requires_review(self):
+        path = 'modules/phoenix/data/recovery.yaml'
+        reviewed = ChangedSource(self.source, added={path: 'mods:\n  regen: 5\n  refresh: 1\n'})
+        manifest = dict(self.manifest, **parity.observed_guards(reviewed))
+        moved = ChangedSource(self.source, added={path: 'mods:\n  regen: 5\nrefresh: 1\n'})
+        with self.assertRaisesRegex(RuntimeError, re.escape(path)):
+            parity.check_guards(moved, manifest)
 
     def test_new_loaded_timing_override_requires_review(self):
         added = {'modules/phoenix/lua/new_timing.lua': "m:addOverride('xi.effects.healing.onEffectTick', function() end)"}
@@ -147,7 +233,16 @@ class SourceParityTests(unittest.TestCase):
     def test_fixture_pin_matches_generator_and_ci(self):
         self.assertEqual(self.manifest['ref'], REF)
         workflow = (parity.ROOT / '.github/workflows/verify.yml').read_text(encoding='utf-8')
-        self.assertIn('ref: ' + REF, workflow)
+        self.assertIn('ref: ${{ steps.source.outputs.ref }}', workflow)
+        step = workflow.split('      - name: Read the reviewed Phoenix revision\n', 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn('id: source', step)
+        command = re.search(r'python -c "([^"\n]+)"', step).group(1)
+        with tempfile.TemporaryDirectory(prefix='cadence_ci_pin_') as folder:
+            output = Path(folder) / 'output.txt'
+            result = subprocess.run([sys.executable, '-c', command], cwd=parity.ROOT,
+                                    env=dict(os.environ, GITHUB_OUTPUT=str(output)), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text(encoding='utf-8'), 'ref=' + REF + '\n')
 
 
 if __name__ == '__main__':

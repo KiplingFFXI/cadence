@@ -171,9 +171,32 @@ do
     check('irrelevant equipment preserves model context', modifiers.calculate(p).rounds_key == initial.rounds_key);
 end
 
-check('full signed haste inventory is pinned', data.coverage[384].fixed == 2153 and data.coverage[384].negative == 37 and data.coverage[384].latents == 16);
-check('flat delay inventory includes all seven latents and eight player augments', data.coverage[171].latents == 7 and data.coverage[171].augments == 8);
-check('recovery inventory separates healing from passive gains', data.coverage[71].fixed == 120 and data.coverage[72].fixed == 47 and data.coverage[369].fixed == 180 and data.coverage[370].fixed == 96);
+for mod, expected in pairs(data.coverage) do
+    local actual = { fixed = 0, negative = 0, latents = 0, augments = 0, sets = 0, foods = 0, activated = 0, blue_spells = 0 };
+    for _, item in pairs(data.items) do
+        if (item.mods[mod] ~= nil) then
+            actual.fixed = actual.fixed + 1;
+            if (item.mods[mod] < 0) then actual.negative = actual.negative + 1; end
+        end
+        for _, latent in ipairs(item.latents) do
+            if (latent.mod == mod) then actual.latents = actual.latents + 1; end
+        end
+    end
+    for _, augments in pairs(data.augments) do
+        for _, augment in ipairs(augments) do
+            if (augment.mod == mod) then actual.augments = actual.augments + 1; break; end
+        end
+    end
+    for _, set in ipairs(data.sets) do if (set.mods[mod] ~= nil) then actual.sets = actual.sets + 1; end end
+    for _, food in pairs(data.foods) do
+        if (food.mods[mod] ~= nil or food.party_mods[mod] ~= nil) then actual.foods = actual.foods + 1; end
+    end
+    for _, item in pairs(data.activated_items) do if (item.mods[mod] ~= nil) then actual.activated = actual.activated + 1; end end
+    for _, spell in pairs(data.blue_spells) do if (spell.mods[mod] ~= nil) then actual.blue_spells = actual.blue_spells + 1; end end
+    local matches = true;
+    for category, count in pairs(actual) do matches = matches and expected[category] == count; end
+    check('modifier coverage matches generated rows for ' .. tostring(mod), matches);
+end
 check('coverage explicitly retains era acquisition uncertainty', #data.coverage_notes.uncertain >= 4 and data.source.deployed_runtime_verified == false);
 do
     local p = player();

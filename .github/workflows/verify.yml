@@ -33,10 +33,15 @@ jobs:
           persist-credentials: false
 
       - name: Read the reviewed Phoenix revision
+        id: source
+        run: |
+          python -c "import os, re, sys; sys.path.insert(0, 'tools'); from generate_modifiers import REF; assert re.fullmatch(r'[0-9a-f]{40}', REF), 'REF must be a full commit'; open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8').write('ref=' + REF + '\n')"
+
+      - name: Read the pinned Phoenix source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: phoenixffxi/Phoenix
-          ref: 465ac4c076aebd70170fe8fde032e5066ce0737e
+          ref: ${{ steps.source.outputs.ref }}
           path: .ci/phoenix
           persist-credentials: false
 

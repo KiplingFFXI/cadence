@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1
+
+- Added weekly checks for updated Phoenix data.
+- Equipment estimates now include Kyoshu Kyahan's accuracy bonus while Footwork is active.
+
 ## 1.2.0
 
 More accurate TP, attack and recovery estimates, with clearer explanations, more ways to arrange the timers and safer settings changes.

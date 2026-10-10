@@ -232,8 +232,15 @@ for line in changelog:gmatch('[^\n]+') do
         headings[#headings + 1] = line;
     end
 end
-check('CHANGELOG.md starts with the current version and keeps the first release, with no date',
-    table.concat(headings, '|') == '# Changelog|## ' .. addon.version .. '|## 1.0.0', table.concat(headings, '|'));
+local valid_versions, seen_versions = true, {};
+for i = 2, #headings do
+    local version = headings[i]:match('^## (%d+%.%d+%.%d+)$');
+    if (not version or seen_versions[version]) then valid_versions = false; end
+    if (version) then seen_versions[version] = true; end
+end
+check('CHANGELOG.md starts with the current version and keeps published versions, with no date',
+    headings[1] == '# Changelog' and headings[2] == '## ' .. addon.version and valid_versions
+        and seen_versions['1.2.0'] and headings[#headings] == '## 1.0.0', table.concat(headings, '|'));
 check('the original release keeps its introduction', changelog:find('\n## 1%.0%.0\n\nFirst release%.\n'));
 local original = (changelog:match('\n(## 1%.0%.0\n.*)') or ''):gsub('\r\n', '\n');
 local a, b = 1, 0;
@@ -243,6 +250,8 @@ for i = 1, #original do
 end
 check('the published 1.0.0 section stays unchanged', #original == 5007 and b * 65536 + a == 2969819990);
 local current = (changelog:match('\n## ' .. addon.version:gsub('%.', '%%.') .. '\n(.-)\n## ') or ''):lower();
+check('the current release has its own notes', current:find('%S') ~= nil);
+local release_120 = (changelog:match('\n## 1%.2%.0\n(.-)\n## ') or ''):lower();
 local missing_current = {};
 for _, words in ipairs({ 'store tp', 'food', 'dual wield', 'martial arts', 'clear mind', 'signet', 'regen', 'refresh',
     'gear haste and slow', 'percentage delay', 'hundred fists', 'blue magic', 'assault', '1000, 2000 or 3000',
@@ -250,9 +259,9 @@ for _, words in ipairs({ 'store tp', 'food', 'dual wield', 'martial arts', 'clea
     'sleep, stun, petrification and terror', 'duration estimates', 'character and zone changes', 'mint and lavender',
     'previous and next match', 'starter layouts', 'preview', 'eight settings changes', 'undo overwrite', 'undo delete',
     'tab choices stay with each character', 'shift' }) do
-    if (not current:find(words, 1, true)) then missing_current[#missing_current + 1] = words; end
+    if (not release_120:find(words, 1, true)) then missing_current[#missing_current + 1] = words; end
 end
-check('the current release notes cover all changes since the published release', #missing_current == 0,
+check('the published 1.2.0 notes retain their feature coverage', #missing_current == 0,
     table.concat(missing_current, ', '));
 local log = original:lower();
 local MISSING = {};

@@ -123,13 +123,15 @@ do
     check('restricted BLU subjob has no active spell detail', not r.blue_magic.active and r.blue_magic.status == 'inactive'
         and #r.blue_magic.spells == 0);
     check('generated Blue Magic provenance includes direct spell stats', data.source_hashes['sql/blue_spell_mods.sql'] ~= nil);
-    local eligible_spells, direct_spells = 0, 0;
+    local eligible_spells, dexterity_spells, valid_inventory = 0, 0, true;
     for id, spell in pairs(data.blue_spells) do
         eligible_spells = eligible_spells + 1;
-        if (next(spell.mods) ~= nil) then direct_spells = direct_spells + 1; end
+        if (spell.mods[9] ~= nil) then dexterity_spells = dexterity_spells + 1; end
+        valid_inventory = valid_inventory and data.valid_blue_spells[id] == true and spell.level <= data.source.max_level;
     end
-    check('pinned Blue Magic inventory includes every eligible spell and ten direct DEX sources', eligible_spells == 107
-        and direct_spells == 10 and data.coverage[9].blue_spells == 10 and data.blue_spells[670] == nil);
+    for id in pairs(data.valid_blue_spells) do valid_inventory = valid_inventory and data.blue_spells[id] ~= nil; end
+    check('Blue Magic inventory matches eligibility and direct DEX coverage', eligible_spells > 0 and valid_inventory
+        and dexterity_spells == data.coverage[9].blue_spells and data.blue_spells[670] == nil);
 end
 
 do
@@ -319,7 +321,8 @@ do
     p.sub_job = nil;
     check('missing subjob is not treated as known absence', not modifiers.calculate(p).tp_known and not modifiers.calculate(p).mp_known);
 end
-check('generated profile is pinned', data.source.ref == '465ac4c076aebd70170fe8fde032e5066ce0737e');
+check('generated profile uses one immutable source revision', type(data.source.ref) == 'string' and #data.source.ref == 40
+    and data.source.ref:match('^%x+$') ~= nil and require('data.phoenix_effects').source == data.source.ref);
 check('relic mapping links Amano75 to Kaiten with7 Store TP', data.relic_aftermath[18318].weaponskill == 153 and data.relic_aftermath[18318].store_tp == 7);
 if (failed > 0) then out[#out + 1] = tostring(failed) .. ' FAILED'; end
 return table.concat(out, '\n');

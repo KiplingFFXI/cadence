@@ -4,13 +4,11 @@ Only ordinary supported spells and fixed duration gear are modeled. Other action
 remain observed with unknown durations. No Checkmate installation is required.
 """
 import argparse
-import csv
 import hashlib
 import re
-import subprocess
 from pathlib import Path
 
-from generate_modifiers import REF, lua
+from generate_modifiers import REF, DataSource, lua, sql_rows
 import source_parity
 
 EFFECTS = {'SLEEP_I': 2, 'SLEEP_II': 19, 'LULLABY': 193, 'STUN': 10,
@@ -29,20 +27,12 @@ GUARDED = (
 )
 
 
-def generate(server):
-    sources = {}
-
-    def source(path):
-        if path not in sources:
-            sources[path] = subprocess.check_output(['git', '-C', str(server), 'show', REF + ':' + path],
-                                                    text=True, encoding='utf-8')
-        return sources[path]
+def generate(server, ref=REF):
+    snapshot = DataSource(server, ref)
+    ref, sources, source = snapshot.ref, snapshot.cache, snapshot.read
 
     def rows(path):
-        for line in source(path).splitlines():
-            match = re.match(r'INSERT INTO `[^`]+` VALUES \((.*)\);', line)
-            if match:
-                yield next(csv.reader([match[1]], quotechar="'", escapechar='\\', skipinitialspace=True))
+        return sql_rows(source, path)
 
     for path in GUARDED:
         source(path)
@@ -57,6 +47,8 @@ def generate(server):
             effect = EFFECTS.get(fields[0].replace('xi.effect.', ''))
             if effect is None or name not in ids:
                 continue
+            if len(fields) < 6:
+                raise RuntimeError('Unreadable timing fields: ' + name)
             seconds = fields[4 if song else 5]
             if not seconds.isdigit():
                 raise RuntimeError('Unreadable duration: ' + name)
@@ -96,14 +88,14 @@ def generate(server):
     if not re.search(r'enfeebling_magic_duration:\s*\n\s*max_upgrades: 0', era):
         raise RuntimeError('Enfeebling duration merits changed; review the timing model.')
     result = {
-        'source': REF, 'spells': dict(sorted(spells.items())), 'gear': dict(sorted(gear.items())),
+        'source': ref, 'spells': dict(sorted(spells.items())), 'gear': dict(sorted(gear.items())),
         'latent_items': {id: True for id in latents}, 'troubadour': 348,
         'augments': dict(sorted(augments.items())), 'augment_ids': dict(sorted(augment_ids.items())),
         'merits': {'slow_ii': 0x0902, 'enfeebling_duration': 0x090C, 'enfeebling_duration_max': 0},
         'source_hashes': {path: hashlib.sha256(value.encode()).hexdigest() for path, value in sorted(sources.items())},
     }
     lines = ['-- Enemy timing inputs before resists. Unknown sources keep their uncertainty.',
-             '-- Built by tools/generate_effects.py from Phoenix ' + REF + '.', 'return {']
+             '-- Built by tools/generate_effects.py from Phoenix ' + ref + '.', 'return {']
     for key, value in result.items():
         lines.append('    ' + key + ' = ' + lua(value) + ',')
     lines.append('}')
@@ -112,18 +104,23 @@ def generate(server):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--server', type=Path, default=Path('../Phoenix'))
+    parser.add_argument('--server', type=Path, default=Path(__file__).resolve().parents[2] / 'Phoenix')
+    parser.add_argument('--ref', default=REF)
+    parser.add_argument('--output', type=Path,
+                        default=Path(__file__).resolve().parents[1] / 'cadence/data/phoenix_effects.lua')
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
-    target = Path(__file__).resolve().parents[1] / 'cadence/data/phoenix_effects.lua'
-    source_parity.check_guards(source_parity.GitSource(args.server, REF))
-    output = generate(args.server)
+    target = args.output
+    snapshot = source_parity.GitSource(args.server, args.ref)
+    source_parity.check_guards(snapshot)
+    output = generate(args.server, snapshot.ref)
     if args.check:
-        if target.read_text(encoding='utf-8') != output:
+        if not target.exists() or target.read_text(encoding='utf-8') != output:
             raise SystemExit('Timing effect metadata differs from the pinned source.')
-        print('Timing effect data matches pinned source.')
+        print('Timing effect data matches source ' + snapshot.ref + '.')
     else:
-        target.write_text(output, encoding='utf-8', newline='')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(output, encoding='utf-8', newline='\n')
         print('Wrote ' + str(target))
 
 

@@ -16,6 +16,10 @@ ERA_TP = 'modules/era/lua/combat/basic/tp.lua'
 HEALING = 'scripts/effects/healing.lua'
 MODULE_RULES = (r'STORETP|HPHEAL|MPHEAL|CLEAR_MIND|MARTIAL_ARTS|DUAL_WIELD|HASTE_GEAR|HASTE_MAGIC|'
                 r'HASTE_ABILITY|TWOHAND_HASTE|DELAYP|DELAY_REDUCTION_CAP|HEALING_TP_CHANGE|'
+                r'(^|[^A-Z_])DELAY([^A-Z_]|$)|REGEN|REFRESH|INHIBIT_TP|AFTERMATH|'
+                r'SAMURAI_ROLL|HEALERS_ROLL|xi\.effect\.FOOD|xi\.items\.|GEAR_SETS|ENF_MAG_DURATION|SONG_DURATION_BONUS|'
+                r'ALL_SONGS_EFFECT|ELEGY_EFFECT|LULLABY_EFFECT|TROUBADOUR|'
+                r'xi\.(spells|magic)\.(enfeebling|enhancing)|xi\.aftermath|'
                 r'xi\.combat\.tp|xi\.effects\.(healing|slow|haste|elegy|march|hundred_fists|hasso)|'
                 r'item_mods|item_latents|blue_spell_mods|blue_traits|traits|augments|merits')
 FILES = [TP, ERA_TP, HEALING, 'src/map/ai/states/attack_state.cpp', 'src/map/map_constants.h',
@@ -23,7 +27,21 @@ FILES = [TP, ERA_TP, HEALING, 'src/map/ai/states/attack_state.cpp', 'src/map/map
          'scripts/effects/elegy.lua', 'scripts/effects/march.lua', 'scripts/effects/hasso.lua',
          'scripts/effects/regen.lua', 'scripts/effects/refresh.lua',
          'scripts/globals/spells/enfeebling_spell.lua', 'scripts/globals/spells/enfeebling_song.lua',
-         'modules/era/lua/actions/spells/spell_adjustments.lua', 'modules/era/data/merits.yaml']
+         'modules/era/lua/actions/spells/spell_adjustments.lua', 'modules/era/data/merits.yaml',
+         'data/enums/mod.yaml', 'data/enums/latent.yaml', 'data/enums/weather.yaml',
+         'data/merits.yaml', 'data/status_effects.yaml', 'settings/default/main.lua',
+         'scripts/globals/job_utils/corsair.lua', 'scripts/globals/job_utils/dark_knight.lua',
+         'scripts/globals/job_utils/dragoon.lua', 'scripts/globals/job_utils/samurai.lua',
+         'scripts/globals/job_utils/dancer.lua', 'scripts/globals/aftermath.lua',
+         'scripts/globals/gear_sets.lua', 'scripts/globals/item_utils.lua',
+         'scripts/enum/item.lua', 'scripts/enum/weaponskill.lua',
+         'scripts/effects/food.lua', 'scripts/effects/samurai_roll.lua', 'scripts/effects/healers_roll.lua',
+         'scripts/effects/store_tp.lua', 'scripts/effects/bust.lua', 'scripts/effects/inhibit_tp.lua',
+         'scripts/effects/arcane_crest.lua', 'scripts/effects/dragon_breaker.lua', 'scripts/effects/sepulcher.lua',
+         'scripts/effects/haste_samba_haste.lua', 'scripts/effects/hundred_fists.lua',
+         'src/map/items/item_equipment.cpp', 'src/map/latent_effect_container.cpp',
+         'src/map/utils/battleutils.cpp', 'src/map/utils/charutils.cpp',
+         'src/map/utils/zoneutils.cpp', 'src/map/zone.h', 'src/common/vana_time.h']
 FUNCTIONS = {
     'src/map/entities/battle_entity.cpp': ['CBattleEntity::GetWeaponDelay'],
     'src/map/items/item_weapon.cpp': ['CItemWeapon::setDelay'],
@@ -46,7 +64,7 @@ class GitSource:
         return self.cache[path]
 
     def candidates(self):
-        result = subprocess.run(['git', '-C', self.repository, 'grep', '-Il', '-E', MODULE_RULES,
+        result = subprocess.run(['git', '-C', self.repository, 'grep', '-Il', '-i', '-E', MODULE_RULES,
                                  self.ref, '--', 'modules'], text=True, encoding='utf-8', capture_output=True)
         if result.returncode not in (0, 1):
             raise RuntimeError('Cannot read Phoenix module candidates: ' + result.stderr)
@@ -54,18 +72,36 @@ class GitSource:
 
 
 def fingerprint(text, language='lua'):
-    # Ignore comments and spacing, but keep quoted strings intact.
-    comments = {'lua': r'--\[\[.*?\]\]|--[^\n]*', 'cpp': r'/\*.*?\*/|//[^\n]*', 'data': r'#[^\n]*'}[language]
-    tokens = re.findall(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|' + comments + r'|'
-                        r'[A-Za-z_]\w*|\d+(?:\.\d+)?|'
-                        r'<<=|>>=|\.\.\.|\.\.|==|~=|!=|<=|>=|&&|\|\||\+\+|--|<<|>>|'
-                        r'\+=|-=|\*=|/=|%=|&=|\|=|\^=|->|::|[^\s]', text, re.S)
-    code = '\0'.join(token for token in tokens if not re.fullmatch(comments, token, re.S))
+    # Keep quoted values and YAML nesting. Code spacing and comments do not change a rule.
+    comments = {'lua': r'--\[\[.*?\]\]|--[^\n]*', 'cpp': r'/\*.*?\*/|//[^\n]*',
+                'data': r'#[^\n]*', 'sql': r'/\*(?![!+]).*?\*/|--(?=\s|$)[^\n]*|#[^\n]*'}[language]
+    pattern = (r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|' + comments + r'|'
+               r'[A-Za-z_]\w*|\d+(?:\.\d+)?|'
+               r'<<=|>>=|\.\.\.|\.\.|==|~=|!=|<=|>=|&&|\|\||\+\+|--|<<|>>|'
+               r'\+=|-=|\*=|/=|%=|&=|\|=|\^=|->|::|[^\s]')
+
+    def tokens(value):
+        return [token for token in re.findall(pattern, value, re.S)
+                if not re.fullmatch(comments, token, re.S)]
+
+    if language == 'data':
+        lines = []
+        for line in text.splitlines():
+            parts = tokens(line)
+            # Block and multiline scalars need their exact contents, including spaces and # characters.
+            if any(part in ('|', '>', "'", '"') for part in parts):
+                return hashlib.sha256(text.replace('\r\n', '\n').encode('utf-8')).hexdigest()
+            if parts:
+                lines.append(str(len(line) - len(line.lstrip())) + ':' + '\0'.join(parts))
+        code = '\n'.join(lines)
+    else:
+        code = '\0'.join(tokens(text))
     return hashlib.sha256(code.encode('utf-8')).hexdigest()
 
 
 def file_fingerprint(source, path):
-    language = 'cpp' if path.endswith(('.cpp', '.h')) else 'data' if path.endswith('.yaml') else 'lua'
+    language = ('cpp' if path.endswith(('.cpp', '.h', '.hpp')) else
+                'data' if path.endswith(('.yaml', '.yml')) else 'sql' if path.endswith('.sql') else 'lua')
     return fingerprint(source.read(path), language)
 
 
@@ -92,7 +128,7 @@ def module_entries(source):
 
 def loaded_modules(source):
     entries = module_entries(source)
-    return sorted(path for path in source.candidates() if path.endswith(('.lua', '.cpp', '.sql'))
+    return sorted(path for path in source.candidates() if path.endswith(('.lua', '.cpp', '.h', '.hpp', '.sql', '.yaml', '.yml'))
                   and any(path == entry or path.startswith(entry + '/') for entry in entries))
 
 

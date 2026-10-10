@@ -12,6 +12,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from source_parity import GitSource, check_guards
+
 REF = '465ac4c076aebd70170fe8fde032e5066ce0737e'
 MODS = {71: 'mp_heal', 72: 'hp_heal', 73: 'store_tp', 173: 'martial_arts',
         259: 'dual_wield', 295: 'clear_mind', 380: 'delay_percent', 488: 'inhibit_tp',
@@ -23,6 +25,62 @@ MODS = {71: 'mp_heal', 72: 'hp_heal', 73: 'store_tp', 173: 'martial_arts',
         865: 'mythic_attacks_twice', 866: 'mythic_attacks_thrice', 978: 'max_swings', 979: 'additional_swing_chance'}
 MODS.update({id: 'weapon_skill_' + str(id - 79) for id in range(80, 92)})
 ERA_TAGS = {'NULL', 'ROTZ', 'COP', 'TOAU'}
+SQL_COLUMNS = {
+    'augments': ('augmentId', 'multiplier', 'modId', 'value', 'isPet', 'petType'),
+    'blue_spell_list': ('spellid', 'mob_skill_id', 'set_points', 'trait_category', 'trait_category_weight',
+                        'primary_sc', 'secondary_sc', 'tertiary_sc', 'knockback'),
+    'blue_spell_mods': ('spellId', 'modid', 'value'),
+    'blue_traits': ('trait_category', 'trait_points_needed', 'traitid', 'modifier', 'value', 'tier', 'job_points_only'),
+    'item_basic': ('itemid', 'subid', 'name', 'sortname', 'name_jp', 'type', 'stackSize', 'flags', 'aH', 'BaseSell'),
+    'item_equipment': ('itemId', 'name', 'level', 'ilevel', 'jobs', 'MId', 'shieldSize', 'scriptType',
+                       'slot', 'rslot', 'rslotlook', 'su_level'),
+    'item_latents': ('itemId', 'modId', 'value', 'latentId', 'latentParam'),
+    'item_mods': ('itemId', 'modId', 'value'),
+    'spell_list': ('spellid', 'name', 'jobs', 'group', 'family', 'element', 'zonemisc', 'validTargets', 'skill',
+                   'mpCost', 'castTime', 'recastTime', 'message', 'magicBurstMessage', 'animation', 'animationTime',
+                   'AOE', 'base', 'multiplier', 'CE', 'VE', 'requirements', 'spell_range', 'radius', 'content_tag',
+                   'status_effect', 'status_effect_tier'),
+    'traits': ('traitid', 'name', 'job', 'level', 'rank', 'modifier', 'value', 'content_tag', 'meritid'),
+}
+
+
+class DataSource(GitSource):
+    def git(self, *args):
+        # Keep BOMs in the source hashes used by existing generated data.
+        return subprocess.check_output(['git', '-C', self.repository, *args], text=True, encoding='utf-8')
+
+
+def sql_rows(read, path):
+    """Require the reviewed column layout and account for every data statement."""
+    text = read(path)
+    table = Path(path).stem
+    columns = SQL_COLUMNS[table]
+    schema = re.search(r'CREATE TABLE(?: IF NOT EXISTS)? `' + re.escape(table) + r'` \((.*?)\n\)', text, re.S)
+    if not schema or tuple(re.findall(r'^\s*`([^`]+)`', schema[1], re.M)) != columns:
+        raise RuntimeError('Source review required for SQL schema: ' + path)
+    primary = re.search(r'PRIMARY KEY\s*\(([^)]*)\)', schema[1])
+    indexes = [columns.index(name) for name in re.findall(r'`([^`]+)`', primary[1])] if primary else []
+    seen, count = set(), 0
+    for number, line in enumerate(text.splitlines(), 1):
+        if not re.match(r'\s*(?:INSERT|REPLACE|UPDATE|DELETE)\b', line, re.I):
+            continue
+        match = re.fullmatch(r'\s*INSERT INTO `' + re.escape(table) + r'` VALUES\s*\((.*)\);\s*(?:--.*)?', line)
+        if not match:
+            raise RuntimeError(f'Unsupported SQL data statement: {path}:{number}')
+        try:
+            row = next(csv.reader([match[1]], quotechar="'", escapechar='\\', skipinitialspace=True, strict=True))
+        except csv.Error as error:
+            raise RuntimeError(f'Unreadable SQL row: {path}:{number}') from error
+        if len(row) != len(columns):
+            raise RuntimeError(f'Unexpected SQL row width: {path}:{number}')
+        key = tuple(row[index] for index in indexes)
+        if indexes and key in seen:
+            raise RuntimeError(f'Duplicate SQL primary key: {path}:{number}')
+        seen.add(key)
+        count += 1
+        yield row
+    if not count:
+        raise RuntimeError('No SQL data rows found: ' + path)
 
 
 def display_name(value):
@@ -45,22 +103,12 @@ def lua(value):
                             else '[' + lua(k) + ']') + ' = ' + lua(v) for k, v in value.items()) + ' }'
 
 
-def generate(server):
-    sources = {}
-
-    def git(*args):
-        return subprocess.check_output(['git', '-C', str(server), *args], text=True, encoding='utf-8')
-
-    def source(path):
-        if path not in sources:
-            sources[path] = git('show', REF + ':' + path)
-        return sources[path]
+def generate(server, ref=REF):
+    snapshot = DataSource(server, ref)
+    ref, sources, git, source = snapshot.ref, snapshot.cache, snapshot.git, snapshot.read
 
     def rows(path):
-        for text in source(path).splitlines():
-            match = re.match(r'INSERT INTO `[^`]+` VALUES \((.*)\);', text)
-            if match:
-                yield next(csv.reader([match[1]], quotechar="'", escapechar='\\', skipinitialspace=True))
+        return sql_rows(source, path)
 
     equipment = {int(r[0]): r for r in rows('sql/item_equipment.sql')}
     levels = {id: int(r[2]) for id, r in equipment.items()}
@@ -134,13 +182,18 @@ def generate(server):
                       'haste', 'slow', 'elegy', 'march', 'hasso', 'spirit_surge', 'weakness', 'hundred_fists', 'last_resort',
                       'regen', 'refresh', 'healing', 'sanction', 'disease', 'plague', 'curse_ii', 'blindness', 'accuracy_boost',
                       'accuracy_down', 'aggressor', 'focus', 'footwork', 'fighters_roll', 'hunters_roll', 'madrigal')
-    effect_ids = {k: effect_ids[k] for k in wanted_effects if k in effect_ids}
+    missing_effects = set(wanted_effects) - effect_ids.keys()
+    if missing_effects:
+        raise RuntimeError('Missing required status effects: ' + ', '.join(sorted(missing_effects)))
+    effect_ids = {k: effect_ids[k] for k in wanted_effects}
 
     foods, activated = {}, {}
     mod_by_name = {m[1].upper(): int(m[2]) for m in re.finditer(r'^  (\w+):\s+(\d+)', source('data/enums/mod.yaml'), re.M)
                    if int(m[2]) in MODS}
+    if set(mod_by_name.values()) != set(MODS):
+        raise RuntimeError('Missing required modifier enum IDs.')
     effect_mods = {}
-    for full in git('grep', '-l', '-E', 'xi.mod.(' + '|'.join(mod_by_name) + ')([^A-Z_]|$)', REF, '--', 'scripts/effects').splitlines():
+    for full in git('grep', '-l', '-E', 'xi.mod.(' + '|'.join(mod_by_name) + ')([^A-Z_]|$)', ref, '--', 'scripts/effects').splitlines():
         path = full.split(':', 1)[1]
         name = Path(path).stem
         if name not in all_effect_ids:
@@ -152,7 +205,7 @@ def generate(server):
         if mods:
             effect_mods[all_effect_ids[name]] = {'name': name, 'mods': mods}
     pattern = 'xi.effect.FOOD|xi.mod.(' + '|'.join(mod_by_name) + ')([^A-Z_]|$)'
-    food_paths = git('grep', '-l', '-E', pattern, REF, '--', 'scripts/items').splitlines()
+    food_paths = git('grep', '-l', '-E', pattern, ref, '--', 'scripts/items').splitlines()
     for full in food_paths:
         path = full.split(':', 1)[1]
         text = source(path)
@@ -248,7 +301,7 @@ def generate(server):
                 zone_regions[id] = regions[match[2]]
             pending = []
     zone_assault, zone_dynamis = {}, {}
-    for path in git('ls-tree', '-r', '--name-only', REF, 'data/zones').splitlines():
+    for path in git('ls-tree', '-r', '--name-only', ref, 'data/zones').splitlines():
         if not path.endswith('/zone.yaml'):
             continue
         zone = zones.get(re.sub(r'[^a-z0-9]', '', path.split('/')[2]))
@@ -270,7 +323,7 @@ def generate(server):
                          'activated': sum(mod in a['mods'] for a in activated.values()),
                          'blue_spells': sum(mod in s['mods'] for s in blue_spells.values())}
     data = {
-        'source': {'repository': 'https://github.com/phoenixffxi/Phoenix', 'ref': REF,
+        'source': {'repository': 'https://github.com/phoenixffxi/Phoenix', 'ref': ref,
                    'profile': 'Phoenix TOAU level 75', 'restrict_content': True, 'max_level': 75,
                    'enabled_content': ['ROTZ', 'COP', 'TOAU'], 'deployed_runtime_verified': False,
                    'note': 'All item rows are retained for equipped IDs. Source presence does not prove obtainable content.'},
@@ -303,18 +356,8 @@ def generate(server):
                           'All item rows are retained for equipped IDs; level and source presence do not establish era acquisition.'],
         },
     }
-    assert sum(73 in i['mods'] for i in items.values()) == 433
-    assert len([f for f in foods.values() if 73 in f['mods']]) == 28
-    assert len(activated) >= 4, len(activated)
-    assert {12,25,45,75} <= {s['id'] for s in sets}
-    assert effect_ids['food'] == 251 and 115 not in augments
-    assert relic_aftermath[18318]['store_tp'] == 7 and relic_aftermath[18318]['weaponskill'] == 153
-    assert coverage[384]['fixed'] == 2153 and coverage[384]['negative'] == 37 and coverage[384]['latents'] == 16
-    assert coverage[171]['fixed'] == 0 and coverage[171]['latents'] == 7 and coverage[171]['augments'] == 8
-    assert coverage[369]['fixed'] == 180 and coverage[370]['fixed'] == 96
-    assert len(blue_spells) == 107 and coverage[9]['blue_spells'] == 10
     text = '-- Generated by tools/generate_modifiers.py. Regenerate; do not edit.\n'
-    text += '-- Phoenix live ' + REF + '; local TOAU/75 profile, not deployed runtime verification.\n'
+    text += '-- Phoenix live ' + ref + '; local TOAU/75 profile, not deployed runtime verification.\n'
     text += 'return {\n'
     for key, value in data.items():
         if isinstance(value, dict) and len(value) > 20:
@@ -330,16 +373,19 @@ def generate(server):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--server', type=Path, default=Path(__file__).resolve().parents[2] / 'Phoenix')
+    parser.add_argument('--ref', default=REF)
+    parser.add_argument('--output', type=Path,
+                        default=Path(__file__).resolve().parents[1] / 'cadence/data/phoenix_modifiers.lua')
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
-    from source_parity import GitSource, check_guards
-    check_guards(GitSource(args.server, REF))
-    destination = Path(__file__).resolve().parents[1] / 'cadence/data/phoenix_modifiers.lua'
-    text = generate(args.server)
+    snapshot = GitSource(args.server, args.ref)
+    check_guards(snapshot)
+    destination = args.output
+    text = generate(args.server, snapshot.ref)
     if args.check:
         if not destination.exists() or destination.read_text(encoding='utf-8') != text:
             raise SystemExit('Generated modifier data is out of date.')
-        print('Modifier data matches pinned source.')
+        print('Modifier data matches source ' + snapshot.ref + '.')
     else:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(text, encoding='utf-8', newline='\n')
