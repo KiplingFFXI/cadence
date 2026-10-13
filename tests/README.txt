@@ -404,6 +404,8 @@ test_resting_hp_only.lua checks that duplicate vitals and Regen-only updates can
 restart HP-only resting ticks, while real recovery and full/blocked schedules still work.
 test_resting_independent_full.lua keeps a valid HP or MP full time when the other
 stat is unknown, without claiming a combined full time before both can be estimated.
+test_resting_max_vitals.lua checks HP and MP maximum changes after Weakness ends without
+another vitals packet, preserving tick timing and restoring forecasts, goals and sound readiness.
 
 test_native_packet_events.lua sends userdata events like Ashita's through packet readers
 and the addon callbacks. It covers HP-only recovery and full times, attack observations,

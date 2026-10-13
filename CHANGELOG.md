@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.2
+
+- Fixed resting HP and MP full times staying at the weakened maximum after Weakness wears off.
+
 ## 1.2.1
 
 - Added weekly checks for updated Phoenix data.

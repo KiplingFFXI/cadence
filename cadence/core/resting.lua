@@ -591,6 +591,13 @@ function resting.on_vitals(now, hp, mp, tp, hp_max, mp_max)
         direct_hp, direct_mp, direct_tp, pass_hp, pass_mp);
 end
 
+-- Maximum HP or MP can change without another vitals packet. Keep the last packet's current values.
+function resting.on_max_vitals(now, hp_max, mp_max)
+    if (state.hp == nil or not finite(hp_max) or hp_max <= 0 or not finite(mp_max) or mp_max < 0
+        or (hp_max == state.hp_max and mp_max == state.mp_max)) then return; end
+    resting.on_vitals(now, state.hp, state.mp, state.tp, hp_max, mp_max);
+end
+
 -- Your buffs, read five times a second. Notes whether disease, plague or the curse is on you.
 function resting.on_buffs(now, buffs)
     local found = nil;
