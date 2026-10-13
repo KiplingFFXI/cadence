@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.3
+
+- Capped Refresh no longer hides a simultaneous HP resting tick.
+- MP drains at zero no longer inflate the learned resting gain.
+- Duplicate updates no longer lose a recovery tick when Disease, Plague or Curse II wears off.
+- Blocking effects stay current while the resting timer is disabled or hidden at full.
+- Full-time and recovery-goal estimates remain marked as estimates until a real tick has been observed.
+
 ## 1.2.2
 
 - Fixed resting HP and MP full times staying at the weakened maximum after Weakness wears off.

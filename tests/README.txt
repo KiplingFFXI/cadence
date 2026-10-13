@@ -406,6 +406,9 @@ test_resting_independent_full.lua keeps a valid HP or MP full time when the othe
 stat is unknown, without claiming a combined full time before both can be estimated.
 test_resting_max_vitals.lua checks HP and MP maximum changes after Weakness ends without
 another vitals packet, preserving tick timing and restoring forecasts, goals and sound readiness.
+test_resting_boundaries.lua checks capped Refresh, drains at zero MP and estimated timing before an observed tick.
+test_resting_held.lua keeps recovery through duplicate vitals when a blocking effect wears off.
+test_resting_hidden_buffs.lua keeps blocking effects current with the timer disabled or hidden at full.
 
 test_native_packet_events.lua sends userdata events like Ashita's through packet readers
 and the addon callbacks. It covers HP-only recovery and full times, attack observations,

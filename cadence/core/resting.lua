@@ -113,6 +113,8 @@ local state = {
     held_mp        = 0,
     held_tp        = 0,
     held_missing   = 0,
+    held_before_hp = 0,
+    held_before_mp = 0,
     held_train_hp  = false,
     held_train_mp  = false,
     model          = nil,
@@ -451,9 +453,16 @@ passive_rate = function (stat)
     return math.max(model[name], 0) - model[name .. '_down'], false;
 end
 
+-- Passive recovery runs before the resting gain and stops at zero or the maximum.
+local function passive_gain(stat, before)
+    local rate = passive_rate(stat);
+    if (rate >= 0) then return math.min(rate, math.max(0, state[stat .. '_max'] - before)); end
+    return math.max(rate, -before);
+end
+
 -- A tick landed. Its packet also carries one pass of Regen or Refresh. Taking that off leaves the
 -- resting part.
-local function remember_heal(when, hp_gain, mp_gain)
+local function remember_heal(when, hp_gain, mp_gain, hp_pass, mp_pass)
     state.regen_hp, state.regen_observed_hp = passive_rate('hp');
     state.regen_mp, state.regen_observed_mp = passive_rate('mp');
     state.gap_regen_hp, state.gap_regen_mp = 0, 0;
@@ -462,25 +471,27 @@ local function remember_heal(when, hp_gain, mp_gain)
     if (state.regen_hp ~= 0 or state.regen_mp ~= 0) then state.regen_at = when; end
 
     state.heal_before_hp, state.heal_before_mp = state.heal_hp, state.heal_mp;
-    state.heal_hp = hp_gain ~= nil and math.max(hp_gain - state.regen_hp, 0) or 0;
-    state.heal_mp = mp_gain ~= nil and math.max(mp_gain - state.regen_mp, 0) or 0;
+    state.heal_hp = hp_gain ~= nil and math.max(hp_gain - hp_pass, 0) or 0;
+    state.heal_mp = mp_gain ~= nil and math.max(mp_gain - mp_pass, 0) or 0;
     if (hp_gain == nil) then state.heal_before_hp = 0; end
     if (mp_gain == nil) then state.heal_before_mp = 0; end
 end
 
 -- What a change in your HP, MP or TP at `when` was. It's a resting tick, or something between ticks.
 local function take_change(when, hp_gain, mp_gain, tp_gain, mp_missing, train_hp, train_mp,
-    direct_hp, direct_mp, direct_tp, pass_hp, pass_mp)
+    direct_hp, direct_mp, direct_tp, pass_hp, pass_mp, before_hp, before_mp)
+    local hp_pass, mp_pass = passive_gain('hp', before_hp), passive_gain('mp', before_mp);
+    mp_missing = math.max(0, mp_missing - mp_pass);
     last_change.at, last_change.hp, last_change.mp, last_change.tp = when, hp_gain, mp_gain, tp_gain;
-    last_change.mp_evidence = mp_gain - passive_rate('mp');
-    last_change.hp_tick = is_tick(when, tick_evidence(hp_gain - passive_rate('hp'), nil, nil, 0, state.hp_max));
+    last_change.mp_evidence = mp_gain - mp_pass;
+    last_change.hp_tick = is_tick(when, tick_evidence(hp_gain - hp_pass, nil, nil, 0, state.hp_max));
     last_change.direct_hp, last_change.direct_mp, last_change.direct_tp = direct_hp, direct_mp, direct_tp;
     last_change.accepted = false;
     last_change.sample_hp, last_change.sample_mp = state.sample_hp, state.sample_mp;
     local crossing = state.model_pending or (state.model ~= nil and state.model.transition);
     state.model_pending = false;
-    local evidence = tick_evidence(not direct_hp and hp_gain - passive_rate('hp') or nil,
-        not direct_mp and mp_gain - passive_rate('mp') or nil,
+    local evidence = tick_evidence(not direct_hp and hp_gain - hp_pass or nil,
+        not direct_mp and mp_gain - mp_pass or nil,
         not direct_tp and tp_gain or nil, mp_missing, state.hp_max);
     if (crossing) then
         -- A weapon swap can remove TP. Only a positive gain near the expected tick keeps its time.
@@ -497,7 +508,7 @@ local function take_change(when, hp_gain, mp_gain, tp_gain, mp_missing, train_hp
         state.gained_hp = not direct_hp and math.max(hp_gain, 0) or 0;
         state.gained_mp = not direct_mp and math.max(mp_gain, 0) or 0;
         state.seen_at   = when;
-        remember_heal(when, not direct_hp and hp_gain or nil, not direct_mp and mp_gain or nil);
+        remember_heal(when, not direct_hp and hp_gain or nil, not direct_mp and mp_gain or nil, hp_pass, mp_pass);
         state.hidden    = false;
         state.lost      = false;
         state.skipped   = 0;
@@ -535,7 +546,7 @@ local function settle_held(now)
     if (state.blocked == nil and now - at <= BUFF_LAG and (state.held_hp > 0 or state.held_mp > 0)) then
         take_change(at, state.held_hp, state.held_mp, state.held_tp, state.held_missing,
             state.held_train_hp, state.held_train_mp, state.held_direct_hp, state.held_direct_mp,
-            state.held_direct_tp, state.held_pass_hp, state.held_pass_mp);
+            state.held_direct_tp, state.held_pass_hp, state.held_pass_mp, state.held_before_hp, state.held_before_mp);
     else
         note_pass(at, state.held_hp, state.held_mp, state.held_pass_hp and not state.held_direct_hp,
             state.held_pass_mp and not state.held_direct_mp);
@@ -546,6 +557,7 @@ end
 function resting.on_vitals(now, hp, mp, tp, hp_max, mp_max)
     settle_pass(now, 'hp'); settle_pass(now, 'mp');
     local known = state.hp ~= nil;
+    local before_hp, before_mp = state.hp, state.mp;
     local hp_gain = known and (hp - state.hp) or 0;
     local mp_gain = known and (mp - state.mp) or 0;
     local tp_gain = known and (tp - state.tp) or 0;
@@ -566,9 +578,10 @@ function resting.on_vitals(now, hp, mp, tp, hp_max, mp_max)
         state.model_pending = false;
         return;
     end
-    -- A duplicate vitals packet must not hide the gain whose action is still arriving.
-    if (hp_gain == 0 and mp_gain == 0 and tp_gain == 0 and last_change.at ~= nil
-        and now >= last_change.at and now - last_change.at <= ACTION_WINDOW) then return; end
+    -- Keep a pending gain until its action or the next buff read can settle it.
+    if (hp_gain == 0 and mp_gain == 0 and tp_gain == 0
+        and ((last_change.at ~= nil and now >= last_change.at and now - last_change.at <= ACTION_WINDOW)
+            or (state.held_at ~= nil and now >= state.held_at and now - state.held_at <= BUFF_LAG))) then return; end
 
     local train_hp, train_mp = hp < hp_max, mp < mp_max;
     local direct_hp = state.direct_hp ~= nil and now >= state.direct_hp and now - state.direct_hp <= ACTION_WINDOW;
@@ -582,13 +595,14 @@ function resting.on_vitals(now, hp, mp, tp, hp_max, mp_max)
         settle_held(now);
         state.held_at = now;
         state.held_hp, state.held_mp, state.held_tp, state.held_missing = hp_gain, mp_gain, tp_gain, mp_missing;
+        state.held_before_hp, state.held_before_mp = before_hp, before_mp;
         state.held_train_hp, state.held_train_mp = train_hp, train_mp;
         state.held_direct_hp, state.held_direct_mp, state.held_direct_tp = direct_hp, direct_mp, direct_tp;
         state.held_pass_hp, state.held_pass_mp = pass_hp, pass_mp;
         return;
     end
     take_change(now, hp_gain, mp_gain, tp_gain, mp_missing, train_hp, train_mp,
-        direct_hp, direct_mp, direct_tp, pass_hp, pass_mp);
+        direct_hp, direct_mp, direct_tp, pass_hp, pass_mp, before_hp, before_mp);
 end
 
 -- Maximum HP or MP can change without another vitals packet. Keep the last packet's current values.
@@ -752,7 +766,7 @@ local recovery_stats = { hp = {}, mp = {} };
 local function full_estimate(now, targets)
     if (not state.active or state.hp == nil) then return nil; end
     local meta, stats = {}, recovery_stats;
-    local phase_known = resting.pattern_known() and not state.lost;
+    local phase_known = resting.pattern_known() and not state.lost and state.seen_at ~= nil;
     local model = state.model;
     local stopped = state.blocked ~= nil or (model and model.regen_down > 0);
     local blocked_confidence = state.blocked and 'blocked' or 'unknown';

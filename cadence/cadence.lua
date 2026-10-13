@@ -1,6 +1,6 @@
 addon.name    = 'cadence';
 addon.author  = 'Kipling';
-addon.version = '1.2.2';
+addon.version = '1.2.3';
 addon.desc    = 'Auto attack, resting tick and enemy attack timers for Phoenix.';
 addon.link    = 'https://github.com/KiplingFFXI/cadence';
 
@@ -969,6 +969,7 @@ local function render()
         check_modifiers(now);
     end
     track_status(now, entity.Status);
+    if (resting.is_active()) then check_buffs(now); end
     resting.update(now);
     play_when_full();
 
