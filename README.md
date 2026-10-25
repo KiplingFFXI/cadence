@@ -29,6 +29,7 @@ Type `/cadence` to open settings. Auto attack and resting timers start enabled. 
 ## What it shows
 
 - Auto attack timing, including known haste, slow and delay changes, plus action holds and range or facing warnings.
+- Optional re-engage estimates after combat ends. Turn on Show re-engage timer under Timers; the bar hides automatically after the estimate ends.
 - TP toward a goal of 1000, 2000 or 3000, with rounds, successful hits and optional time-to-goal estimates.
 - Resting ticks, HP/MP gains, time until full and optional recovery goals. Known traits, gear, food, Regen and Refresh inform the estimates.
 - Optional enemy attack timing, observed slow and haste, disabling effects, casting and TP-move holds.

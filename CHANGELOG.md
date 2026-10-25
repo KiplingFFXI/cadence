@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+
+- Added Show re-engage timer, an optional estimate that stays visible between fights and hides automatically when it finishes. It starts off.
+- Re-engage timing follows confirmed combat changes and the previously sampled attack delay. It stays marked as an estimate, shows unknown timing when needed, and keeps old TP predictions off the retained bar.
+- Attack timing now refreshes changed speed bonuses on recognized paralyzed or intimidated attack rounds.
+- Resting takes priority while combat status catches up, and character changes clear previous combat timing.
+- Reduced temporary memory use when calculating equipment and effect bonuses.
+- Refreshed the bundled equipment and enemy-timing data from Phoenix's latest live source.
+
 ## 1.2.3
 
 - Capped Refresh no longer hides a simultaneous HP resting tick.

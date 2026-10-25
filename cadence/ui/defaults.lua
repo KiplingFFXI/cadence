@@ -32,7 +32,8 @@ defaults.DETAIL_SIZE = { 8, 32 };
 -- Label size and Detail size start one below their smallest, at auto.
 local ALMOST_SECONDS = { 0.1, 2.0 };
 defaults.RANGES = {
-    attack  = { width = defaults.WIDTH, height_scale = defaults.HEIGHT_SCALE, bar_height = defaults.BAR_HEIGHT, almost_seconds = ALMOST_SECONDS },
+    attack  = { width = defaults.WIDTH, height_scale = defaults.HEIGHT_SCALE, bar_height = defaults.BAR_HEIGHT,
+        almost_seconds = ALMOST_SECONDS },
     resting = { width = defaults.WIDTH, height_scale = defaults.HEIGHT_SCALE, bar_height = defaults.BAR_HEIGHT, flash_seconds = { 0.2, 1.5 },
         sound_volume = { 0, 100 } },
     enemy   = { width = defaults.WIDTH, height_scale = defaults.HEIGHT_SCALE, bar_height = defaults.BAR_HEIGHT, almost_seconds = ALMOST_SECONDS },
@@ -92,6 +93,7 @@ function defaults.make()
             bar_height     = 5,
             show_value     = true,
             show_delay     = true,
+            linger_seconds = 0, -- Keep the saved key; 0 is off and 1 is automatic visibility.
             -- The bar, then almost ready, then ready, each brighter than the last, so colorblind players
             -- see every change.
             fill_start     = color(P.royal),
@@ -338,6 +340,7 @@ function defaults.tidy(settings)
         element.label_text = element.label_text:gsub('[^\32-\126]', ''):sub(1, defaults.LABEL_LENGTH);
     end
     settings.resting.sound_file = tidy_sound_file(settings.resting.sound_file);
+    settings.attack.linger_seconds = settings.attack.linger_seconds > 0 and 1 or 0;
     if (settings.resting.goal_stat ~= 'hp' and settings.resting.goal_stat ~= 'mp' and settings.resting.goal_stat ~= 'both') then
         settings.resting.goal_stat = fresh.resting.goal_stat;
     end

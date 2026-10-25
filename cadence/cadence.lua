@@ -1,6 +1,6 @@
 addon.name    = 'cadence';
 addon.author  = 'Kipling';
-addon.version = '1.2.3';
+addon.version = '1.3.0';
 addon.desc    = 'Auto attack, resting tick and enemy attack timers for Phoenix.';
 addon.link    = 'https://github.com/KiplingFFXI/cadence';
 
@@ -125,6 +125,8 @@ local cadence = {
     own         = loaded_settings,   -- This character's own settings, which Ashita writes to their file.
     my_id       = 0,       -- Your server id, which picks your own packets out of everyone's.
     last_status = nil,
+    attack_status = nil,
+    server_status = nil,
     messages    = {},      -- Reused list of result messages from one action.
     results     = {},      -- Reused list of every result in one action.
     buffs       = {},      -- Reused set of your buffs.
@@ -218,8 +220,11 @@ end
 local function read_inputs()
     local loadout = player.read_loadout();
     local entity = player.entity();
-    loadout.engaged = entity ~= nil and entity.Status == STATUS_ENGAGED;
+    local status = cadence.server_status;
+    if (status == nil and entity) then status = entity.Status; end
+    loadout.engaged = status == STATUS_ENGAGED;
     loadout.resting = entity ~= nil and entity.Status == STATUS_RESTING;
+    loadout.monstrosity = entity ~= nil and entity.MonstrosityFlag ~= nil and entity.MonstrosityFlag ~= 0;
     if (entity and entity.PetTargetIndex ~= nil) then
         loadout.pet_present = entity.PetTargetIndex ~= 0;
     end
@@ -357,6 +362,9 @@ end
 -- Runs on every change to the settings, so a profile, a reset or another character's settings open
 -- or close their own sound file.
 local function apply_settings()
+    if (not cadence.settings.attack.enabled or cadence.settings.attack.linger_seconds == 0) then
+        attack.cancel_reengage();
+    end
     hud.refresh(cadence.settings);
     profiles.invalidate_status(cadence.settings);
     settings_window.invalidate_preview();
@@ -404,28 +412,46 @@ end
     Game state.
 ]]
 
--- Starts and stops the timers when your status changes. Polling the status each frame catches
--- every way in and out of combat or resting, including loading the addon mid-fight.
-local function track_status(now, status)
-    if (status == cadence.last_status) then
-        return;
-    end
-
+-- A server status packet settles combat transitions even when no frame was drawn between them.
+local function track_attack_status(now, status, confirmed)
+    if (status == cadence.attack_status) then return; end
     if (status == STATUS_ENGAGED) then
         local estimate, key, loadout = current_delay();
-        -- With no status seen yet, the fight started before cadence was watching.
-        attack.engage(now, estimate, key, cadence.last_status == nil);
+        local initial = false;
+        local before = stat_state.before_engage();
+        if (before and before.delay_known and not loadout.monstrosity) then
+            local present = loadout.modifiers;
+            loadout.modifiers = before;
+            initial = delay.estimate(loadout);
+            loadout.modifiers = present;
+        end
+        attack.engage(now, estimate, key, cadence.attack_status == nil, initial);
         tp.on_engage(loadout);
         reach.forget();
         -- You engage what you have targeted. After that, the server says when your attacks move to
         -- another monster, and each round says where they went.
         local index = player.target_index();
         cadence.battle_id = index and player.monster_id(index);
-    elseif (cadence.last_status == STATUS_ENGAGED) then
-        attack.disengage();
+    elseif (cadence.attack_status == STATUS_ENGAGED) then
+        if (confirmed and status == 0 and cadence.settings.attack.enabled) then
+            local entity = player.entity();
+            local unsupported = entity and entity.MonstrosityFlag ~= nil and entity.MonstrosityFlag ~= 0;
+            attack.disengage(now, cadence.settings.attack.linger_seconds > 0,
+                { unknown = unsupported, last_target = cadence.battle_id });
+        else
+            attack.disengage();
+        end
         cadence.battle_id = nil;
     end
+    if (status ~= 0 and status ~= STATUS_ENGAGED) then attack.cancel_reengage(); end
+    cadence.attack_status = status;
+end
 
+-- Resting follows the client status. Combat uses server status once one has arrived.
+local function track_status(now, status)
+    track_attack_status(now, cadence.server_status or status, false);
+    if (status == STATUS_RESTING or STATUS_DEAD[status]) then attack.cancel_reengage(); end
+    if (status == cadence.last_status) then return; end
     if (status == STATUS_RESTING) then
         resting.start(now);
     elseif (cadence.last_status == STATUS_RESTING) then
@@ -546,11 +572,15 @@ end
 
 local function draw_attack(now, sample, forced, preview_state, sample_clock)
     local fill, left, attack_delay, reason, why;
+    local retained;
     if (not forced) then fill, left, attack_delay, reason, why = attack.progress(now); end
+    if (not forced and fill == nil) then retained = attack.reengage_progress(now); end
     if (fill ~= nil) then
         local blocked = reach_word(cadence.settings.attack.show_tp_time);
         local visible = cadence.settings.attack.show_reason and blocked or nil;
         hud.draw_attack(fill, left, attack_delay, attack.is_learned(), read_tp(nil, now, blocked), reason, why, visible);
+    elseif (retained) then
+        hud.draw_reengage(retained);
     elseif (sample) then
         now = sample_clock or now;
         -- The sample bar fills in 3.8 s and shows ready for a moment before the next round.
@@ -958,6 +988,7 @@ local function render()
     local now = os.clock();
     local entity = player.entity();
     if (entity == nil) then
+        attack.cancel_reengage();
         return;
     end
 
@@ -981,7 +1012,9 @@ local function render()
     local resting_live   = resting.is_active() and not (s.resting.hide_when_full and resting.is_full());
     local show_resting   = s.resting.enabled and (resting_live or resting_sample);
     local attack_sample  = window_open and not (s.style.shared_spot and show_resting);
-    local show_attack    = s.attack.enabled and (attack.is_active() or attack_sample);
+    local retained       = not resting.is_active() and attack.reengage_progress(now) ~= nil;
+    local attack_visible = entity.Status ~= STATUS_RESTING and not STATUS_DEAD[entity.Status];
+    local show_attack    = s.attack.enabled and attack_visible and (attack.is_active() or retained or attack_sample);
     local enemy_live     = s.enemy.enabled and update_enemy(now);
     local show_enemy     = s.enemy.enabled and (enemy_live or window_open);
     if (s.enemy.enabled and now - cadence.swept_at > SWEEP_SECONDS) then
@@ -1074,13 +1107,15 @@ local RESET_ALL_SECONDS = 10;
     off that timer's word, like /cadence attack tp off. A style row has a word of its own, like
     /cadence shadow off. A row is an on/off switch unless it has `choices`. Each choice is the value
     saved, its name in the window and the word you type. The `layout` row is One layout for all
-    characters, which lives in its own file. Preset and Font have commands of their own.
+    characters, which lives in its own file. `on_value` keeps an older numeric setting behind a switch.
+    Preset and Font have commands of their own.
 ]]
 local SETTINGS = {
     { tab = 'Appearance', section = 'style', word = 'tips', key = 'hover_tips', name = 'Timer hover help' },
     { tab = 'Appearance', section = 'style', word = 'record', key = 'record_diagnostics', name = 'Record timing details' },
     { tab = 'Timers', section = 'attack',  word = 'seconds',    key = 'show_value',         name = 'Seconds left' },
     { tab = 'Timers', section = 'attack',  word = 'delay',      key = 'show_delay',         name = 'Weapon delay' },
+    { tab = 'Timers', section = 'attack', word = 'reengage', key = 'linger_seconds', name = 'Show re-engage timer', on_value = 1 },
     { tab = 'Timers', section = 'attack',  word = 'tp',         key = 'show_tp',            name = 'Your TP' },
     { tab = 'Preview', section = 'attack', word = 'time', key = 'show_tp_time', name = 'Time to TP goal' },
     { tab = 'Preview', section = 'resting', word = 'goal', key = 'show_goal', name = 'Recovery goal' },
@@ -1885,6 +1920,7 @@ local function run_setting(row, value)
     else
         current = cadence.settings[row.section][row.key];
     end
+    if (row.on_value) then current = current > 0; end
     local on = ON_WORDS[value];
     if (value == nil) then
         on = not current;
@@ -1899,7 +1935,8 @@ local function run_setting(row, value)
         if (share_layout(on)) then say(line); end
         return;
     end
-    cadence.settings[row.section][row.key] = on;
+    -- The re-engage switch keeps its numeric saved key for existing layouts and profiles.
+    cadence.settings[row.section][row.key] = row.on_value and (on and row.on_value or 0) or on;
     -- Said first, so a warning from the change, like a sound that won't play, is the last thing you read.
     say(line);
     apply_and_save();
@@ -2521,6 +2558,13 @@ ashita.events.register('command', 'cadence_command', function (e)
         set_timer(sub, word);
     elseif (sub == 'resting' and word == 'goal' and args[4] ~= nil and ON_WORDS[args[4]:lower()] == nil) then
         set_recovery_goal(args[4]:lower(), args[5] and args[5]:lower(), args[6]);
+    elseif (sub == 'attack' and word == 'linger') then
+        local value = args[4] and args[4]:lower();
+        local number = tonumber(value);
+        if (number and number >= 0 and number <= 10 and number == math.floor(number)) then
+            value = number > 0 and 'on' or 'off';
+        end
+        run_setting(find_setting('attack', 'reengage'), value);
     elseif (timer and row ~= nil) then
         run_setting(row, args[4] and args[4]:lower());
     elseif (timer and number_row ~= nil) then
@@ -2631,7 +2675,8 @@ local function on_failed_action(e, now)
     if (message == WEAPONSKILL_TOO_FAR) then
         attack.on_ability(now);
     elseif (PARALYZED_OR_INTIMIDATED[message]) then
-        attack.on_paralyzed(now);
+        local estimate, key, loadout = current_delay();
+        attack.on_paralyzed(now, estimate, key, loadout.modifiers.delay_known, loadout.modifiers.transition);
     end
 end
 
@@ -2647,7 +2692,7 @@ local CAST_KIND = {
 local function on_my_action(e, category, now)
     if (category == CATEGORY.MELEE) then
         local estimate, key, loadout = current_delay();
-        attack.on_round(now, estimate, key);
+        attack.on_round(now, estimate, key, loadout.modifiers.delay_known, loadout.modifiers.transition);
         -- A round means the server let you attack, so any range or facing word starts over from here.
         cadence.battle_id = packets.action_target(e);
         tp.on_target(cadence.battle_id);
@@ -2843,6 +2888,14 @@ local function on_assist(e)
     end
 end
 
+local function on_status(e)
+    local who, status = packets.status(e);
+    if (cadence.my_id == 0 or who ~= cadence.my_id) then return; end
+    local previous = cadence.server_status;
+    cadence.server_status = status;
+    track_attack_status(os.clock(), status, previous == STATUS_ENGAGED);
+end
+
 -- Your HP, MP and TP. A party member's packet is only read as far as whose it is.
 local function on_vitals(e)
     if (packets.vitals_member(e) ~= cadence.my_id) then
@@ -2866,7 +2919,7 @@ end
 -- You zoned or logged in. The packet carries your server id.
 local function on_zone_in(e)
     cadence.my_id = packets.zone_in(e);
-    cadence.last_status = nil;
+    cadence.last_status, cadence.attack_status, cadence.server_status = nil, nil, nil;
     attack.reset();
     resting.reset();
     enemy.reset();
@@ -2889,6 +2942,8 @@ ashita.events.register('packet_in', 'cadence_packet_in', function (e)
         on_message(e);
     elseif (id == packets.ID.ASSIST) then
         on_assist(e);
+    elseif (id == packets.ID.STATUS) then
+        on_status(e);
     elseif (id == packets.ID.VITALS) then
         on_vitals(e);
     elseif (id == packets.ID.ZONE_IN) then
@@ -2960,6 +3015,8 @@ settings.register('settings', 'cadence_settings_update', function (s)
     end
     hud.cancel_layout_gesture();
     presets.forget_undo();
+    attack.reset();
+    cadence.attack_status, cadence.server_status = nil, nil;
     attack.forget_learned();
     tp.forget();
     stat_state.reset();

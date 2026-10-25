@@ -97,6 +97,9 @@ local layout_dirty = false;
 local layout_before = nil;
 local gesture_cancelled = false;
 local preview = {};
+local reengage = false;
+local reengage_header = { label = 'Re-engage', value = '' };
+local reengage_header_size;
 local rectangles = {};
 local frame_number = 0;
 local hovered_timer, hover_since = nil, 0;
@@ -354,6 +357,7 @@ end
 
 -- True when a timer shows small text next to its name.
 local function has_detail(key)
+    if (key == 'attack' and reengage) then return false; end
     local element = settings[key];
     return element.show_delay or element.show_gains or element.show_until_full or element.show_name
         or element.show_effects;
@@ -372,15 +376,16 @@ local function has_goal_line(key)
 end
 
 local function has_tp_time_line(key)
-    return key == 'attack' and settings.attack.show_tp and settings.attack.show_tp_time;
+    return key == 'attack' and not reengage and settings.attack.show_tp and settings.attack.show_tp_time;
 end
 
 local function has_hits_line(key)
-    return key == 'attack' and settings.attack.show_tp and settings.attack.show_tp_hits;
+    return key == 'attack' and not reengage and settings.attack.show_tp and settings.attack.show_tp_hits;
 end
 
 -- True when a timer shows its row of text above the bar. A timer showing just its numbers always does.
 local function has_header(key)
+    if (key == 'attack' and reengage) then return true; end
     local element = settings[key];
     return preview[key] or (element.numbers_only and not (has_next_line(key) or has_ticks_line(key) or has_goal_line(key))) or shows_name(key) or element.show_value or has_detail(key)
         or (key == 'enemy' and (element.show_holds or enemy_control));
@@ -395,7 +400,7 @@ end
 -- the resting timer for when HP and MP will each be full.
 local function has_footer(key)
     if (key == 'attack') then
-        return settings.attack.show_tp;
+        return not reengage and settings.attack.show_tp;
     end
     return key == 'resting' and settings.resting.show_each_full;
 end
@@ -415,6 +420,7 @@ end
 
 -- How tall a timer's row of text is. A name or small text bigger than the numbers makes it taller.
 local function header_px(key, metrics)
+    if (key == 'attack' and reengage) then return reengage_header_size(metrics); end
     local row = is_strip(key) and metrics.label_px or metrics.value_px;
     if (shows_name(key) or preview[key]) then
         row = math.max(row, metrics.name_px);
@@ -562,6 +568,40 @@ local function text_width(text, px)
     local width = imgui.CalcTextSize(text);
     imgui.PopFont();
     return width;
+end
+
+local function fit_text(text, px, width, measured)
+    while (measured > width and px > 1) do
+        px = math.max(1, math.min(px - 1, math.floor(px * width / measured)));
+        imgui.PushFont(face, px);
+        measured = imgui.CalcTextSize(text);
+        imgui.PopFont();
+    end
+    return px;
+end
+
+-- Keep both the context and value readable when the card is narrow or its height is enlarged.
+reengage_header_size = function(metrics)
+    local layout = reengage_header;
+    local width = round(settings.attack.width * size.width_scale);
+    if (layout.revision == size_revision and layout.scale == metrics.scale and layout.width == width
+        and layout.last_value == layout.value) then
+        return layout.height;
+    end
+    layout.revision, layout.scale, layout.width, layout.last_value = size_revision, metrics.scale, width, layout.value;
+    layout.name_px, layout.value_px = metrics.name_px, metrics.value_px;
+    imgui.PushFont(face, layout.name_px);
+    local name_width = imgui.CalcTextSize(layout.label);
+    imgui.PopFont();
+    imgui.PushFont(face, layout.value_px);
+    local value_width = imgui.CalcTextSize(layout.value);
+    imgui.PopFont();
+    layout.stacked = name_width + value_width + size.spacing > width;
+    layout.name_px = fit_text(layout.label, layout.name_px, width, name_width);
+    layout.value_px = fit_text(layout.value, layout.value_px, width, value_width);
+    layout.height = layout.stacked and (layout.name_px + metrics.gap + layout.value_px)
+        or math.max(layout.name_px, layout.value_px);
+    return layout.height;
 end
 
 -- The eight spots around the text an outline is drawn at.
@@ -909,7 +949,22 @@ local function draw_timer(timer)
         local left = x + size.accent + size.pad_x;
         local top  = y + (strip and metrics.strip_top or metrics.pad_y);
         local bar_width = width - size.accent - size.pad_x * 2;
-        if (has_header(key)) then
+        if (timer.reengage) then
+            local layout = reengage_header;
+            local name_top, value_top = top, top;
+            if (layout.stacked) then
+                value_top = top + layout.name_px + gap;
+            else
+                name_top = top + (layout.height - layout.name_px) * 0.75;
+                value_top = top + (layout.height - layout.value_px) * 0.75;
+            end
+            local value_x = layout.stacked and left or (left + bar_width - text_width(layout.value, layout.value_px));
+            list:PushClipRect(set_point(A, left, y), set_point(B, left + bar_width, y + height), true);
+            draw_text(list, left, name_top, colors.label, layout.label, layout.name_px);
+            draw_text(list, value_x, value_top, timer.value_color, layout.value, layout.value_px);
+            list:PopClipRect();
+            top = top + layout.height + gap;
+        elseif (has_header(key)) then
             -- Smaller text sits lower in the row by this much, so everything shares a baseline.
             local row_px = header_px(key, metrics);
             local value_top  = top + (row_px - value_px) * 0.75;
@@ -1155,6 +1210,7 @@ end
     while the next attack's time isn't known, and shows "--".
 ]]
 function hud.draw_attack(fill, left, delay, learned, tp_view, reason, why, reach, is_preview)
+    reengage = false;
     preview.attack = is_preview == true;
     local element = settings.attack;
     local stopped = element.show_why and STOPPED_WORDS[why] or nil;
@@ -1206,6 +1262,32 @@ function hud.draw_attack(fill, left, delay, learned, tp_view, reason, why, reach
     fill_tp_line(attack_timer, tp_view);
 
     draw_timer(attack_timer);
+end
+
+local reengage_timer = { key = 'attack', reengage = true };
+local reengage_text = { tenths = -1, text = '' };
+
+-- This card shows an estimated engage cooldown, never a pending attack or TP prediction.
+function hud.draw_reengage(view)
+    reengage, preview.attack = true, false;
+    local unknown = view.unknown or view.left == nil;
+    local elapsed = not unknown and view.elapsed;
+    if (unknown) then
+        reengage_header.value = 'Timing unknown';
+    elseif (elapsed) then
+        reengage_header.value = 'Estimate elapsed';
+    else
+        local tenths = math.max(1, math.ceil(view.left * 10));
+        if (tenths ~= reengage_text.tenths) then
+            reengage_text.tenths = tenths;
+            reengage_text.text = ('~%.1fs'):format(tenths / 10);
+        end
+        reengage_header.value = reengage_text.text;
+    end
+    reengage_timer.fill = unknown and (settings.style.bar_drains and 1 or 0) or view.fill;
+    reengage_timer.start_color = colors.attack_start;
+    reengage_timer.value_color = (unknown or elapsed) and colors.detail or colors.value;
+    draw_timer(reengage_timer);
 end
 
 local resting_text = { tenths = -1, text = '' };
@@ -1447,8 +1529,8 @@ function hud.draw_enemy(view)
     enemy_timer.label = label_for(element, element.attached and 'ENEMY' or 'ENEMY ATTACK');
     enemy_timer.corners, enemy_timer.x, enemy_timer.y = nil, nil, nil;
     if (element.attached and settings.attack.enabled) then
-        -- Under the card at the auto attack spot, sharing its bottom border line. Between fights that
-        -- card is hidden, and the strip stays where it will be, so it doesn't jump when you engage.
+        -- Follow the attack or re-engage card and share its bottom border. When the card is hidden,
+        -- keep the strip at the normal attack spot.
         -- With the auto attack timer turned off, it sits at its own spot, where Shift can drag it.
         if (host.shown) then
             enemy_timer.x = host.x;
@@ -1509,6 +1591,7 @@ end
 -- Everything the HUD draws in a frame goes between begin_frame() and end_frame().
 function hud.begin_frame()
     frame_number = frame_number + 1;
+    reengage = false;
     host.shown, host.hovered = false, false;
     face = chosen_font or imgui.GetFont();
     screen.width, screen.height = hud.screen_size();

@@ -39,6 +39,22 @@ local attack_tip = tips.text('attack', { attack = { disabled = 'sleep', stalled 
 check('disabled status IDs have readable names', tips.text('attack', { attack = { disabled = 10 } }):find('stopped: Stun', 1, true));
 check('attack tips explain stopped stalled and overdue states', attack_tip:find('stopped: sleep', 1, true)
     and attack_tip:find('stalled', 1, true) and attack_tip:find('overdue', 1, true));
+local attack = require('core.attack');
+attack.engage(0, 8, 'tip', false, 8); attack.on_round(2.8, 8, 'tip'); attack.on_out_of_reach(4); attack.disengage(10, true);
+local retained = { attack = attack.info(10), tp = details.tp, modifiers = details.modifiers };
+local retained_tip = tips.text('attack', retained);
+check('the retained tip explains the conservative cooldown and separate first attack', retained_tip:find('Re-engage estimate', 1, true)
+    and retained_tip:find('Estimated remaining: 5.00 s.', 1, true) and retained_tip:find('conservative', 1, true)
+    and retained_tip:find('three-second first-attack', 1, true));
+check('the retained tip drops stale combat and mutable modifier details', not retained_tip:find('stalled', 1, true)
+    and not retained_tip:find('TP', 1, true) and not retained_tip:find('Accepted samples', 1, true)
+    and not retained_tip:find('March', 1, true));
+retained.attack = attack.info(15);
+check('the elapsed tip does not confirm an engage deadline', tips.text('attack', retained):find('does not confirm that you can engage', 1, true));
+attack.engage(20, 8, 'tip', true); attack.disengage(21, true);
+retained.attack = attack.info(21);
+check('the unknown tip explains missing timing without invented seconds', tips.text('attack', retained):find('Timing unknown', 1, true)
+    and not tips.text('attack', retained):find('Estimated remaining', 1, true));
 local explain = tips.text('enemy', { enemy = { holding = 'observing', waiting = true, samples = 0 } });
 check('an unresolved enemy resume is never called ready', explain:find('Waiting for the next observed attack', 1, true));
 s.enemy.show_value, s.enemy.show_holds, s.enemy.show_label, s.enemy.show_name, s.enemy.show_effects, s.enemy.show_delay = false, false, false, false, false, false;

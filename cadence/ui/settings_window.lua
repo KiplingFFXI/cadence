@@ -91,10 +91,12 @@ local LABEL_BUFFER = defaults.LABEL_LENGTH + 1;
 -- What each (?) says. ImGui can break a tip's line right after a period, comma, ! or ? or a double quote.
 -- So none of those sits right between two other characters, or the next line could start with a lone period.
 local TIPS = {
-    attack_timer   = 'Turns the auto attack timer on or off. It shows up while you\'re engaged.',
+    attack_timer   = 'Turns the auto attack timer on or off. Show re-engage timer can also show the estimated cooldown between fights.',
     attack_value   = 'Shows the seconds until your next attack, then "ready" once you can attack.',
     attack_delay   = 'Shows the weapon delay the timer is using. Until your own attacks show the real one, it\'s a '
         .. 'guess marked est.',
+    linger         = 'Keeps the estimated re-engage cooldown visible after combat, then briefly shows Estimate elapsed. '
+        .. 'If timing is unknown, it says so for five seconds. Re-engaging starts a new attack delay.',
     tp             = 'Shows your TP under the bar. Your TP turns this color at your selected goal.',
     tp_rounds      = 'Shows about how many rounds until your selected TP goal. It counts the TP your hits give you and what being '
         .. 'hit or Regain has been adding lately.',
@@ -811,6 +813,12 @@ end
 local function draw_attack_section(attack)
     heading_with_toggle('AUTO ATTACK TIMER', 'attack', attack, TIPS.attack_timer);
     local faded = fade_if_off(attack);
+    flag[1] = attack.linger_seconds > 0;
+    if (imgui.Checkbox('Show re-engage timer', flag)) then
+        attack.linger_seconds = flag[1] and 1 or 0;
+        mark_changed(true, 'Show re-engage timer');
+    end
+    help(TIPS.linger, 'Show re-engage timer');
     settings_window.draw_readouts('attack', attack);
     color('##tp_colorYour TP', attack, 'tp_color');
     imgui.SameLine(); imgui.TextUnformatted('TP color'); help(TIPS.tp, 'TP color');
@@ -1854,7 +1862,11 @@ local function build_estimate_details(details)
     local function note(text) lines[#lines + 1] = { text = text }; end
     local a, t, r, e, m = details.attack, details.tp, details.resting, details.enemy, details.modifiers;
     heading('AUTO ATTACK');
-    if (a) then
+    if (a and a.reengage) then
+        local tips = require('ui.tips');
+        for line in tips.text('attack', details):gmatch('[^\n]+') do note(line); end
+        note('Sampled attack interval: ' .. amount(a.reengage.sampled_delay, ' s'));
+    elseif (a) then
         note('In use: ' .. amount(a.delay, ' s') .. '  |  ' .. plain(a.source));
         note('Model: ' .. amount(a.modeled_delay, ' s'));
         if (a.next_interval_changed) then
@@ -2051,7 +2063,7 @@ SEARCH_WORDS.Appearance = table.concat({ SEARCH_WORDS.Appearance, SEARCH_WORDS.W
 SEARCH_WORDS.Window, SEARCH_WORDS['Window colors'] = nil, nil;
 SEARCH_WORDS.Appearance = SEARCH_WORDS.Appearance .. ' Inline preview Sample state TABS Restore all tabs';
 SEARCH_WORDS.Profiles = SEARCH_WORDS.Profiles .. ' STARTER LAYOUTS Starter layout Preview layout Apply layout Close layout preview Minimal Melee TP Resting Enemy tracking Undo overwrite Modified from';
-SEARCH_WORDS.Timers = SEARCH_WORDS.Timers .. ' Enabled only Options TP color Details';
+SEARCH_WORDS.Timers = SEARCH_WORDS.Timers .. ' Enabled only Options TP color Details Show re-engage timer cooldown ' .. TIPS.linger;
 SEARCH_WORDS.Enemy = SEARCH_WORDS.Enemy .. ' Enabled only Options Details';
 for name, words in pairs(SEARCH_WORDS) do SEARCH_WORDS[name] = words .. ' Undo last change Reset this section'; end
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from source_parity import GitSource, check_guards
 
-REF = '465ac4c076aebd70170fe8fde032e5066ce0737e'
+REF = '9a4494d5056429d0e75922dc9fa47d419142cf68'
 MODS = {71: 'mp_heal', 72: 'hp_heal', 73: 'store_tp', 173: 'martial_arts',
         259: 'dual_wield', 295: 'clear_mind', 380: 'delay_percent', 488: 'inhibit_tp',
         167: 'haste_magic', 171: 'delay_flat', 217: 'twohand_haste_ability', 383: 'haste_ability', 384: 'haste_gear', 906: 'desperate_blows',

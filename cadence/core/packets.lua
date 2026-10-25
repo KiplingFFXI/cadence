@@ -12,6 +12,7 @@ packets.ID = {
     ENTITY  = 0x00E,
     ACTION  = 0x028,
     MESSAGE = 0x029,
+    STATUS  = 0x037,
     ASSIST  = 0x058,
     VITALS  = 0x0DF,
 };
@@ -114,7 +115,7 @@ local function valid_action(e)
 end
 
 local MINIMUM = { [packets.ID.ZONE_IN] = 8, [packets.ID.ENTITY] = 11,
-    [packets.ID.MESSAGE] = 26, [packets.ID.ASSIST] = 12, [packets.ID.VITALS] = 20 };
+    [packets.ID.MESSAGE] = 26, [packets.ID.STATUS] = 49, [packets.ID.ASSIST] = 12, [packets.ID.VITALS] = 20 };
 
 -- Call before a packet can change any timer or observed input.
 function packets.valid(e)
@@ -322,6 +323,12 @@ end
 function packets.assist(e)
     if (byte_count(e) < 12) then return nil; end
     return struct.unpack('L', e.data, 0x04 + 1), struct.unpack('L', e.data, 0x08 + 1);
+end
+
+-- 0x037 reports the server's combat status. It carries no attack or re-engage deadline.
+function packets.status(e)
+    if (byte_count(e) < 49) then return nil; end
+    return struct.unpack('L', e.data, 0x24 + 1), e.data:byte(0x30 + 1);
 end
 
 -- 0x00A zone in. Returns your server id.

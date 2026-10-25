@@ -48,17 +48,16 @@ Your settings live in `config\addons\cadence\`, outside the addon folder, so upd
 
 To update, type `/addon unload cadence` first, or close the game. Then delete your old `addons\cadence` folder, extract the new zip in its place the same way you installed it, and type `/addon load cadence`. Your profiles and your own sounds and fonts are in `config\addons\cadence\` too, so they carry over.
 
-The optional `cadence-<version>-no-sounds.zip` leaves out the two bundled sound files. All timers still work. For resting sounds, add your own .mp3 or .wav files to `config\addons\cadence\sounds\` and pick one in the Sound list.
-
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `/cadence` | Opens or closes the settings window. |
 | `/cadence attack [on\|off]` | Turns the auto attack timer on or off. |
+| `/cadence attack reengage [on\|off]` | Turns the re-engage timer on or off. Without a value, toggles it. The bar hides automatically after the estimate ends. |
 | `/cadence resting [on\|off]` | Turns the resting timer on or off. |
 | `/cadence enemy [on\|off]` | Turns the enemy attack timer on or off. |
-| `/cadence attack <part> [on\|off]` | Turns one box of the auto attack timer on or off, like `/cadence attack tp off`. The parts are `seconds` (Seconds left), `delay` (Weapon delay), `tp` (Your TP), `rounds` (Rounds to goal), `hits` (Successful hits), `time` (Time to TP goal), `numbers` (Text only), `mark` (Ready mark), `almost` (Almost ready), `range` (Range / facing), `why` (Why it stopped) and `label` (Show its name, the box in front of its label on the Appearance tab). |
+| `/cadence attack <part> [on\|off]` | Turns one box of the auto attack timer on or off, like `/cadence attack tp off`. The parts are `seconds` (Seconds left), `delay` (Weapon delay), `reengage` (Show re-engage timer), `tp` (Your TP), `rounds` (Rounds to goal), `hits` (Successful hits), `time` (Time to TP goal), `numbers` (Text only), `mark` (Ready mark), `almost` (Almost ready), `range` (Range / facing), `why` (Why it stopped) and `label` (Show its name, the box in front of its label on the Appearance tab). |
 | `/cadence resting <part> [on\|off]` | The same for the resting timer. The parts are `seconds` (Seconds left), `gains` (Last tick gains), `nextgains` (Next tick gains), `untilfull` (Time until full), `fulltimes` (Full times), `ticks` (Ticks until full), `goal` (Recovery goal), `numbers` (Text only), `hidefull` (Hide once full), `flash` (Flash on each tick), `why` (Why it can't heal), `sound` (Sound, the box in front of the Sound list) and `label` (Show its name). |
 | `/cadence enemy <part> [on\|off]` | The same for the enemy attack timer. The parts are `keeplast` (Keep the last monster), `attach` (Attach under auto attack), `seconds` (Seconds left), `name` (Enemy name), `speed` (Attack speed), `effects` (Slow and haste), `tpmove` (TP move / casting), `onyou` (On you), `numbers` (Text only), `mark` (Ready mark), `almost` (Almost ready) and `label` (Show its name). |
 | `/cadence resting goal hp\|mp\|both percent\|amount <number>` | Picks and shows a recovery goal, such as `/cadence resting goal mp amount 300` or `/cadence resting goal hp percent 75`. |
@@ -140,6 +139,7 @@ Readouts use compact rows. Enabled only hides unchecked rows from the list witho
 | Option | What it does |
 |---|---|
 | Your TP | On by default. Shows your TP under the auto attack bar. It turns the color you pick once you reach your TP goal. |
+| Show re-engage timer | Off by default. Shows an estimated re-engage countdown on the auto attack card after combat ends, then hides automatically. |
 | Rounds to goal | On by default. Shows about how many rounds until your TP goal, next to your TP. TP from being hit and from Regain counts too. |
 | TP goal | Choose 1000, 2000 or 3000 for the counts and ready color. |
 | Successful hits | Off by default. Adds the normal hits your own attacks still need, before TP from other sources. |
@@ -295,6 +295,14 @@ What a button did shows under the buttons, in the done or the problem message co
 Jobs change in your Mog House, so cadence reads your main job each time you zone. When it's a new job with a link, its profile loads, the same as Load, and cadence says so in chat. If that profile is gone, cadence says that instead. Loading cadence or logging in only notes your job. Each character has its own job links, kept in its own settings file, even while One layout for all characters is on. Rename moves this character's links to the new name, and Delete clears them. Other characters' links to a profile you rename or delete show (gone). `/cadence reset all` clears your links.
 
 ## How the auto attack timer works
+
+Show re-engage timer adds an optional **Re-engage** readout between fights. Enable it under **Timers**, or type `/cadence attack reengage on`. Use `/cadence attack reengage off` to turn it off. The countdown stays visible through its finish, followed by **Estimate elapsed** for half a second before hiding. You do not need to choose a display duration. The older `/cadence attack linger <0-10>` command still works: zero turns it off and any positive value turns it on.
+
+This counts the estimated delay before engaging again. A new engagement starts its own first-attack timer. The retained display uses the attack delay sampled before combat ended, including known speed bonuses and penalties or a calibrated interval from your attacks. Changing equipment or buffs afterward does not move that countdown. Before the first attack, it accounts for bonuses that only become active with your weapon drawn.
+
+The server does not send an exact re-engage deadline or the reason combat ended, so this uses a conservative estimate and may finish later than you could actually engage. It starts when your own server status confirms that combat ended. Defeat messages, target selections and failed attempts do not restart it. If the necessary delay is unknown, the card says **Timing unknown** for five seconds, then hides. Loading cadence while already idle does not create a countdown.
+
+The retained card hides old TP predictions and target warnings. Resting takes priority, and death, zoning, character changes or turning the option off clear it. Automatic targeting while you remain engaged keeps the normal attack timer. The readout works with the enemy timer turned off and keeps its meaning visible in Text only mode or with timer labels hidden.
 
 Your first attack comes 2.8 to 3.2 seconds after you engage. The bar counts to the soonest, 2.8 seconds. After that, every attack adds your weapon delay to a timer that runs down in 0.4 second server ticks. Because of those ticks a single attack can come up to 0.4 seconds early or late, but they average out to your exact delay.
 

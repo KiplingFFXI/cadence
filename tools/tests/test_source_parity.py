@@ -88,7 +88,9 @@ class FingerprintTests(unittest.TestCase):
 
     def test_module_patterns_include_signed_delay_recovery_and_duration_inputs(self):
         for token in ('DELAY', 'REGEN', 'REFRESH', 'REGEN_DOWN', 'REFRESH_DOWN', 'INHIBIT_TP',
-                      'SONG_DURATION_BONUS', 'ENF_MAG_DURATION', 'xi.effect.FOOD', 'xi.aftermath'):
+                      'SONG_DURATION_BONUS', 'ENF_MAG_DURATION', 'xi.effect.FOOD', 'xi.aftermath',
+                      'EngageLockout', 'setEngageLockedUntil', 'm_engageLockedUntil',
+                      'CheckLatentsWeaponDraw', 'OnDisengage'):
             with self.subTest(token=token):
                 self.assertRegex(token, parity.MODULE_RULES)
 
@@ -114,6 +116,29 @@ class SourceParityTests(unittest.TestCase):
 
     def test_delay_matches_the_reviewed_cpp_reference(self):
         self.assertGreater(parity.check_delay(reduction_cap=self.manifest['profile']['delay_reduction_cap']), 500)
+
+    def test_reengage_matches_the_reviewed_cpp_constants(self):
+        self.assertEqual(parity.check_reengage(self.source), 10)
+
+    def test_changed_reengage_source_constants_fail_without_a_hash_check(self):
+        path = 'src/map/ai/states/attack_state.cpp'
+        for replacement in (('= 3s;', '= 4s;'), ('= 1500ms;', '= 1600ms;')):
+            with self.subTest(replacement=replacement), self.assertRaisesRegex(RuntimeError, 'Source parity failed for re-engage'):
+                parity.check_reengage(ChangedSource(self.source, {path: replacement}))
+
+    def test_changed_reengage_transitions_and_packet_layout_require_review(self):
+        changes = {
+            'src/map/ai/ai_container.cpp': ('finished->Cleanup(tick);', 'finished->Cleanup(tick + 1s);'),
+            'src/map/ai/controllers/player_controller.cpp': ('timer::now() >= m_engageLockedUntil', 'timer::now() > m_engageLockedUntil'),
+            'src/map/ai/states/range_state.cpp': ('MsgBasic::WaitLonger', 'MsgBasic::CannotPerformAction'),
+            'src/map/entities/char_entity.cpp': ('timer::now() + state.EngageLockout()', 'timer::now() + state.EngageLockout() + 1s'),
+            'src/map/entities/battle_entity.cpp': ('setBattleTarget(std::nullopt);\n    if (animation == xi::Animation::Attack)',
+                                                 'setBattleTarget(std::nullopt);\n    if (animation == xi::Animation::None)'),
+            'src/map/packets/char_status.cpp': ('uint8_t                   BufStatus[32];', 'uint8_t                   BufStatus[33];'),
+        }
+        for path, replacement in changes.items():
+            with self.subTest(path=path), self.assertRaisesRegex(RuntimeError, re.escape(path)):
+                parity.check_guards(ChangedSource(self.source, {path: replacement}))
 
     def test_changed_tp_source_formula_fails_without_a_hash_check(self):
         changed = ChangedSource(self.source, {parity.ERA_TP: ('* 65 / 270', '* 66 / 270')})
@@ -151,6 +176,15 @@ class SourceParityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, re.escape(path)):
             parity.check_guards(changed)
 
+    def test_changed_hand_to_hand_job_eligibility_requires_review(self):
+        changes = {
+            'data/skills.yaml': ('hand_to_hand:      {war: d', 'hand_to_hand:      {war: none'),
+            'modules/era/data/skills.yaml': ('hand_to_hand: {pup: b_plus}', 'hand_to_hand: {pup: none}'),
+        }
+        for path, replacement in changes.items():
+            with self.subTest(path=path), self.assertRaisesRegex(RuntimeError, re.escape(path)):
+                parity.check_guards(ChangedSource(self.source, {path: replacement}))
+
     def test_supported_base_sql_data_remains_refreshable(self):
         path = 'sql/item_mods.sql'
         changed = ChangedSource(self.source, added={path: self.source.read(path) +
@@ -184,6 +218,11 @@ class SourceParityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'new_timing.lua'):
             parity.check_guards(ChangedSource(self.source, added=added))
 
+    def test_new_loaded_reengage_override_requires_review(self):
+        added = {'modules/phoenix/cpp/reengage.cpp': 'player->setEngageLockedUntil(timer::now());'}
+        with self.assertRaisesRegex(RuntimeError, 'reengage.cpp'):
+            parity.check_guards(ChangedSource(self.source, added=added))
+
     def test_disabled_module_removal_requires_review(self):
         changed = ChangedSource(self.source, {'modules/init.txt': ('\nera/lua\n', '\n# era/lua\n')})
         with self.assertRaisesRegex(RuntimeError, 'Source review required for modules'):
@@ -207,7 +246,7 @@ class SourceParityTests(unittest.TestCase):
     def addon_change(self, path, before, after, check):
         with tempfile.TemporaryDirectory(prefix='cadence_parity_') as folder:
             addon = Path(folder) / 'cadence'
-            for name in ('core/delay.lua', 'core/tp.lua', 'core/modifiers.lua', 'data/phoenix_modifiers.lua'):
+            for name in ('core/delay.lua', 'core/attack.lua', 'core/tp.lua', 'core/modifiers.lua', 'data/phoenix_modifiers.lua'):
                 destination = addon / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(parity.ROOT / 'cadence' / name, destination)
@@ -229,6 +268,12 @@ class SourceParityTests(unittest.TestCase):
     def test_changed_addon_hundred_fists_formula_fails(self):
         self.addon_change('core/delay.lua', 'clamp(weapon_ms - martial_ms, 1600, 8000) * 0.25',
                           'clamp(weapon_ms - martial_ms, 1600, 8000) * 0.30', parity.check_delay)
+
+    def test_changed_addon_reengage_constants_fail(self):
+        for before, after in (('REENGAGE_MIN_SECONDS = 1.5', 'REENGAGE_MIN_SECONDS = 1.6'),
+                              ('REENGAGE_GATE_SECONDS = 3.0', 'REENGAGE_GATE_SECONDS = 4.0')):
+            with self.subTest(before=before):
+                self.addon_change('core/attack.lua', before, after, lambda addon: parity.check_reengage(self.source, addon))
 
     def test_fixture_pin_matches_generator_and_ci(self):
         self.assertEqual(self.manifest['ref'], REF)

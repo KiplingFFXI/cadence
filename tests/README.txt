@@ -123,6 +123,14 @@ What's here
   test_learned_delay.lua  the auto attack delay kept for each key through buff changes and zoning,
                           the 16 keys kept, starting over on another character, and a March that
                           wears off between fights
+  test_reengage.lua      sampled attack intervals, conservative re-engage deadlines, unknown timing,
+                         held departures, failed rounds, relearning, expiry and allocation limits
+  test_reengage_integration.lua  server status identity and boundaries, late packets, target changes,
+                         character and zone resets, drawn-weapon latents, shared resting priority,
+                         no idle input polling and no commands sent to the game
+  test_reengage_ui.lua   retained countdown and unknown/elapsed text, minimum widths, Text only,
+                         hidden labels, attached enemy strips, automatic visibility toggle,
+                         old enabled settings, no stale TP rows and allocations
   test_timing_readouts.lua  TP goals, hits, resting counts, uncertainty and report controls
   test_goal_hud.lua      stable goal and TP-time rows, preview cues and passive-full wording
   test_layout_guides.lua  guide snapping, free drag and one undo snapshot per gesture

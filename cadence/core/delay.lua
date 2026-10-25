@@ -26,7 +26,7 @@ local JOB_NIN = 13;
 local JOB_PUP = 18;
 local JOB_DNC = 19;
 
--- Jobs with a hand-to-hand skill rank (sql/skill_ranks.sql).
+-- Jobs with a hand-to-hand skill rank (data/skills.yaml).
 local HAND_TO_HAND_JOBS = {
     [JOB_WAR] = true, [JOB_MNK] = true, [JOB_THF] = true, [JOB_NIN] = true, [JOB_PUP] = true, [JOB_DNC] = true,
 };
@@ -63,7 +63,7 @@ local HUNDRED_FISTS = 46;
 
 local MAGIC_HASTE_CAP   = 0.4375;
 local ABILITY_HASTE_CAP = 0.25;
--- Phoenix sets main.DELAY_REDUCTION_CAP to 0.93; the source default is 0.80.
+-- The selected Phoenix profile uses 0.93; the public source default is 0.80.
 -- The separate final weapon-delay floor still applies after percentage delay.
 local PHOENIX_HASTE_CAP = 0.93;
 

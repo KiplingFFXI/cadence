@@ -746,6 +746,15 @@ function state.info()
     return model;
 end
 
+-- The first attack interval is sampled before drawn-weapon latents turn on.
+function state.before_engage()
+    if (model == nil or model.transition) then return nil; end
+    local before = {};
+    for key, value in pairs(snapshot) do before[key] = value; end
+    before.engaged, before.resting = false, false;
+    return modifiers.calculate(before);
+end
+
 -- Reports are requested by you. They omit raw extra data, packet bytes, names and server IDs.
 function state.snapshot()
     local result = {};

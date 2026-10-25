@@ -162,6 +162,13 @@ Phoenix's own Lua, and attack delays with an independent reference tied to the r
 comparison allows up to three milliseconds for the C++ float and Lua double truncations. It covers signed slow,
 Haste caps, Dual Wield, Martial Arts, Hundred Fists, and flat and percentage delay changes.
 
+Re-engage checks use the reviewed attack state's engage-delay and minimum-cooldown constants. Narrow source
+guards also cover the deadline setter, combat cleanup, own status packet layout and shared rejection message.
+The retained display uses a conservative duration because normal incoming packets do not identify every exit
+cause. Source parity does not establish packet latency or live timing. Phoenix's player.actions:engage helper
+clears the deadline before acting, so it cannot validate cooldown enforcement. Use ordinary manual engagement
+for the in-game check. No server module or custom packet feed is required.
+
 The selected Phoenix profile uses DELAY_REDUCTION_CAP = 0.93. The pinned default is 0.80. Neither proves what a
 running server loaded. Relevant helpers and init-listed module rules are guarded in source_guards.json. Changed,
 new or removed timing rules stop the check and list the paths that need review. The list includes loaded modules
@@ -255,8 +262,8 @@ Release readiness
 
 Run the complete addon suite, tool tests, source and generated-data checks, release workflow fixtures and
 preview fit gate from tests\README.txt before making an archive. Keep the current version heading in the
-changelog aligned with addon.version. Build with sounds and with --no-sounds into separate folders; both
-variants use the same filename. Rebuilding unchanged files must produce the same SHA-256.
+changelog aligned with addon.version. Build the standard archive with both bundled sounds. Rebuilding
+unchanged files must produce the same SHA-256. The offline packaging tests cover the optional build modes.
 
 In game, confirm load/unload, character and zone changes, equipment and food changes, BLU spell updates,
 interrupted resting, disabling effects, settings edits and profile failures. Offline checks and previews

@@ -1,4 +1,4 @@
-"""Check Cadence's TP, recovery and delay rules against reviewed Phoenix source."""
+"""Check Cadence's TP, recovery, attack and re-engage rules against reviewed Phoenix source."""
 import hashlib
 import itertools
 import json
@@ -21,6 +21,7 @@ MODULE_RULES = (r'STORETP|HPHEAL|MPHEAL|CLEAR_MIND|MARTIAL_ARTS|DUAL_WIELD|HASTE
                 r'ALL_SONGS_EFFECT|ELEGY_EFFECT|LULLABY_EFFECT|TROUBADOUR|'
                 r'xi\.(spells|magic)\.(enfeebling|enhancing)|xi\.aftermath|'
                 r'xi\.combat\.tp|xi\.effects\.(healing|slow|haste|elegy|march|hundred_fists|hasso)|'
+                r'EngageLockout|setEngageLockedUntil|m_engageLockedUntil|CheckLatentsWeaponDraw|OnDisengage|'
                 r'item_mods|item_latents|blue_spell_mods|blue_traits|traits|augments|merits')
 FILES = [TP, ERA_TP, HEALING, 'src/map/ai/states/attack_state.cpp', 'src/map/map_constants.h',
          'src/map/utils/blueutils.cpp', 'scripts/effects/haste.lua', 'scripts/effects/slow.lua',
@@ -28,8 +29,9 @@ FILES = [TP, ERA_TP, HEALING, 'src/map/ai/states/attack_state.cpp', 'src/map/map
          'scripts/effects/regen.lua', 'scripts/effects/refresh.lua',
          'scripts/globals/spells/enfeebling_spell.lua', 'scripts/globals/spells/enfeebling_song.lua',
          'modules/era/lua/actions/spells/spell_adjustments.lua', 'modules/era/data/merits.yaml',
+         'modules/era/data/skills.yaml',
          'data/enums/mod.yaml', 'data/enums/latent.yaml', 'data/enums/weather.yaml',
-         'data/merits.yaml', 'data/status_effects.yaml', 'settings/default/main.lua',
+         'data/merits.yaml', 'data/skills.yaml', 'data/status_effects.yaml', 'settings/default/main.lua',
          'scripts/globals/job_utils/corsair.lua', 'scripts/globals/job_utils/dark_knight.lua',
          'scripts/globals/job_utils/dragoon.lua', 'scripts/globals/job_utils/samurai.lua',
          'scripts/globals/job_utils/dancer.lua', 'scripts/globals/aftermath.lua',
@@ -41,9 +43,17 @@ FILES = [TP, ERA_TP, HEALING, 'src/map/ai/states/attack_state.cpp', 'src/map/map
          'scripts/effects/haste_samba_haste.lua', 'scripts/effects/hundred_fists.lua',
          'src/map/items/item_equipment.cpp', 'src/map/latent_effect_container.cpp',
          'src/map/utils/battleutils.cpp', 'src/map/utils/charutils.cpp',
-         'src/map/utils/zoneutils.cpp', 'src/map/zone.h', 'src/common/vana_time.h']
+         'src/map/utils/zoneutils.cpp', 'src/map/zone.h', 'src/common/vana_time.h',
+         'src/map/packets/char_status.cpp']
 FUNCTIONS = {
-    'src/map/entities/battle_entity.cpp': ['CBattleEntity::GetWeaponDelay'],
+    'src/map/ai/ai_container.cpp': ['CAIContainer::Internal_Engage', 'CAIContainer::Internal_ChangeTarget',
+                                  'CAIContainer::Internal_Disengage', 'CAIContainer::Tick',
+                                  'CAIContainer::finishCurrentState', 'CAIContainer::CheckCompletedStates',
+                                  'CAIContainer::Reset'],
+    'src/map/ai/controllers/player_controller.cpp': ['CPlayerController::Engage', 'CPlayerController::setEngageLockedUntil'],
+    'src/map/ai/states/range_state.cpp': ['CRangeState::CanUseRangedAttack'],
+    'src/map/entities/battle_entity.cpp': ['CBattleEntity::GetWeaponDelay', 'CBattleEntity::OnDisengage'],
+    'src/map/entities/char_entity.cpp': ['CCharEntity::OnDisengage'],
     'src/map/items/item_weapon.cpp': ['CItemWeapon::setDelay'],
     'src/map/status_effect_container.cpp': ['CStatusEffectContainer::TickEffects', 'CStatusEffectContainer::TickRegen'],
 }
@@ -160,7 +170,7 @@ def lua_runtime(addon=ROOT / 'cadence'):
     runtime.execute('package.path = [[%s/?.lua;]] .. package.path' % str(addon).replace('\\', '/'))
     runtime.execute("""
         local function names() return setmetatable({}, {__index=function(_, key) return key end}); end
-        xi = {combat={tp={}},mod=names(),effect=names(),merit=names(),slot=names(),skill=names(),
+        xi = {combat={tp={}},mod=names(),effect=names(),merit=names(),slot=names(),skill=names(),job=names(),
               objType=names(),region={LIMBUS=27,RONFAURE_FRONT=33,VALDEAUNIA_FRONT=40},
               settings={main={HEALING_TP_CHANGE=-100}},expansion={SOA=10},pre=function() return true end};
         package.preload['modules/module_utils'] = function() return true end;
@@ -170,7 +180,8 @@ def lua_runtime(addon=ROOT / 'cadence'):
         end} end};
         parity_actor=function(c)
             return {isDualWielding=function() return c.dual end, isUsingH2H=function() return c.h2h end,
-                getObjType=function() return 'PC' end, getEquippedItem=function() return c.shield and {} or nil end,
+                getObjType=function() return 'PC' end, getMainJob=function() return c.main_job or xi.job.WAR end,
+                getEquippedItem=function() return c.shield and {} or nil end,
                 getSkillRank=function() return c.skilled and 1 or 0 end, getMod=function(_,k) return c.mods[k] or 0 end,
                 getMerit=function() return 0 end, getBaseDelay=function() return c.base end,
                 hasStatusEffect=function(_,k) return k=='MEIKYO_SHISUI' and c.meikyo end};
@@ -296,8 +307,34 @@ def check_delay(addon=ROOT / 'cadence', reduction_cap=0.93):
     return count
 
 
+def check_reengage(source, addon=ROOT / 'cadence'):
+    text = source.read('src/map/ai/states/attack_state.cpp')
+    constants = {}
+    for name in ('kEngageDelay', 'kEngageCooldown'):
+        match = re.search(r'\b' + name + r'\s*=\s*(\d+(?:\.\d+)?)(ms|s)\s*;', text)
+        if not match:
+            raise RuntimeError('Source review required for re-engage constant ' + name)
+        constants[name] = float(match[1]) / (1000 if match[2] == 'ms' else 1)
+
+    runtime = lua_runtime(addon)
+    attack = runtime.eval("require('core.attack')")
+    count = 0
+    # Incoming status cannot prove the departure cause. The HUD uses the guarded formula's upper bound.
+    for interval in (0.1, 1.499, 1.5, 3, 4.499, 4.5, 4.501, 8, 16, 30):
+        attack.reset()
+        attack.engage(0, interval, 'reengage-parity', False, interval)
+        attack.disengage(1, True)
+        view = attack.reengage_progress(1)
+        expected = max(constants['kEngageCooldown'], interval - constants['kEngageDelay'])
+        same(view.duration, expected, 're-engage delay ' + str(interval), tolerance=1e-9)
+        same(view.left, expected, 're-engage countdown ' + str(interval), tolerance=1e-9)
+        count += 1
+    return count
+
+
 def check(source, addon=ROOT / 'cadence'):
     manifest = check_guards(source)
     counts = {'tp': check_tp(source, addon), 'recovery': check_recovery(source, addon),
-              'delay': check_delay(addon, manifest['profile']['delay_reduction_cap'])}
+              'delay': check_delay(addon, manifest['profile']['delay_reduction_cap']),
+              'reengage': check_reengage(source, addon)}
     return counts

@@ -91,6 +91,13 @@ end
 local function detailed(speed, blue)
     return { speed = speed, modifiers = { blue_magic = blue, unknown = {}, contributions = {} } };
 end
+text = details_text({ attack = { holding = 'spell', next_interval_changed = true, next_interval_model = 3.8,
+    reengage = { left = 5, sampled_delay = 8 } } });
+check('retained details explain the saved cooldown without stale combat timing', text:find('Estimated remaining: 5.00 s.', 1, true)
+    and text:find('Sampled attack interval: 8.00 s', 1, true) and not text:find('Following interval:', 1, true)
+    and not text:find('Paused: spell', 1, true));
+text = details_text({ attack = { reengage = { unknown = true } } });
+check('retained details preserve unknown timing', text:find('Timing unknown', 1, true) and not text:find('Estimated remaining:', 1, true));
 local speed = {
     gear = { raw = 40, effective = 25, cap = 25, minimum = 0 },
     magic = { raw = -12, effective = -12, cap = 43.75, minimum = -100 },

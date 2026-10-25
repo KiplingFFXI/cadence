@@ -15,6 +15,29 @@ for mod in pairs(fields) do
     if (domains[mod] == nil) then domains[mod] = { 'rounds' }; end
 end
 
+local effect_specs = {
+    { 'samurai_roll', 73, 1 }, { 'store_tp', 73, 1 }, { 'healers_roll', 71, 1 },
+    { 'aftermath', 73, nil }, { 'bust', 73, nil }, { 'inhibit_tp', 488, 1 },
+    { 'arcane_crest', 73, -1 }, { 'dragon_breaker', 73, -1 }, { 'sepulcher', 73, -1 },
+};
+local speed_effects = {
+    { 'haste', 167, 1465 }, { 'march', 167, 600 }, { 'slow', 167, -1800 }, { 'elegy', 167, -2500 },
+    { 'weakness', 167, -10000, true }, { 'hasso', 217, 1000, true }, { 'spirit_surge', 167, 2500, true },
+};
+
+-- These effect routes do not change between stat snapshots.
+local handled = {};
+for _, list in ipairs({ effect_specs, speed_effects,
+    { { 'spirit_surge', 383 }, { 'last_resort', 217 }, { 'regen', 370 }, { 'refresh', 369 } } }) do
+    for _, spec in ipairs(list) do
+        local id = effects[spec[1]];
+        if (id ~= nil) then
+            handled[id] = handled[id] or {};
+            handled[id][spec[2]] = true;
+        end
+    end
+end
+
 local function sorted_values(values)
     local result = {};
     for value in pairs(values) do
@@ -453,11 +476,6 @@ function modifiers.calculate(snapshot)
         end
     end
 
-    local effect_specs = {
-        { 'samurai_roll', 73, 1 }, { 'store_tp', 73, 1 }, { 'healers_roll', 71, 1 },
-        { 'aftermath', 73, nil }, { 'bust', 73, nil }, { 'inhibit_tp', 488, 1 },
-        { 'arcane_crest', 73, -1 }, { 'dragon_breaker', 73, -1 }, { 'sepulcher', 73, -1 },
-    };
     for _, spec in ipairs(effect_specs) do
         local id, mod = effects[spec[1]], spec[2];
         if (has(buffs, id)) then
@@ -494,10 +512,6 @@ function modifiers.calculate(snapshot)
     end
 
     -- Item enchantments can share a spell icon. Only the unaccounted icons need a spell estimate.
-    local speed_effects = {
-        { 'haste', 167, 1465 }, { 'march', 167, 600 }, { 'slow', 167, -1800 }, { 'elegy', 167, -2500 },
-        { 'weakness', 167, -10000, true }, { 'hasso', 217, 1000, true }, { 'spirit_surge', 167, 2500, true },
-    };
     for _, spec in ipairs(speed_effects) do
         local id, mod = effects[spec[1]], spec[2];
         if (has(buffs, id)) then
@@ -552,20 +566,6 @@ function modifiers.calculate(snapshot)
         end
     end
     -- Other visible effects can change the same totals. Their icon alone gives no strength.
-    local handled = {};
-    local function handled_mod(name, mod)
-        local id = effects[name];
-        if (id ~= nil) then
-            handled[id] = handled[id] or {};
-            handled[id][mod] = true;
-        end
-    end
-    for _, spec in ipairs(effect_specs) do handled_mod(spec[1], spec[2]); end
-    for _, spec in ipairs(speed_effects) do handled_mod(spec[1], spec[2]); end
-    handled_mod('spirit_surge', 383);
-    handled_mod('last_resort', 217);
-    handled_mod('regen', 370);
-    handled_mod('refresh', 369);
     for id, record in pairs(data.effect_mods or {}) do
         if (has(buffs, id) and id ~= effects.aftermath and id ~= effects.enchantment and id ~= effects.food) then
             from('effect', id, record.name);

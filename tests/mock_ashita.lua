@@ -595,6 +595,13 @@ function MOCK.vitals_packet(id, hp, mp, tp)
     return { id = 0x0DF, size = 0x24, data_raw = b, data = MOCK.to_string(b) };
 end
 
+function MOCK.status_packet(id, status)
+    local b = MOCK.bytes(0x64);
+    put32(b, 0x24, id);
+    b[0x30] = status;
+    return { id = 0x037, size = b.n, data_raw = b, data = MOCK.to_string(b) };
+end
+
 -- A 0x058 assist packet the way Phoenix's GP_SERV_COMMAND_ASSIST builds it. `id` is whose it is and
 -- `monster` the one their attacks are on. The last field is their own entity index.
 function MOCK.assist_packet(id, monster)

@@ -11,7 +11,8 @@
     0.8 s after a ranged attack and one 0.4 s tick after an item.
     Sleep, stun, petrification, terror, Lullaby and a penalty stop it. It picks up where it left off
     once they wear off.
-    Nothing resets it. Switching targets keeps it running.
+    Switching targets keeps it running while you stay engaged. Disengaging ends that timer.
+    Phoenix then applies a separate re-engage cooldown based on the last sampled attack delay.
 
     cadence starts from a delay worked out from your gear, job and buffs. Then it learns the real
     one from your own attacks. That also catches bonuses whose strength is still unknown.
@@ -29,6 +30,10 @@ local INTERVALS_KEPT       = 6;
 local KEYS_KEPT            = 16;
 local SNAP_TO_ESTIMATE     = 0.04;
 local DUE_SOON             = 0.5;
+local REENGAGE_MIN_SECONDS = 1.5;
+local REENGAGE_GATE_SECONDS = 3.0;
+local REENGAGE_ELAPSED_SECONDS = 0.5;
+local REENGAGE_UNKNOWN_SECONDS = 5.0;
 
 -- A gap longer than this many times the estimate had a pause cadence didn't see.
 local LONGEST_CLEAN_RATIO = 1.5;
@@ -59,7 +64,12 @@ local state = {
     sample_at      = nil,
     reused         = false,
     joined_late    = false, -- True when the fight started before cadence saw it, until your first round.
+    sampled_delay  = nil,   -- The interval sampled at engagement or the last permitted round.
+    sampled_at     = nil,
 };
+
+local retained = { active = false };
+local retained_view = {};
 
 -- The gaps learned with the last few keys. Zoning keeps them, and so does a buff that wears off and
 -- lands again. Another character logging in clears them.
@@ -152,7 +162,9 @@ end
 -- You engaged a target. `estimate` is the delay in seconds and `loadout_key` names the gear behind it.
 -- `joined_late` is true when the fight started before cadence saw it. Then the first attack's time
 -- isn't known until it lands.
-function attack.engage(now, estimate, loadout_key, joined_late)
+-- `initial_delay` is the model before drawn-weapon latents apply, or false when it isn't known.
+function attack.engage(now, estimate, loadout_key, joined_late, initial_delay)
+    attack.cancel_reengage();
     use_loadout(loadout_key);
     state.reused         = learned_delay(state.intervals) ~= nil;
     state.active         = true;
@@ -161,23 +173,79 @@ function attack.engage(now, estimate, loadout_key, joined_late)
     state.next_attack    = now + FIRST_ATTACK_SECONDS;
     state.estimate       = estimate;
     state.delay          = choose_delay(state.intervals, estimate);
+    if (initial_delay == nil) then initial_delay = estimate; end
+    state.sampled_delay  = not state.joined_late and type(initial_delay) == 'number'
+        and initial_delay > 0 and initial_delay < math.huge and initial_delay or nil;
+    state.sampled_at     = state.sampled_delay and now or nil;
     state.held_since     = nil;
+    state.held_by        = nil;
+    state.hold_ended     = nil;
     state.disabled_since = nil;
+    state.disabled_by    = nil;
     state.clean          = false;
     state.stalled        = false;
     state.reason         = nil;
 end
 
-function attack.disengage()
+-- Only a confirmed server departure passes a timestamp and enables retention here.
+function attack.disengage(now, enabled, context)
+    if (type(now) ~= 'number' or now ~= now or math.abs(now) == math.huge
+        or enabled ~= true) then
+        attack.cancel_reengage();
+    elseif (state.active) then
+        local duration = not (context and context.unknown) and state.sampled_delay and math.max(REENGAGE_MIN_SECONDS,
+            state.sampled_delay - REENGAGE_GATE_SECONDS) or nil;
+        retained.active = true;
+        retained.started = now;
+        retained.duration = duration;
+        retained.deadline = duration and now + duration or nil;
+        retained.expires = now + (duration and duration + REENGAGE_ELAPSED_SECONDS or REENGAGE_UNKNOWN_SECONDS);
+        retained.sampled_delay = state.sampled_delay;
+        retained.sampled_at = state.sampled_at;
+        retained.remaining = not state.joined_late and state.next_attack
+            and math.max(0, state.next_attack - (state.held_since or state.disabled_since or now)) or nil;
+        retained.held_by = state.held_since and state.held_by or nil;
+        retained.disabled_by = state.disabled_since and state.disabled_by or nil;
+        retained.stalled = state.stalled;
+        retained.last_target = context and context.last_target or nil;
+        retained.cause = context and context.cause or nil;
+    end
     state.active         = false;
     state.held_since     = nil;
+    state.held_by        = nil;
+    state.hold_ended     = nil;
     state.disabled_since = nil;
+    state.disabled_by    = nil;
     state.reason         = nil;
+    state.clean          = false;
+end
+
+function attack.cancel_reengage()
+    retained.active = false;
+end
+
+-- Departure cause and packet transit time aren't known. Use the longest lockout for the saved delay.
+-- This table is reused by the HUD. It never advances the attack clock or learns an idle gap.
+function attack.reengage_progress(now)
+    if (not retained.active) then return nil; end
+    if (now >= retained.expires) then
+        retained.active = false;
+        return nil;
+    end
+
+    local left = retained.deadline and math.max(0, retained.deadline - now) or nil;
+    retained_view.fill = left and math.max(0, math.min(1, 1 - left / retained.duration)) or 0;
+    retained_view.left = left;
+    retained_view.duration = retained.duration;
+    retained_view.unknown = left == nil;
+    retained_view.elapsed = left == 0;
+    retained_view.conservative = true;
+    return retained_view;
 end
 
 -- One of your melee rounds arrived. The server reads your delay at attack time. The gear and buffs
 -- you have right now decide the next gap.
-function attack.on_round(now, estimate, loadout_key)
+function attack.on_round(now, estimate, loadout_key, sampled_known, transition)
     if (not state.active) then
         return;
     end
@@ -193,11 +261,18 @@ function attack.on_round(now, estimate, loadout_key)
 
     state.estimate       = estimate;
     state.delay          = choose_delay(state.intervals, estimate);
+    -- A pending gear or effect change makes the previous calibration stale for this sample.
+    state.sampled_delay  = not transition and (sampled_known ~= false or learned_delay(state.intervals) ~= nil)
+        and state.delay or nil;
+    state.sampled_at     = state.sampled_delay and now or nil;
     state.last_attack    = now;
     state.next_attack    = now + state.delay;
     state.joined_late    = false;
     state.held_since     = nil;
+    state.held_by        = nil;
+    state.hold_ended     = nil;
     state.disabled_since = nil;
+    state.disabled_by    = nil;
 
     -- The first attack after a stall carries a short timer into the next gap. That gap isn't learned.
     state.clean   = not state.stalled;
@@ -222,7 +297,7 @@ end
     attack only happens when one is due. The same packet well before that is a job ability. Items
     and ranged attacks send it too. Those already hold the timer.
 ]]
-function attack.on_paralyzed(now)
+function attack.on_paralyzed(now, estimate, loadout_key, sampled_known, transition)
     if (not state.active or state.held_since ~= nil) then
         return;
     end
@@ -236,6 +311,14 @@ function attack.on_paralyzed(now)
     end
 
     -- The paralyzed attack still used up the timer.
+    if (estimate ~= nil and loadout_key ~= nil) then
+        use_loadout(loadout_key);
+        state.estimate = estimate;
+        state.delay = choose_delay(state.intervals, estimate);
+    end
+    state.sampled_delay = not transition and not state.joined_late and estimate ~= nil and loadout_key ~= nil
+        and (sampled_known ~= false or learned_delay(state.intervals) ~= nil) and state.delay or nil;
+    state.sampled_at = state.sampled_delay and now or nil;
     state.last_attack = now;
     state.next_attack = now + state.delay;
     state.clean       = false;
@@ -390,19 +473,28 @@ end
 
 -- Zoning. What was learned stays. Your gear came with you.
 function attack.reset()
+    attack.cancel_reengage();
     state.active         = false;
     state.last_attack    = nil;
     state.next_attack    = nil;
     state.held_since     = nil;
+    state.held_by        = nil;
     state.hold_ended     = nil;
     state.disabled_since = nil;
+    state.disabled_by    = nil;
     state.reason         = nil;
     state.loadout_key    = nil;
     state.intervals      = {};
+    state.sampled_delay  = nil;
+    state.sampled_at     = nil;
+    state.joined_late    = false;
+    state.clean          = false;
+    state.stalled        = false;
 end
 
 -- Another character logged in. Nothing learned carries over to them.
 function attack.forget_learned()
+    attack.cancel_reengage();
     gaps_by_key, keys_by_use = {}, {};
     state.loadout_key = nil;
     state.intervals   = {};
@@ -425,6 +517,7 @@ function attack.info(now, next_estimate, next_key)
         minimum = minimum and math.min(minimum, gap) or gap;
         maximum = maximum and math.max(maximum, gap) or gap;
     end
+    local reengage = attack.reengage_progress(now);
     return {
         active = state.active, delay = state.delay, modeled_delay = state.estimate,
         next_interval_model = next_estimate, next_interval_changed = next_key ~= nil and next_key ~= state.loadout_key,
@@ -435,6 +528,15 @@ function attack.info(now, next_estimate, next_key)
         holding = state.held_since and state.held_by or nil,
         disabled = state.disabled_since and state.disabled_by or nil, reason = state.reason,
         stalled = state.stalled, joined_late = state.joined_late,
+        sampled_delay = state.sampled_delay, sampled_at = state.sampled_at,
+        reengage = reengage and {
+            left = reengage.left, duration = reengage.duration, unknown = reengage.unknown,
+            elapsed = reengage.elapsed, conservative = reengage.conservative,
+            started = retained.started, deadline = retained.deadline, expires = retained.expires,
+            sampled_delay = retained.sampled_delay, sampled_at = retained.sampled_at,
+            remaining = retained.remaining, holding = retained.held_by, disabled = retained.disabled_by,
+            stalled = retained.stalled, last_target = retained.last_target, cause = retained.cause,
+        } or nil,
         overdue = state.active and state.next_attack ~= nil and now > state.next_attack,
         next_in = state.next_attack and math.max(0, state.next_attack - now) or nil,
     };

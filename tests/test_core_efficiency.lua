@@ -52,6 +52,12 @@ local full_hp, full_mp, _, already = resting.until_each_full(10);
 check('full vitals clear earlier unknown and blocked results', full_hp == 0 and full_mp == 0
     and already.full_in == 0 and already.ticks == 0 and already.confidence == 'known');
 
+local modifiers = require('core.modifiers');
+local inputs = { main_job = 1, main_level = 75, sub_job = 13, sub_level = 37,
+    equipment = {}, buffs = {}, merits = {}, max_hp = 1000, max_mp = 0, region = 0 };
+made = bytes_per_call(function () modifiers.calculate(inputs); end);
+check('modifier rebuilds reuse fixed effect routes', made < 12000, ('%.1f bytes/call'):format(made));
+
 -- Stable client objects keep allocation in the observer separate from the test mock.
 local lookup_fails, method_fails = false, false;
 local stats = setmetatable({

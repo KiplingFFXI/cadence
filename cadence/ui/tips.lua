@@ -8,6 +8,20 @@ local function amount(value) return type(value) == 'number' and ('%.2f'):format(
 function tips.text(key, details, preview)
     if (preview) then return NAMES[key] .. ' preview. These sample values do not describe your live timing.'; end
     if (not details or not details[key]) then return NAMES[key] .. '. Waiting for timing evidence.'; end
+    if (key == 'attack' and details.attack.reengage) then
+        local retained = details.attack.reengage;
+        local lines = { 'Re-engage estimate' };
+        if (retained.unknown) then
+            lines[#lines + 1] = 'Timing unknown. The last sampled attack delay could not be established.';
+        elseif (retained.elapsed) then
+            lines[#lines + 1] = 'Estimate elapsed. This does not confirm that you can engage.';
+        else
+            lines[#lines + 1] = 'Estimated remaining: ' .. amount(retained.left) .. ' s.';
+        end
+        lines[#lines + 1] = 'The server does not send the exact deadline. This conservative estimate can finish after the actual cooldown.';
+        lines[#lines + 1] = 'A new engagement normally starts a separate three-second first-attack timer.';
+        return table.concat(lines, '\n');
+    end
     local entry, lines = details[key], { NAMES[key] };
     if (entry.source) then lines[#lines + 1] = 'In use: ' .. plain(entry.source) .. '.'; end
     if (entry.delay) then lines[#lines + 1] = 'Interval: ' .. amount(entry.delay) .. ' s.'; end

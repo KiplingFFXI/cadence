@@ -71,6 +71,7 @@ local SWITCHES = {
     { 'tips', 'style', 'hover_tips', 'Timer hover help', 'Timer hover help' },
     { 'attack seconds',    'attack',  'show_value',         'Seconds left',             'Seconds left##attack' },
     { 'attack delay',      'attack',  'show_delay',         'Weapon delay',             'Weapon delay##attack' },
+    { 'attack reengage', 'attack', 'linger_seconds', 'Show re-engage timer', 'Show re-engage timer', 1 },
     { 'attack hits', 'attack', 'show_tp_hits', 'Successful hits', 'Successful hits' },
     { 'attack time', 'attack', 'show_tp_time', 'Time to TP goal', 'Time to TP goal' },
     { 'resting ticks', 'resting', 'show_ticks', 'Ticks until full', 'Ticks until full' },
@@ -169,15 +170,19 @@ local function note(ok, what) if (not ok) then table.insert(wrong, what); end en
 for _, switch in ipairs(SWITCHES) do
     local command, section, key, name = switch[1], switch[2], switch[3], switch[4];
     local default = DEFAULTS[section][key];
-    local first, second = default and 'off' or 'on', default and 'on' or 'off';
+    local enabled = default;
+    if (switch[6]) then enabled = default > 0; end
+    local opposite = not enabled;
+    if (switch[6]) then opposite = enabled and 0 or 1; end
+    local first, second = enabled and 'off' or 'on', enabled and 'on' or 'off';
     local ok, detail = answers('/cadence ' .. command .. ' ' .. first, ('%s is %s%s.'):format(name, first, TIMER[section]));
-    note(ok and s[section][key] == not default, command .. ' ' .. first .. ': ' .. detail);
+    note(ok and s[section][key] == opposite, command .. ' ' .. first .. ': ' .. detail);
     ok, detail = answers('/cadence ' .. command .. ' ' .. first, ('%s is %s%s.'):format(name, first, TIMER[section]));
-    note(ok and s[section][key] == not default, command .. ' ' .. first .. ' twice: ' .. detail);
+    note(ok and s[section][key] == opposite, command .. ' ' .. first .. ' twice: ' .. detail);
     ok, detail = answers('/cadence ' .. command .. ' ' .. second, ('%s is %s%s.'):format(name, second, TIMER[section]));
     note(ok and s[section][key] == default, command .. ' ' .. second .. ': ' .. detail);
     ok, detail = answers('/cadence ' .. command, ('%s is %s%s.'):format(name, first, TIMER[section]));
-    note(ok and s[section][key] == not default, command .. ' with no word flips it: ' .. detail);
+    note(ok and s[section][key] == opposite, command .. ' with no word flips it: ' .. detail);
     ok, detail = answers('/cadence ' .. command, ('%s is %s%s.'):format(name, second, TIMER[section]));
     note(ok and s[section][key] == default, command .. ' flips back: ' .. detail);
     local usage = command == 'resting goal'
@@ -188,6 +193,17 @@ for _, switch in ipairs(SWITCHES) do
 end
 check('every switch sets, flips and says what it did, and a wrong word gets its own line', #wrong == 0,
     table.concat(wrong, ' | '));
+
+for _, value in ipairs({ 1, 5, 10 }) do
+    check('legacy linger ' .. value .. ' enables automatic visibility', answers('/cadence attack linger ' .. value,
+        'Show re-engage timer is on for the auto attack timer.') and s.attack.linger_seconds == 1);
+end
+check('legacy linger zero disables automatic visibility', answers('/cadence attack linger 0',
+    'Show re-engage timer is off for the auto attack timer.') and s.attack.linger_seconds == 0);
+for _, value in ipairs({ '-1', '11', '0.5', 'bad' }) do
+    check('invalid legacy linger changes nothing: ' .. value, refuses('/cadence attack linger ' .. value,
+        'Type /cadence attack reengage on|off.'));
+end
 
 check('a timer\'s part works while the timer is off', (function ()
     MOCK.fire('command', { command = '/cadence attack off' });
@@ -220,7 +236,7 @@ check('/cadence attack on', answers('/cadence attack on', 'The auto attack timer
 check('/cadence attack flips it', answers('/cadence attack', 'The auto attack timer is off.') and not s.attack.enabled);
 MOCK.fire('command', { command = '/cadence attack on' });
 local ATTACK_USAGE = 'Type /cadence attack on|off, /cadence attack goal 1000|2000|3000, /cadence attack <part> on|off, /cadence attack <slider> <number> '
-    .. 'or /cadence attack labeltext <text>. The parts are seconds, delay, tp, time, hits, rounds, numbers, mark, almost, range, '
+    .. 'or /cadence attack labeltext <text>. The parts are seconds, delay, reengage, tp, time, hits, rounds, numbers, mark, almost, range, '
     .. 'why and label. The sliders are width, height, barheight and almostat.';
 local ok, detail = refuses('/cadence attack wat', ATTACK_USAGE);
 check('a wrong part gets the attack usage line and doesn\'t flip the timer', ok and s.attack.enabled, detail);
@@ -496,7 +512,7 @@ lines = said('/cadence help attack');
 check('help attack', #lines == 9 and lines[1] == '/cadence attack [on|off]  turns the auto attack timer on or off.'
     and lines[2] == '/cadence attack goal 1000|2000|3000  sets TP goal to 1000, 2000 or 3000.'
     and lines[3]:find('/cadence attack <part> [on|off]  sets one of its boxes. The parts are seconds (Seconds left), '
-        .. 'delay (Weapon delay), tp (Your TP), time (Time to TP goal), hits (Successful hits), rounds (Rounds to goal)', 1, true) == 1, lines[2]);
+        .. 'delay (Weapon delay), reengage (Show re-engage timer), tp (Your TP), time (Time to TP goal), hits (Successful hits), rounds (Rounds to goal)', 1, true) == 1, lines[2]);
 lines = said('/cadence help enemy');
 check('help enemy has Follows', #lines == 9 and lines[2]:find('/cadence enemy follow first|target|hits', 1, true) == 1);
 lines = said('/cadence help preview');

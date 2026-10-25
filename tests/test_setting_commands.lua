@@ -220,7 +220,7 @@ local RESTING_USAGE = 'Type /cadence resting on|off, /cadence resting <part> on|
 local ok, detail = refuses('/cadence resting almostat 1', RESTING_USAGE);
 check('resting has no almostat', ok, detail);
 ok, detail = refuses('/cadence attack flashlength 1', 'Type /cadence attack on|off, /cadence attack goal 1000|2000|3000, /cadence attack <part> on|off, '
-    .. '/cadence attack <slider> <number> or /cadence attack labeltext <text>. The parts are seconds, delay, tp, time, hits, rounds, '
+    .. '/cadence attack <slider> <number> or /cadence attack labeltext <text>. The parts are seconds, delay, reengage, tp, time, hits, rounds, '
     .. 'numbers, mark, almost, range, why and label. The sliders are width, height, barheight and almostat.');
 check('and attack has no flashlength', ok, detail);
 ok, detail = refuses('/cadence width 300', 'Didn\'t recognize "width". Type /cadence help to see the commands.');
