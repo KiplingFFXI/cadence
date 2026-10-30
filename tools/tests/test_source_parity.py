@@ -17,6 +17,13 @@ import source_parity as parity
 class ChangedSource:
     def __init__(self, source, changes=None, added=None):
         self.source, self.changes, self.added = source, changes or {}, added or {}
+        self.ref, self.cache = source.ref, {}
+
+    def git(self, *args):
+        return self.source.git(*args)
+
+    def tree_digest(self, path):
+        return self.source.tree_digest(path)
 
     def read(self, path):
         if path in self.added:
@@ -90,7 +97,9 @@ class FingerprintTests(unittest.TestCase):
         for token in ('DELAY', 'REGEN', 'REFRESH', 'REGEN_DOWN', 'REFRESH_DOWN', 'INHIBIT_TP',
                       'SONG_DURATION_BONUS', 'ENF_MAG_DURATION', 'xi.effect.FOOD', 'xi.aftermath',
                       'EngageLockout', 'setEngageLockedUntil', 'm_engageLockedUntil',
-                      'CheckLatentsWeaponDraw', 'OnDisengage'):
+                      'CheckLatentsWeaponDraw', 'OnDisengage', 'canAct', 'setLastSpellFinishedTime',
+                      'm_spellFinishedTime', 'OnCastFinished', 'MagicParalyzed', 'MagicIntimidated',
+                      'weapon_skills', 'animationTime'):
             with self.subTest(token=token):
                 self.assertRegex(token, parity.MODULE_RULES)
 
@@ -108,6 +117,16 @@ class SourceParityTests(unittest.TestCase):
     def test_reviewed_source_matches_all_guards(self):
         parity.check_guards(self.source)
 
+    def test_enabled_private_submodule_revision_is_guarded_without_checkout(self):
+        links = parity.loaded_gitlinks(self.source)
+        self.assertIn('modules/phoenix_ac', links)
+        changed = ChangedSource(self.source)
+        original_git = changed.git
+        changed.git = lambda *args: (original_git(*args).replace(links['modules/phoenix_ac'], 'f' * 40)
+                                     if args[0] == 'ls-tree' else original_git(*args))
+        with self.assertRaisesRegex(RuntimeError, 'modules/phoenix_ac:gitlink'):
+            parity.check_guards(changed)
+
     def test_tp_native_formula_matches_the_addon(self):
         self.assertGreater(parity.check_tp(self.source), 2000)
 
@@ -119,6 +138,49 @@ class SourceParityTests(unittest.TestCase):
 
     def test_reengage_matches_the_reviewed_cpp_constants(self):
         self.assertEqual(parity.check_reengage(self.source), 10)
+
+    def test_action_recovery_matches_spell_gate_and_every_weapon_skill(self):
+        self.assertGreater(parity.check_action_recovery(self.source), 5000)
+
+    def test_longer_era_spell_animation_requires_review(self):
+        path = 'sql/spell_list.sql'
+        changed = ChangedSource(self.source, {path: ('5000,7,7,1,2000,4,0', '5000,7,7,1,3000,4,0')})
+        for check in (parity.check_guards, parity.check_action_recovery):
+            with self.subTest(check=check.__name__), self.assertRaisesRegex(RuntimeError, 'spell animation exceeding recovery gate: 1'):
+                check(changed)
+
+    def test_supported_spell_animation_within_gate_requires_refreshed_attack_metadata(self):
+        path = 'sql/spell_list.sql'
+        changed = ChangedSource(self.source, {path: ('5000,7,7,1,2000,4,0', '5000,7,7,1,1500,4,0')})
+        parity.check_guards(changed)
+        with self.assertRaisesRegex(RuntimeError, 'Source parity failed for action recovery data: spell_attack_seconds'):
+            parity.check_action_recovery(changed)
+
+    def test_changed_action_recovery_durations_fail_without_a_hash_check(self):
+        changes = {
+            'src/map/ai/controllers/player_controller.cpp': ('timeSinceLastSpell > 2.5s', 'timeSinceLastSpell > 2.6s'),
+            'data/animation_locks.yaml': ('16:  1916', '16:  2100'),
+        }
+        for path, replacement in changes.items():
+            with self.subTest(path=path), self.assertRaisesRegex(RuntimeError, 'Source parity failed'):
+                parity.check_action_recovery(ChangedSource(self.source, {path: replacement}))
+
+    def test_changed_action_recovery_anchors_and_failures_require_review(self):
+        changes = {
+            'src/map/entities/char_entity.cpp': ('controller->setLastSpellFinishedTime(timer::now());',
+                                                 'controller->setLastSpellFinishedTime(timer::now() + 1s);'),
+            'src/map/ai/states/magic_state.cpp': ('m_PEntity->OnCastFinished(*this, action);',
+                                                'm_PEntity->OnCastFinished(*this, action); m_castTime += 1s;'),
+            'src/map/ai/states/weaponskill_state.cpp': ('m_finishTime     = tick + delay;', 'm_finishTime     = tick + delay + 1s;'),
+            'src/map/action/interrupts.cpp': ('void MagicParalyzed(CBattleEntity* PEntity, CSpell* PSpell, const CBattleEntity* PTarget)\n{',
+                                            'void MagicParalyzed(CBattleEntity* PEntity, CSpell* PSpell, const CBattleEntity* PTarget)\n{\n    PEntity->PAI->Reset();'),
+            'src/map/enums/msg_basic.h': ('IsParalyzed2                    = 84', 'IsParalyzed2                    = 85'),
+            'src/map/enums/action/category.h': ('MagicFinish    = 4', 'MagicFinish    = 5'),
+            'modules/era/data/weapon_skills.yaml': ('{level: 10}', '{level: 10, animation: 50}'),
+        }
+        for path, replacement in changes.items():
+            with self.subTest(path=path), self.assertRaisesRegex(RuntimeError, re.escape(path)):
+                parity.check_guards(ChangedSource(self.source, {path: replacement}))
 
     def test_changed_reengage_source_constants_fail_without_a_hash_check(self):
         path = 'src/map/ai/states/attack_state.cpp'
@@ -223,6 +285,13 @@ class SourceParityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'reengage.cpp'):
             parity.check_guards(ChangedSource(self.source, added=added))
 
+    def test_new_loaded_action_recovery_override_requires_review(self):
+        for path, code in (('modules/phoenix/cpp/spell_wait.cpp', 'player->setLastSpellFinishedTime(timer::now());'),
+                           ('modules/phoenix/sql/ws_wait.sql', 'UPDATE weapon_skills SET animationTime=3000;'),
+                           ('modules/phoenix/sql/spell_wait.sql', 'INSERT INTO `spell_list` VALUES (1,3000);')):
+            with self.subTest(path=path), self.assertRaisesRegex(RuntimeError, re.escape(path)):
+                parity.check_guards(ChangedSource(self.source, added={path: code}))
+
     def test_disabled_module_removal_requires_review(self):
         changed = ChangedSource(self.source, {'modules/init.txt': ('\nera/lua\n', '\n# era/lua\n')})
         with self.assertRaisesRegex(RuntimeError, 'Source review required for modules'):
@@ -246,7 +315,8 @@ class SourceParityTests(unittest.TestCase):
     def addon_change(self, path, before, after, check):
         with tempfile.TemporaryDirectory(prefix='cadence_parity_') as folder:
             addon = Path(folder) / 'cadence'
-            for name in ('core/delay.lua', 'core/attack.lua', 'core/tp.lua', 'core/modifiers.lua', 'data/phoenix_modifiers.lua'):
+            for name in ('core/delay.lua', 'core/attack.lua', 'core/recovery.lua', 'core/tp.lua', 'core/modifiers.lua',
+                         'data/phoenix_modifiers.lua', 'data/phoenix_recovery.lua'):
                 destination = addon / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(parity.ROOT / 'cadence' / name, destination)
@@ -274,6 +344,13 @@ class SourceParityTests(unittest.TestCase):
                               ('REENGAGE_GATE_SECONDS = 3.0', 'REENGAGE_GATE_SECONDS = 4.0')):
             with self.subTest(before=before):
                 self.addon_change('core/attack.lua', before, after, lambda addon: parity.check_reengage(self.source, addon))
+
+    def test_changed_addon_action_recovery_constants_fail(self):
+        for before, after in (('SPELL_SECONDS = 2.5', 'SPELL_SECONDS = 2.6'),
+                              ('source.weaponskill_seconds[skill_id];', '(source.weaponskill_seconds[skill_id] + 0.1);'),
+                              ('RANGED_SECONDS = 0.8', 'RANGED_SECONDS = 0.9')):
+            with self.subTest(before=before):
+                self.addon_change('core/recovery.lua', before, after, lambda addon: parity.check_action_recovery(self.source, addon))
 
     def test_fixture_pin_matches_generator_and_ci(self):
         self.assertEqual(self.manifest['ref'], REF)

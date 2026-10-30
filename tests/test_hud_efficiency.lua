@@ -37,13 +37,15 @@ rawset(imgui, 'SetNextWindowPos', function (pos) next_pos[1], next_pos[2] = pos[
 rawset(imgui, 'SetNextWindowSize', function () end);
 rawset(imgui, 'GetWindowPos', function () return next_pos[1], next_pos[2]; end);
 if (jit) then jit.off(); end
-local function measure()
-    for _ = 1, 20 do draw(); end
+local function measure(frame)
+    frame = frame or draw;
+    for _ = 1, 20 do frame(); end
     collectgarbage('collect');
     collectgarbage('stop');
     local before = collectgarbage('count');
-    for _ = 1, 100 do draw(); end
-    local bytes = (collectgarbage('count') - before) * 1024 / 100;
+    -- Spread the fixed Lua bookkeeping over enough frames to measure ongoing allocations.
+    for _ = 1, 1000 do frame(); end
+    local bytes = (collectgarbage('count') - before) * 1024 / 1000;
     collectgarbage('restart');
     return bytes;
 end
@@ -53,5 +55,7 @@ attached, s.enemy.attached = true, true;
 hud.refresh(s);
 bytes = measure();
 check('an attached enemy strip also reuses its frame tables', bytes < 8, bytes);
+bytes = measure(hud.hide_frame);
+check('hidden HUD frames keep gesture cleanup allocation-free', bytes < 1, bytes);
 out[#out + 1] = failed == 0 and 'ALL PASSED' or (failed .. ' FAILED');
 return table.concat(out, '\n');

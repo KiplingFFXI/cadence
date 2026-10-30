@@ -35,7 +35,7 @@ local party = call(memory, 'GetParty');
 local snapshot, model, model_inputs, sampled_at, gear_due, effect_due, changed;
 local merit_batches, pending_food, pending_items, pending_effects, rows;
 local equipment_cache, equipped_locations, status_timers = {}, {}, {};
-local unknown_enchantment, last_item_at, vitals_until, character_id, blue_role;
+local unknown_enchantment, vitals_until, character_id, blue_role;
 local evidence, events, cold_status_read, cold_status_retry_at, blue_reader, blue_candidate, blue_retry_at;
 local unknown_item_effects;
 local zone_packet, game_clock;
@@ -63,8 +63,8 @@ end
 local function same(a, b)
     if (type(a) ~= type(b)) then return false; end
     if (type(a) ~= 'table') then return a == b; end
-    for key, value in pairs(a) do if (not same(value, b[key])) then return false; end end
-    for key in pairs(b) do if (a[key] == nil) then return false; end end
+    for key, value in pairs(a) do if (key ~= 'timer_stamp' and not same(value, b[key])) then return false; end end
+    for key in pairs(b) do if (key ~= 'timer_stamp' and a[key] == nil) then return false; end end
     return true;
 end
 
@@ -280,6 +280,67 @@ local function bump(id)
     changed = true;
 end
 
+local function stamp_matches(a, b)
+    local distance = math.abs(a - b);
+    return distance <= 60 or distance >= 4294967296 - 60;
+end
+
+-- One icon can belong to several spells or items. Keep an item's own expiration when another joins it.
+local function reconcile_items(effect, before, stamps, now)
+    local claimed, old_used, added = {}, {}, {};
+    local removed = false;
+    for i, stamp in ipairs(stamps) do
+        local found;
+        for j, old in ipairs(before or {}) do
+            if (not old_used[j] and stamp_matches(stamp, old)) then found = j; break; end
+        end
+        if (found) then old_used[found] = true; else added[#added + 1] = i; end
+    end
+    for i in ipairs(before or {}) do if (not old_used[i]) then removed = true; break; end end
+    local matched = 0;
+    for pass = 1, 2 do
+        local entries = pass == 1 and snapshot.activated_items or pending_items;
+        for item_id, entry in pairs(entries) do
+            if ((entry.effect or ENCHANTMENT) == effect and (pass == 2 or pending_items[item_id] == nil)) then
+                local found;
+                if (entry.timer_stamp ~= nil) then
+                    local old_count, new_count = 0, 0;
+                    for _, stamp in ipairs(before or {}) do
+                        if (stamp_matches(entry.timer_stamp, stamp)) then old_count = old_count + 1; end
+                    end
+                    for i, stamp in ipairs(stamps) do
+                        if (stamp_matches(entry.timer_stamp, stamp)) then
+                            new_count = new_count + 1;
+                            if (not claimed[i]) then found = i; end
+                        end
+                    end
+                    -- Losing one of two identical timestamps cannot identify which effect remains.
+                    if (old_count > 1 and new_count < old_count) then found = nil; end
+                elseif (now <= entry.seen_at + 2 and #added == 1 and not claimed[added[1]]) then
+                    found = added[1];
+                elseif (before ~= nil and #before == 1) then
+                    for i, stamp in ipairs(stamps) do
+                        if (not claimed[i] and stamp_matches(stamp, before[1])) then found = i; break; end
+                    end
+                elseif (not removed and #stamps == 1 and not claimed[1]) then
+                    found = 1;
+                end
+                if (found) then
+                    entry.timer_stamp, claimed[found] = stamps[found], true;
+                    matched = matched + 1;
+                elseif (entry.timer_stamp ~= nil or (now > entry.seen_at + 2 and removed)) then
+                    entries[item_id] = nil;
+                end
+            end
+        end
+    end
+    local unknown = matched < #stamps;
+    unknown_item_effects[effect] = unknown;
+    if (effect == ENCHANTMENT) then
+        unknown_enchantment, snapshot.activated_items_known = unknown, not unknown;
+    end
+end
+
 local function observe_timers(timers, now, source)
     for effect, stamps in pairs(timers) do
         table.sort(stamps);
@@ -287,7 +348,7 @@ local function observe_timers(timers, now, source)
         local same = before ~= nil and #before == #stamps;
         if (same) then
             for i = 1, #stamps do
-                if (math.abs(before[i] - stamps[i]) > 60) then same = false; break; end
+                if (not stamp_matches(before[i], stamps[i])) then same = false; break; end
             end
         end
         if (not same) then
@@ -297,19 +358,16 @@ local function observe_timers(timers, now, source)
             if (before ~= nil and effect == FOOD and snapshot.food
                 and now > snapshot.food.seen_at + 2 and pending_food == nil) then
                 snapshot.food, snapshot.food_known = nil, false;
-            elseif (before ~= nil and unknown_item_effects[effect] ~= nil
-                and (last_item_at == nil or now > last_item_at + 2)) then
-                unknown_item_effects[effect] = true;
-                if (effect == ENCHANTMENT) then unknown_enchantment = true; snapshot.activated_items_known = false; end
-                for item_id, entry in pairs(snapshot.activated_items) do
-                    if ((entry.effect or ENCHANTMENT) == effect and now > entry.seen_at + 2 and pending_items[item_id] == nil) then
-                        snapshot.activated_items[item_id] = nil;
-                    end
-                end
-            elseif (before ~= nil and snapshot.effects[effect]
+            elseif (unknown_item_effects[effect] == nil and before ~= nil and snapshot.effects[effect]
                 and now > snapshot.effects[effect].seen_at + 2 and pending_effects[effect] == nil) then
                 snapshot.effects[effect] = nil;
             end
+        end
+        if (unknown_item_effects[effect] ~= nil) then reconcile_items(effect, before, stamps, now); end
+    end
+    for effect, before in pairs(status_timers) do
+        if (timers[effect] == nil and unknown_item_effects[effect] ~= nil) then
+            reconcile_items(effect, before, {}, now);
         end
     end
     status_timers = timers;
@@ -488,7 +546,7 @@ function state.reset()
     model, model_inputs, sampled_at, gear_due, effect_due, changed = nil, nil, -math.huge, nil, nil, true;
     merit_batches, pending_food, pending_items, pending_effects, rows = 0, nil, {}, {}, {};
     equipment_cache, equipped_locations, status_timers = {}, {}, {};
-    unknown_enchantment, last_item_at, vitals_until, character_id, blue_role = true, nil, nil, nil, nil;
+    unknown_enchantment, vitals_until, character_id, blue_role = true, nil, nil, nil;
     evidence, events, cold_status_read, blue_reader, blue_candidate, blue_retry_at = {}, {}, false, nil, nil, -math.huge;
     cold_status_retry_at = -math.huge;
     unknown_item_effects = { [ENCHANTMENT] = true };
@@ -612,7 +670,6 @@ local function item_finished(item_id, now)
     end
     if (activated and wearing and gear_due == nil and type(activated.duration) == 'number') then
         pending_items[item_id] = { seen_at = now, expires_at = now + activated.duration, effect = activated.effect or ENCHANTMENT };
-        last_item_at = now;
         effect_due = now + PERIOD;
         note('activated_item', now, { item = item_id, effect = activated.effect or ENCHANTMENT, duration = activated.duration });
     end
@@ -671,7 +728,7 @@ local function action(e, now, my_id)
 end
 
 function state.on_packet(e, now, my_id)
-    if (e == nil or e.blocked or e.injected or e.is_injected or e.blocked_original) then return; end
+    if (e == nil or e.blocked or e.injected) then return; end
     local id, blob = e.id, e.data;
     if (id == 0x00A and type(blob) == 'string' and #blob >= 0x70) then
         local weather = word(blob, 0x68);

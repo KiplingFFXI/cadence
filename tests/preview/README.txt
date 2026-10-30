@@ -72,7 +72,8 @@ tallest a tab gets, and the state 680 was picked for. Each check runs the whole 
 the preset with /cadence preset and stops if it didn't go on, then stops if the timers didn't go off.
 
 Then the overlap pass draws every tab 920 wide, in a window tall enough to show every control.
-Appearance is 4200 tall, Timers 2600, Profiles 2200 and the other tabs 1300. Every group is opened for
+Appearance is 4200 tall, Timers and Enemy 2600, Profiles 2200 and the other tabs 1300. Enemy includes
+the expanded cast controls so none of the probed rows sit below the scrolling page. Every group is opened for
 this inspection. Each runs in every window font at 18 px and in Ashita's font at 12, 20, 21 and 24 px.
 overlap_probe.lua runs with --exec. The desktop can cap a tall screenshot's pixel height, but the probe
 still checks every submitted control rectangle. Inspect normal-size captures for the visible result.

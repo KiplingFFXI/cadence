@@ -25,7 +25,9 @@ local function round() MOCK.fire('packet_in', MOCK.action_packet(ME, 1, 0, MOB, 
 local function says(message) MOCK.fire('packet_in', MOCK.message_packet(ME, MOB, 0, 0, message, 0x200)); end
 -- A spell (8), item (9) or ranged attack (12) starting, and one finishing (4, 5 or 2).
 local function starts(category) MOCK.fire('packet_in', MOCK.action_packet(ME, category, 0x6163, ME, { { message = 327 } })); end
-local function finishes(category) MOCK.fire('packet_in', MOCK.action_packet(ME, category, 1, MOB, { { message = 7 } })); end
+local function finishes(category)
+    MOCK.fire('packet_in', MOCK.action_packet(ME, category, category == 5 and 4112 or 1, MOB, { { message = 7 } }));
+end
 
 -- One frame's draw calls.
 local function frame()
@@ -223,7 +225,9 @@ MOCK.fire('packet_in', MOCK.action_packet(ME, 8, 0x7073, ME, { { message = 16 } 
 check('and still does once the spell is cut off', shows('stunned'));
 MOCK.player.buffs = {};
 run_to(T + 15.0);
-check('then counts again', seconds_shown());
+check('the unknown recovery stays explicit after stun wears off', shows('recovery unknown') and not seconds_shown());
+round();
+check('an observed round restores the countdown after interruption', seconds_shown());
 
 --[[
     What comes first, and the colors.

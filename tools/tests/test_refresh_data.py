@@ -44,7 +44,7 @@ class RefreshTests(unittest.TestCase):
         self.root = Path(self.folder.name)
         self.before, self.after = data(), data(NEW, 5, digest='after')
         files = {
-            refresh.DATA_FILES[0]: text(self.before), refresh.DATA_FILES[1]: text(self.before),
+            **{path: text(self.before) for path in refresh.DATA_FILES},
             'tools/generate_modifiers.py': "# Keep this comment.\r\nREF = '%s'\r\n" % OLD,
             'tools/source_guards.json': json.dumps({'ref': OLD, 'rules': {'test': 'reviewed'},
                                                    'modules': {}, 'load_order': [], 'profile': {'cap': 0.93}}),
@@ -62,6 +62,7 @@ class RefreshTests(unittest.TestCase):
         self.modules = patch.object(refresh, 'check_module_changes').start()
         self.generator = patch.object(refresh.generate_modifiers, 'generate', side_effect=self.generate).start()
         patch.object(refresh.generate_effects, 'generate', side_effect=self.generate).start()
+        patch.object(refresh.generate_recovery, 'generate', side_effect=self.generate).start()
 
     def generate(self, server, ref):
         return text(self.before if ref == OLD else self.after)
@@ -112,6 +113,18 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(result['changed'], 'true')
         self.assertIn('| Modifiers: items | 0 | 1 | 0 |', report)
         self.assertIn('| store_tp | fixed | 1 | 0 |', report)
+
+    def test_action_recovery_only_change_prepares_synchronized_update(self):
+        unchanged = data(NEW, digest='after')
+        with patch.object(refresh.generate_modifiers, 'generate',
+                          side_effect=lambda server, ref: text(self.before if ref == OLD else unchanged)), \
+             patch.object(refresh.generate_effects, 'generate',
+                          side_effect=lambda server, ref: text(self.before if ref == OLD else unchanged)):
+            result, report = self.run_refresh()
+        self.assertEqual(result['changed'], 'true')
+        self.assertIn('| Action recovery: items | 0 | 0 | 1 |', report)
+        for path in refresh.DATA_FILES:
+            self.assertEqual(refresh.source_ref(refresh.read_data((self.root / path).read_text())), NEW)
 
     def test_changed_rule_stops_before_generation_and_writes_nothing(self):
         self.guards.side_effect = RuntimeError('Source review required for rules: tp.lua')
@@ -217,14 +230,25 @@ class ModuleChangeTests(unittest.TestCase):
     class Source:
         ref = OLD
 
-        def __init__(self, changes='', body='return 1'):
-            self.changes, self.body = changes, body
+        def __init__(self, changes='', body='return 1', gitlinks=''):
+            self.changes, self.body, self.gitlinks = changes, body, gitlinks
 
         def git(self, *args):
-            return self.changes
+            return self.gitlinks if args[0] == 'ls-tree' else self.changes
 
         def read(self, path):
-            return 'phoenix/lua\nphoenix/data\n' if path == 'modules/init.txt' else self.body
+            return 'phoenix/lua\nphoenix/data\nphoenix_ac/cpp\nphoenix_ac/lua\n' if path == 'modules/init.txt' else self.body
+
+    def test_added_changed_or_removed_enabled_submodule_ancestor_requires_review(self):
+        row = '160000 commit ' + OLD + '\tmodules/phoenix_ac\0'
+        for status, before, current in (('A', '', row), ('M', row, row.replace(OLD, NEW)), ('D', row, '')):
+            with self.subTest(status=status), self.assertRaisesRegex(RuntimeError, 'modules/phoenix_ac'):
+                refresh.check_module_changes(self.Source(gitlinks=before),
+                    self.Source(status + '\0modules/phoenix_ac\0', gitlinks=current))
+
+    def test_unloaded_submodule_change_does_not_block(self):
+        row = '160000 commit ' + NEW + '\tmodules/testing\0'
+        refresh.check_module_changes(self.Source(), self.Source('M\0modules/testing\0', gitlinks=row))
 
     def test_new_indirect_override_requires_review(self):
         candidate = self.Source('A\0modules/phoenix/lua/indirect.lua\0', 'return helper()')
@@ -287,7 +311,9 @@ class FutureReleaseTests(unittest.TestCase):
                  patch.object(refresh.generate_modifiers, 'generate',
                               side_effect=lambda server, ref: generate(refresh.DATA_FILES[0], server, ref)), \
                  patch.object(refresh.generate_effects, 'generate',
-                              side_effect=lambda server, ref: generate(refresh.DATA_FILES[1], server, ref)):
+                              side_effect=lambda server, ref: generate(refresh.DATA_FILES[1], server, ref)), \
+                 patch.object(refresh.generate_recovery, 'generate',
+                              side_effect=lambda server, ref: generate(refresh.DATA_FILES[2], server, ref)):
                 result, _ = refresh.prepare('server', 'phoenix/live', root)
             self.assertEqual(result['changed'], 'true')
             process = subprocess.run([sys.executable, str(root / 'tests/run.py'), 'test_docs.lua'],

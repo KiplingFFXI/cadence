@@ -118,7 +118,10 @@ ashita.memory = {
         if (MOCK.menu_check ~= 0 and addr == MOCK.menu_check) then return MOCK.focus_slot or (MOCK.ui_object + 0x54); end
         if (addr == MOCK.ui_object + 0x54) then return MOCK.menu_name and MOCK.menu_object or 0; end
         if (addr == MOCK.menu_object + 4) then return MOCK.menu_header; end
+        if (addr == MOCK.menu_header + 0x46) then return name_word((MOCK.menu_prefix or 'menu    '):sub(1, 4)); end
+        if (addr == MOCK.menu_header + 0x4A) then return name_word((MOCK.menu_prefix or 'menu    '):sub(5, 8)); end
         if (addr == MOCK.menu_header + 0x4E) then return name_word(MOCK.menu_name or ''); end
+        if (addr == MOCK.menu_header + 0x52) then return name_word((MOCK.menu_name or ''):sub(5, 8)); end
         error(('read_uint32 at a wrong address 0x%X'):format(addr));
     end,
     read_uint8 = function (addr)
@@ -282,9 +285,18 @@ local winmm = {
 package.loaded['ffi'] = {
     os = 'Windows',
     cdef = function () end,
+    cast = function (_, value) return value; end,
     C = {
         GetAsyncKeyState = function (vk) if (vk == 0x10 and MOCK.key_shift) then return -32768; end return 0; end,
         GetCurrentProcessId = function () return 1234; end,
+        CreateFileA = function (path)
+            MOCK.file_locks = MOCK.file_locks or {};
+            if (MOCK.file_locks[path] or MOCK.file_lock_error) then MOCK.file_lock_last_error = 32; return -1; end
+            MOCK.file_locks[path] = true;
+            return path;
+        end,
+        GetLastError = function () return MOCK.file_lock_last_error or 0; end,
+        CloseHandle = function (handle) MOCK.file_locks[handle] = nil; return 1; end,
         MoveFileExA = function (temp, path)
             if (MOCK.file_replace_error) then return 0; end
             os.remove(path);

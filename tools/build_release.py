@@ -13,9 +13,9 @@ LICENSE = ROOT / 'LICENSE'
 VERSION_LINE = re.compile(r"^addon\.version\s*=\s*'([^']+)';", re.M)
 
 # New runtime files need an explicit entry before they can ship.
-CORE = 'attack delay diagnostics enemy file_store monster_effects modifiers packets player reach resting shared_layout stat_state tp'.split()
+CORE = 'attack delay diagnostics enemy enemy_cast file_store monster_effects modifiers packets player reach recovery resting shared_layout stat_state tp'.split()
 UI = 'chat_colors defaults history hud layouts navigation presets preview profiles search settings_window sound theme tips window_font'.split()
-DATA = {'data/phoenix_modifiers.lua', 'data/phoenix_effects.lua'}
+DATA = {'data/phoenix_modifiers.lua', 'data/phoenix_effects.lua', 'data/phoenix_recovery.lua'}
 FILES = {'cadence.lua'} | {'core/%s.lua' % name for name in CORE} | {'ui/%s.lua' % name for name in UI} | DATA
 SOUNDS = {'sounds/FF VII Save.mp3', 'sounds/FF IX Moogle.mp3'}
 PUBLIC_DOCS = ('README.md', 'CHANGELOG.md', 'docs/GUIDE.md')

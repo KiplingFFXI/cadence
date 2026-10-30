@@ -45,7 +45,9 @@ MOCK.now = MOCK.now + 1.0;
 packet(MOCK.action_packet(MOB, 8, 0x6163, ME, { { message = 0 } }));
 check('a monster casting', select(7, enemy.progress(MOCK.now, MOB)) == 'spell');
 packet(MOCK.action_packet(MOB, 8, 0x7073, ME, { { message = 0 } }));
-check('gone once it\'s cut off', select(7, enemy.progress(MOCK.now, MOB)) == nil);
+check('an interrupted cast waits for an observed attack', select(7, enemy.progress(MOCK.now, MOB)) == 'observing');
+packet(MOCK.action_packet(MOB, 1, 0, ME, { { message = 1 } }));
+check('the next attack clears interrupted-cast uncertainty', select(7, enemy.progress(MOCK.now, MOB)) == nil);
 
 local function enemy_value(holding)
     hud.refresh(s);

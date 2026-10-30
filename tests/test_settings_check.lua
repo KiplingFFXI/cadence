@@ -76,7 +76,10 @@ end
 
 -- The ranges -----------------------------------------------------------------------------------
 check('the timers share the drag limits', R.attack.width == defaults.WIDTH
-    and R.enemy.bar_height == defaults.BAR_HEIGHT);
+    and R.enemy.bar_height == defaults.BAR_HEIGHT and R.recovery.width == defaults.WIDTH
+    and R.recovery.bar_height == defaults.BAR_HEIGHT and R.recovery.height_scale == defaults.HEIGHT_SCALE
+    and R.enemycast.width == defaults.WIDTH and R.enemycast.bar_height == defaults.BAR_HEIGHT
+    and R.enemycast.height_scale == defaults.HEIGHT_SCALE);
 check('Scale goes 0.5 to 2.5', R.style.scale[1] == 0.5 and R.style.scale[2] == 2.5);
 check('Text size goes 10 to 28', R.style.font_size[1] == 10 and R.style.font_size[2] == 28);
 check('Label and Detail size start at auto', R.style.label_size[1] == defaults.LABEL_SIZE[1] - 1
@@ -314,6 +317,10 @@ local function through_the_addon()
     rawset(imgui, 'BeginCombo', nil);
 
     local SLIDERS = {
+        ['Width##enemycast'] = R.enemycast.width, ['Bar height##enemycast'] = R.enemycast.bar_height,
+        ['Height##enemycast'] = R.enemycast.height_scale,
+        ['Width##recovery'] = R.recovery.width, ['Bar height##recovery'] = R.recovery.bar_height,
+        ['Height##recovery'] = R.recovery.height_scale,
         ['Width##attack'] = R.attack.width, ['Bar height##attack'] = R.attack.bar_height,
         ['Height##attack'] = R.attack.height_scale,
         ['Almost ready at##attack'] = R.attack.almost_seconds,
@@ -335,7 +342,7 @@ local function through_the_addon()
     local listed = 0;
     for _ in pairs(SLIDERS) do listed = listed + 1; end
     check('every range has its slider', count == listed, count .. ' vs ' .. listed);
-    -- Recovery has a mode-dependent range instead of one fixed defaults.RANGES entry.
+    -- The resting recovery goal has a mode-dependent range instead of one fixed defaults.RANGES entry.
     SLIDERS['Goal##recovery'] = defaults.GOAL_PERCENT;
 
     local drawn, wrong, boxes, names = {}, nil, {}, {};
@@ -357,7 +364,8 @@ local function through_the_addon()
     for label in pairs(SLIDERS) do if (not drawn[label]) then missing = missing or label; end end
     check('every slider was drawn', missing == nil, missing);
     check('the label boxes take 23 and the zero after',
-        #boxes == 3 and boxes[1] == 24 and boxes[2] == 24 and boxes[3] == 24, table.concat(boxes, ' '));
+        #boxes == 5 and boxes[1] == 24 and boxes[2] == 24 and boxes[3] == 24 and boxes[4] == 24
+        and boxes[5] == 24, table.concat(boxes, ' '));
     check('Follows shows the name for its word', shown == 'Whoever hits me', shown);
     check('and lists its words in order', names[1] == 'My target first' and names[2] == 'My target only'
         and names[3] == 'Whoever hits me' and #names == 3, table.concat(names, ', '));

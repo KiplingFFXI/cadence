@@ -1,5 +1,5 @@
 --[[
-    Draws the auto attack timer, the resting timer and the enemy attack timer.
+    Draws the attack, resting, enemy, action recovery and enemy cast timers.
 
     Each element is a small borderless ImGui window that clicks pass straight through. While you hold
     Shift the windows take the mouse. Drag one to move it, or drag an edge to resize it.
@@ -28,6 +28,8 @@ local WINDOW_NAMES = {
     attack  = '##cadence_attack',
     resting = '##cadence_resting',
     enemy   = '##cadence_enemy',
+    recovery = '##cadence_recovery',
+    enemycast = '##cadence_enemycast',
 };
 
 -- Fonts you can pick, by name and file in the Windows fonts folder. The first one found is the
@@ -55,7 +57,7 @@ hud.ASHITA_FONT = 'Ashita';
 -- Widths are set for 14 px text and grow with the text size.
 local BASE_TEXT_SIZE = 14;
 
--- The enemy strip attached under the auto attack timer has a thinner bar than its own setting.
+-- Attached strips have a thinner bar than their own settings.
 local ATTACHED_BAR = 0.6;
 
 -- The edges you grab to resize a timer, in pixels at scale 1.
@@ -74,6 +76,7 @@ for key in pairs(WINDOW_NAMES) do
         width  = '##grip_width_' .. key,
         height = '##grip_height_' .. key,
         corner = '##grip_corner_' .. key,
+        move   = '##move_' .. key,
     };
 end
 
@@ -85,17 +88,18 @@ local SIZE = { 0, 0 };
 local settings     = nil;
 local colors       = {};
 local size         = {};    -- Shared pixel sizes, rebuilt by hud.refresh().
-local vertical     = { attack = {}, resting = {}, enemy = {} };
+local vertical     = { attack = {}, resting = {}, enemy = {}, recovery = {}, enemycast = {} };
 local size_revision = 0;
 local active_value_px = nil;
 local fonts        = {};    -- Loaded fonts by name.
 local font_names   = {};    -- Their names in list order, for the settings window.
 local chosen_font  = nil;   -- The font picked in the settings, or nil for Ashita's own.
 local face         = nil;   -- The font every element draws with this frame.
-local place        = { attack = true, resting = true, enemy = true };
+local place        = { attack = true, resting = true, enemy = true, recovery = true, enemycast = true };
 local layout_dirty = false;
 local layout_before = nil;
 local gesture_cancelled = false;
+local gesture_key = nil;
 local preview = {};
 local reengage = false;
 local reengage_header = { label = 'Re-engage', value = '' };
@@ -104,21 +108,24 @@ local rectangles = {};
 local frame_number = 0;
 local hovered_timer, hover_since = nil, 0;
 local enemy_control = false;
+local recovery_unknown, enemycast_waiting, resting_observing, attack_recovery_unknown = false, false, false, false;
 local hover_details, hover_key, hover_preview, hover_text;
-local HOVER_ORDER = { 'enemy', 'resting', 'attack' };
+local HOVER_ORDER = { 'enemycast', 'enemy', 'recovery', 'resting', 'attack' };
 local guide_coordinates = {};
 local movable      = false;
-local joined_below = false; -- True while the enemy strip hangs under the card at the auto attack spot.
+local joined_below, joined_recovery, joined_cast = false, false, false;
 
 -- Where a drag started, and the width, whole height and height scale it had then.
 local resize = { mouse_x = 0, mouse_y = 0, width = 0, height = 0, height_scale = 1 };
+local attached_drag = {};
 
--- The card drawn at the auto attack timer's spot this frame. The attached enemy strip hangs under it.
+-- The visible card that carries the attached strips this frame.
 -- With "Share one spot" on, that's the resting timer while you're resting.
 local host = { shown = false, x = 0, y = 0, width = 0, height = 0, reach = 0, hovered = false };
+local cast_host = { shown = false, x = 0, y = 0, width = 0, height = 0 };
 
 -- Where each timer's window was last frame. One that ImGui moved since then was dragged.
-local seen = { attack = { x = 0, y = 0 }, resting = { x = 0, y = 0 }, enemy = { x = 0, y = 0 } };
+local seen = { attack = { x = 0, y = 0 }, resting = { x = 0, y = 0 }, enemy = { x = 0, y = 0 }, recovery = { x = 0, y = 0 }, enemycast = { x = 0, y = 0 } };
 
 -- The game window's size, read at the start of each frame.
 local screen = { width = 0, height = 0 };
@@ -195,6 +202,8 @@ end
 -- A login or a reset must not finish a drag from the previous layout.
 function hud.cancel_layout_gesture()
     layout_dirty, layout_before = false, nil;
+    gesture_key = nil;
+    attached_drag.anchor = nil;
     guide_coordinates.x, guide_coordinates.y = nil, nil;
     rectangles = {};
     gesture_cancelled = imgui.IsMouseDown(ImGuiMouseButton_Left);
@@ -233,6 +242,8 @@ function hud.refresh(settings_table)
     colors.attack_start  = theme.u32(settings.attack.fill_start);
     colors.resting_start = theme.u32(settings.resting.fill_start);
     colors.enemy_start   = theme.u32(settings.enemy.fill_start);
+    colors.recovery_start = theme.u32(settings.recovery.fill_start);
+    colors.enemycast_start = theme.u32(settings.enemycast.fill_start);
     colors.ready         = theme.u32(settings.attack.ready_color);
     colors.almost        = theme.u32(settings.attack.almost_color);
     colors.tp            = theme.u32(settings.attack.tp_color);
@@ -326,7 +337,7 @@ end
 
 -- Puts every element back at its saved position on the next frame.
 function hud.place_all()
-    place.attack, place.resting, place.enemy = true, true, true;
+    place.attack, place.resting, place.enemy, place.recovery, place.enemycast = true, true, true, true, true;
 end
 
 -- Set each frame before drawing. True while you hold Shift, so the timers can take the mouse.
@@ -335,16 +346,21 @@ function hud.set_movable(value)
     movable = value and not gesture_cancelled;
 end
 
--- Set each frame before drawing. When the enemy strip will hang under the card at the auto attack
--- spot, that card's bottom corners go square to meet it.
-function hud.join_below(value)
-    joined_below = value;
+-- Set each frame before drawing. Recovery sits between the host and the enemy strip.
+function hud.join_below(enemy, recovery, enemycast)
+    joined_below, joined_recovery, joined_cast = enemy, recovery == true, enemycast == true;
 end
 
 -- The settings that hold an element's position. With the shared spot on, the resting timer sits
 -- wherever the auto attack timer is.
 local function anchor(key)
+    if (key == 'enemycast' and settings.enemycast.attached and settings.enemy.enabled) then
+        return settings.enemy.attached and settings.attack.enabled and settings.attack or settings.enemy;
+    end
     if (key == 'resting' and settings.style.shared_spot) then
+        return settings.attack;
+    end
+    if ((key == 'recovery' or key == 'enemy') and settings[key].attached and settings.attack.enabled) then
         return settings.attack;
     end
     return settings[key];
@@ -360,7 +376,7 @@ local function has_detail(key)
     if (key == 'attack' and reengage) then return false; end
     local element = settings[key];
     return element.show_delay or element.show_gains or element.show_until_full or element.show_name
-        or element.show_effects;
+        or element.show_effects or element.show_source or element.show_spell;
 end
 
 local function has_next_line(key)
@@ -386,14 +402,19 @@ end
 -- True when a timer shows its row of text above the bar. A timer showing just its numbers always does.
 local function has_header(key)
     if (key == 'attack' and reengage) then return true; end
+    if (key == 'attack' and attack_recovery_unknown) then return true; end
+    if ((key == 'recovery' and recovery_unknown) or (key == 'enemycast' and enemycast_waiting)) then return true; end
+    if (key == 'resting' and resting_observing) then return true; end
     local element = settings[key];
     return preview[key] or (element.numbers_only and not (has_next_line(key) or has_ticks_line(key) or has_goal_line(key))) or shows_name(key) or element.show_value or has_detail(key)
         or (key == 'enemy' and (element.show_holds or enemy_control));
 end
 
--- True when the enemy timer is the smaller strip attached under the auto attack timer.
+-- Attached timers use a smaller strip. Recovery falls back to its own card when attack is off.
 local function is_strip(key)
-    return key == 'enemy' and settings.enemy.attached;
+    return (key == 'enemy' and settings.enemy.attached and settings.attack.enabled)
+        or (key == 'recovery' and settings.recovery.attached and settings.attack.enabled)
+        or (key == 'enemycast' and settings.enemycast.attached and settings.enemy.enabled);
 end
 
 -- True when a timer shows a line of text under the bar. The auto attack timer does for your TP, and
@@ -457,6 +478,9 @@ end
 -- Width stays independent of each timer's vertical scale.
 function hud.element_size(key)
     local height = element_height(key, vertical_size(key));
+    if (key == 'enemycast' and is_strip(key)) then
+        return cast_host.shown and cast_host.width or hud.element_size('enemy'), height;
+    end
     if (is_strip(key)) then
         local width = host.shown and host.width or hud.element_size('attack');
         return width, height;
@@ -504,11 +528,71 @@ local function on_screen(x, y, width, height)
     return math.max(0, math.min(x, screen.width - width)), math.max(0, math.min(y, screen.height - height));
 end
 
+local function recovery_room()
+    if (joined_recovery and is_strip('recovery')) then
+        return select(2, hud.element_size('recovery')) - size.overlap;
+    end
+    return 0;
+end
+
+local function cast_room()
+    return joined_cast and is_strip('enemycast') and (select(2, hud.element_size('enemycast')) - size.overlap) or 0;
+end
+
+local function enemy_room(reserve)
+    if (joined_below or (reserve and settings.attack.enabled and settings.enemy.enabled and settings.enemy.attached)) then
+        return select(2, hud.element_size('enemy')) - size.overlap + cast_room();
+    end
+    return 0;
+end
+
+local function attach_timer(timer)
+    local key = timer.key;
+    timer.corners, timer.x, timer.y, timer.offset_y, timer.fit_height = nil, nil, nil, nil, nil;
+    if (key == 'enemycast') then
+        if (not is_strip(key)) then return; end
+        if (cast_host.shown) then
+            timer.x, timer.y = cast_host.x, cast_host.y + cast_host.height - size.overlap;
+            timer.corners = ImDrawFlags_RoundCornersBottom;
+        else
+            local _, enemy_height = hud.element_size('enemy');
+            local above = 0;
+            if (settings.enemy.attached and settings.attack.enabled) then
+                above = select(2, hud.element_size('attack')) + recovery_room() - size.overlap;
+            end
+            timer.offset_y = above + enemy_height - size.overlap;
+            timer.fit_height = timer.offset_y + select(2, hud.element_size(key));
+        end
+        return;
+    end
+    if (not settings[key].attached or not settings.attack.enabled) then return; end
+    local above = key == 'enemy' and recovery_room() or 0;
+    if (host.shown) then
+        if (host.key == 'recovery') then above = 0; end
+        timer.x, timer.y = host.x, host.y + host.height + above - size.overlap;
+        timer.corners = ((key == 'recovery' and joined_below) or (key == 'enemy' and joined_cast))
+            and ImDrawFlags_RoundCornersNone or ImDrawFlags_RoundCornersBottom;
+    else
+        local width, attack_height = hud.element_size('attack');
+        local room = recovery_room() + enemy_room(false);
+        if (key == 'recovery' and not joined_recovery) then room = room + select(2, hud.element_size(key)) - size.overlap; end
+        if (key == 'enemy' and not joined_below) then room = room + select(2, hud.element_size(key)) - size.overlap; end
+        if (key == 'recovery') then
+            -- Keep the visible strip draggable even when its attack card is hidden.
+            timer.offset_y = attack_height - size.overlap;
+            timer.fit_height = attack_height + room;
+        else
+            timer.offset_y = attack_height + above - size.overlap;
+            timer.fit_height = attack_height + room;
+        end
+    end
+end
+
 -- Keep only the layout before the first actual movement in this drag.
 local function remember_layout()
     if (layout_before ~= nil) then return; end
     layout_before = {};
-    for _, key in ipairs({ 'attack', 'resting', 'enemy' }) do
+    for _, key in ipairs({ 'attack', 'resting', 'enemy', 'recovery', 'enemycast' }) do
         local element = settings[key];
         layout_before[key] = { x = element.x, y = element.y, width = element.width,
             bar_height = element.bar_height, height_scale = element.height_scale or 1 };
@@ -634,24 +718,31 @@ end
 
 --[[
     Opens the element's window. Always pair with end_element(), even when this returns false.
-    `fixed_x` and `fixed_y` pin it in place for this frame, for the attached enemy strip. The card
-    above the strip reaches down over it. A drag on the strip lands on that card and moves both.
+    `fixed_x` and `fixed_y` pin it in place for this frame, for an attached strip. The strip's
+    move control updates the shared anchor, while its bottom edge changes only its own height.
 
     Otherwise it goes to its saved spot every frame, pulled in to fit on screen. ImGui only gets to
     move it while Shift and the mouse button are down. Only a drag changes the saved spot.
     `fit_height` is the height it has to fit on screen, when that's taller than the window.
 ]]
-local function begin_element(key, width, height, fixed_x, fixed_y, fit_height)
+local function begin_element(key, width, height, fixed_x, fixed_y, fit_height, offset_y)
     local spot = anchor(key);
+    local last = seen[key];
+    local moved_anchor = false;
+    if (key == 'recovery' or key == 'enemycast' or key == 'enemy') then
+        moved_anchor = last.anchor ~= spot or last.offset_y ~= (offset_y or 0);
+        last.anchor, last.offset_y = spot, offset_y or 0;
+    end
     local can_move = movable and not settings.style.locked;
     local flags = can_move and HUD_FLAGS or CLICK_THROUGH_FLAGS;
     local x, y = fixed_x, fixed_y;
     local dragging = false;
     if (fixed_x ~= nil) then
-        flags = CLICK_THROUGH_FLAGS;
+        flags = can_move and bit.bor(HUD_FLAGS, ImGuiWindowFlags_NoMove) or CLICK_THROUGH_FLAGS;
     else
         x, y = on_screen(spot.x, spot.y, width, fit_height or height);
-        dragging = can_move and imgui.IsMouseDown(ImGuiMouseButton_Left);
+        y = y + (offset_y or 0);
+        dragging = can_move and not moved_anchor and attached_drag.anchor ~= spot and imgui.IsMouseDown(ImGuiMouseButton_Left);
     end
     -- A window that was hidden still comes back at its spot during a drag. A reset moves it right away.
     local condition = ImGuiCond_Always;
@@ -666,6 +757,9 @@ local function begin_element(key, width, height, fixed_x, fixed_y, fit_height)
     if (not imgui.Begin(WINDOW_NAMES[key], true, flags)) then
         return false;
     end
+    if (can_move and imgui.IsMouseClicked(ImGuiMouseButton_Left) and imgui.IsWindowHovered(HOVERED)) then
+        gesture_key = key;
+    end
 
     active_value_px = vertical_size(key).value_px;
     imgui.PushFont(face, active_value_px);
@@ -679,8 +773,8 @@ local function begin_element(key, width, height, fixed_x, fixed_y, fit_height)
 
     -- The saved spot follows the window while it's dragged. It was dragged when ImGui moved it since last
     -- frame, and not to where it was put this frame.
-    local last = seen[key];
     if (dragging and (drawn_x ~= last.x or drawn_y ~= last.y) and (drawn_x ~= x or drawn_y ~= y)) then
+        gesture_key = key;
         remember_layout();
         if (settings.style.layout_guides) then
             local dx, gx = alignment_delta(key, 'x', { drawn_x, drawn_x + width / 2, drawn_x + width });
@@ -690,7 +784,7 @@ local function begin_element(key, width, height, fixed_x, fixed_y, fit_height)
             alignment_guide('x', gx);
             alignment_guide('y', gy);
         end
-        spot.x, spot.y = drawn_x, drawn_y;
+        spot.x, spot.y = drawn_x, drawn_y - (offset_y or 0);
         layout_dirty = true;
     end
     remember_rectangle(key, drawn_x, drawn_y, width, height);
@@ -772,6 +866,7 @@ local function grip(key, id, x, y, width, height, sideways, down, cursor)
     imgui.InvisibleButton(id, set_point(B, width, height));
     local element = settings[key];
     if (imgui.IsItemActivated()) then
+        gesture_key = key;
         resize.mouse_x, resize.mouse_y = imgui.GetMousePos();
         resize.width, resize.height_scale = element.width, element.height_scale or 1;
         resize.height = select(2, hud.element_size(key));
@@ -831,7 +926,7 @@ end
 local function resize_grips(key, x, y, width, height)
     local edge = math.max(4, round(GRIP_SIZE * settings.style.scale));
     local ids = GRIP_IDS[key];
-    -- The attached strip takes the auto attack timer's width, so it only gets its bottom edge.
+    -- Attached strips take their host's width, so they only get a bottom edge.
     if (is_strip(key)) then
         grip(key, ids.height, x, y + height - edge, width, edge, false, true, ImGuiMouseCursor_ResizeNS);
         return;
@@ -839,6 +934,38 @@ local function resize_grips(key, x, y, width, height)
     grip(key, ids.width, x + width - edge, y, edge, math.max(1, height - edge), true, false, ImGuiMouseCursor_ResizeEW);
     grip(key, ids.height, x, y + height - edge, math.max(1, width - edge), edge, false, true, ImGuiMouseCursor_ResizeNS);
     grip(key, ids.corner, x + width - edge, y + height - edge, edge, edge, true, true, ImGuiMouseCursor_ResizeNWSE);
+end
+
+-- A pinned strip moves its shared anchor. Its own saved position stays available for detaching.
+local function drag_attached(key, x, y, width, height)
+    local edge = math.max(4, round(GRIP_SIZE * settings.style.scale));
+    imgui.SetCursorScreenPos(set_point(A, x, y));
+    imgui.InvisibleButton(GRIP_IDS[key].move, set_point(B, width, math.max(1, height - edge)));
+    local spot = anchor(key);
+    if (imgui.IsItemActivated()) then
+        gesture_key = key;
+        attached_drag.mouse_x, attached_drag.mouse_y = imgui.GetMousePos();
+        attached_drag.anchor = spot;
+        attached_drag.x, attached_drag.y = host.anchor_x or spot.x, host.anchor_y or spot.y;
+        attached_drag.offset_y = host.shown and host.y - attached_drag.y or 0;
+    end
+    if (imgui.IsItemActive() and attached_drag.anchor == spot) then
+        local mouse_x, mouse_y = imgui.GetMousePos();
+        local x_next = round(attached_drag.x + mouse_x - attached_drag.mouse_x);
+        local y_next = round(attached_drag.y + mouse_y - attached_drag.mouse_y);
+        if (mouse_x == attached_drag.mouse_x and mouse_y == attached_drag.mouse_y) then return; end
+        if (settings.style.layout_guides) then
+            local y_top, stack_height = y_next + attached_drag.offset_y, host.height + host.reach;
+            local dx, gx = alignment_delta(key, 'x', { x_next, x_next + width / 2, x_next + width });
+            local dy, gy = alignment_delta(key, 'y', { y_top, y_top + stack_height / 2, y_top + stack_height });
+            x_next, y_next = round(x_next + (dx or 0)), round(y_next + (dy or 0));
+            alignment_guide('x', gx); alignment_guide('y', gy);
+        end
+        if (x_next ~= spot.x or y_next ~= spot.y) then
+            remember_layout();
+            spot.x, spot.y, layout_dirty = x_next, y_next, true;
+        end
+    end
 end
 
 -- Two short lines in the bottom right corner, so you can see where to grab.
@@ -879,9 +1006,12 @@ local function draw_move_hints(list, timer, x, y, width, height, hosting, strip)
         host.hovered = hovered;
     end
     if (hosting or (strip and timer.x ~= nil)) then
+        host.hovered = host.hovered or hovered;
         if (host.hovered) then
+            list:PushClipRect(set_point(A, x, host.y), set_point(B, x + width, host.y + host.height + host.reach), false);
             list:AddRect(set_point(A, x, host.y), set_point(B, x + width, host.y + host.height + host.reach),
                 colors.outline, size.rounding, 0, 1);
+            list:PopClipRect();
         end
     elseif (hovered) then
         list:AddRect(set_point(A, x, y), set_point(B, x + width, y + height), colors.outline, size.rounding, 0, 1);
@@ -890,6 +1020,9 @@ local function draw_move_hints(list, timer, x, y, width, height, hosting, strip)
         if (hovered and not strip) then
             draw_corner_grip(list, x, y, width, height);
         end
+        resize_grips(timer.key, x, y, width, height);
+    else
+        drag_attached(timer.key, x, y, width, height);
         resize_grips(timer.key, x, y, width, height);
     end
 end
@@ -924,26 +1057,27 @@ local function draw_timer(timer)
     local value_px = strip and metrics.label_px or metrics.value_px;
     local gap = strip and metrics.strip_gap or metrics.gap;
 
-    -- The attached strip hangs under the card at the auto attack spot. That card's bottom corners go
-    -- square to meet it. Its window reaches down over the strip, so a drag anywhere on the joined card
-    -- moves both. Near the screen's edge, that card always leaves room for the strip, so it doesn't
-    -- jump when the strip comes and goes.
+    -- Reserve the whole stack near screen edges. Each visible strip has its own Shift controls.
     local at_attack_spot = not strip and anchor(key) == settings.attack;
-    local hosting = joined_below and at_attack_spot;
-    local strip_room = 0;
-    if (hosting or (at_attack_spot and settings.attack.enabled and settings.enemy.enabled
-        and settings.enemy.attached)) then
-        local _, strip_height = hud.element_size('enemy');
-        strip_room = strip_height - size.overlap;
-    end
-    local reach = hosting and strip_room or 0;
+    local hosting = ((joined_below or joined_recovery) and at_attack_spot)
+        or (key == 'recovery' and timer.offset_y ~= nil and joined_below)
+        or (key == 'enemy' and joined_cast and timer.x == nil);
+    local strip_room = at_attack_spot and (recovery_room() + enemy_room(true)) or (key == 'enemy' and cast_room() or 0);
+    local reach = hosting and (key == 'enemy' and cast_room() or (enemy_room(false) + (at_attack_spot and recovery_room() or 0))) or 0;
     local corners = hosting and ImDrawFlags_RoundCornersTop or timer.corners;
 
-    local opened, x, y, list = begin_element(key, width, height + reach, timer.x, timer.y, height + strip_room);
+    local window_height = movable and not settings.style.locked and height or (height + reach);
+    local opened, x, y, list = begin_element(key, width, window_height, timer.x, timer.y,
+        timer.fit_height or (height + strip_room), timer.offset_y);
     if (opened) then
         draw_panel(list, x, y, width, height, corners, timer.mark_as);
         if (hosting) then
             host.shown, host.x, host.y, host.width, host.height, host.reach = true, x, y, width, height, reach;
+            host.key = key;
+            host.anchor_x, host.anchor_y = x, y - (timer.offset_y or 0);
+        end
+        if (key == 'enemy') then
+            cast_host.shown, cast_host.x, cast_host.y, cast_host.width, cast_host.height = true, x, y, width, height;
         end
 
         local left = x + size.accent + size.pad_x;
@@ -972,7 +1106,17 @@ local function draw_timer(timer)
             local detail_top = top + (row_px - metrics.detail_px) * 0.75;
             local value_x = left + bar_width;
             if (timer.value ~= nil) then
-                value_x = value_x - text_width(timer.value, value_px);
+                if (metrics.value_text ~= timer.value or metrics.value_base ~= value_px
+                    or metrics.value_limit ~= bar_width or metrics.value_revision ~= size_revision) then
+                    metrics.value_text, metrics.value_base = timer.value, value_px;
+                    metrics.value_limit, metrics.value_revision = bar_width, size_revision;
+                    local measured = text_width(timer.value, value_px);
+                    metrics.fitted_value_px = fit_text(timer.value, value_px, bar_width, measured);
+                    metrics.value_width = metrics.fitted_value_px == value_px and measured or text_width(timer.value, metrics.fitted_value_px);
+                end
+                value_px = metrics.fitted_value_px;
+                value_top = top + (row_px - value_px) * 0.75;
+                value_x = value_x - metrics.value_width;
                 draw_text(list, value_x, value_top, timer.value_color or colors.value, timer.value, value_px);
             end
 
@@ -1211,9 +1355,10 @@ end
 ]]
 function hud.draw_attack(fill, left, delay, learned, tp_view, reason, why, reach, is_preview)
     reengage = false;
+    attack_recovery_unknown = why == 'recovery';
     preview.attack = is_preview == true;
     local element = settings.attack;
-    local stopped = element.show_why and STOPPED_WORDS[why] or nil;
+    local stopped = attack_recovery_unknown and 'recovery unknown' or (element.show_why and STOPPED_WORDS[why] or nil);
     local ready = left ~= nil and left <= 0;
     local almost = left ~= nil and not ready and element.almost_ready and left <= element.almost_seconds;
     local state_color = (ready and colors.ready) or (almost and colors.almost) or nil;
@@ -1232,7 +1377,7 @@ function hud.draw_attack(fill, left, delay, learned, tp_view, reason, why, reach
     attack_timer.solid = state_color;
     attack_timer.value_color = state_color;
     attack_timer.value = nil;
-    if (element.show_value) then
+    if (element.show_value or attack_recovery_unknown) then
         -- What stopped the timer comes first, then why you can't attack, then the seconds. Before the
         -- attack is due, why you can't attack is in the detail color, since nothing is about to happen.
         if (stopped ~= nil) then
@@ -1288,6 +1433,53 @@ function hud.draw_reengage(view)
     reengage_timer.start_color = colors.attack_start;
     reengage_timer.value_color = (unknown or elapsed) and colors.detail or colors.value;
     draw_timer(reengage_timer);
+end
+
+local recovery_timer = { key = 'recovery' };
+local recovery_text = { tenths = -1, text = '' };
+local RECOVERY_NAMES = { spell = 'Spell', weaponskill = 'Weapon skill', ranged = 'Ranged attack',
+    superjump = 'Super Jump', item = 'Item', ability = 'Job ability', unknown = 'Action' };
+local RECOVERY_SHORT = { weaponskill = 'WS', ranged = 'Ranged', superjump = 'Jump', ability = 'Ability' };
+
+-- This countdown ends without claiming that a particular spell is ready.
+function hud.draw_recovery(view)
+    if (view == nil or (view.known ~= false and (view.left == nil or view.left <= 0))) then return; end
+    local element = settings.recovery;
+    recovery_unknown = view.known == false;
+    preview.recovery = view.preview == true;
+    local tenths = view.known == false and -1 or math.max(1, math.ceil(view.left * 10));
+    if (tenths ~= recovery_text.tenths) then
+        recovery_text.tenths = tenths;
+        recovery_text.text = tenths == -1 and 'Unknown' or ('~%.1fs'):format(tenths / 10);
+    end
+    recovery_timer.label = label_for(element, 'ACTION RECOVERY');
+    recovery_timer.fill, recovery_timer.start_color = view.fill, colors.recovery_start;
+    recovery_timer.value = (element.show_value or view.known == false) and (view.known == false and 'Unknown' or recovery_text.text) or nil;
+    recovery_timer.detail = element.show_source and (RECOVERY_NAMES[view.kind] or 'Action') or nil;
+    recovery_timer.detail_short = RECOVERY_SHORT[view.kind];
+    attach_timer(recovery_timer);
+    draw_timer(recovery_timer);
+end
+
+local enemycast_timer = { key = 'enemycast' };
+local enemycast_text = { tenths = -1, text = 'waiting' };
+
+function hud.draw_enemycast(view)
+    if (view == nil) then return; end
+    local element = settings.enemycast;
+    enemycast_waiting = view.waiting == true;
+    preview.enemycast = view.preview == true;
+    local tenths = view.left and view.left > 0 and math.ceil(view.left * 10) or -1;
+    if (tenths ~= enemycast_text.tenths) then
+        enemycast_text.tenths = tenths;
+        enemycast_text.text = tenths == -1 and 'waiting' or ('~%.1fs'):format(tenths / 10);
+    end
+    enemycast_timer.label = label_for(element, 'ENEMY CAST');
+    enemycast_timer.value = (element.show_value or view.waiting) and enemycast_text.text or nil;
+    enemycast_timer.detail, enemycast_timer.detail_short = element.show_spell and view.spell or nil, nil;
+    enemycast_timer.fill, enemycast_timer.start_color = view.fill or 0, colors.enemycast_start;
+    attach_timer(enemycast_timer);
+    draw_timer(enemycast_timer);
 end
 
 local resting_text = { tenths = -1, text = '' };
@@ -1388,6 +1580,7 @@ end
         full_meta = confidence and the remaining resting ticks for those full times,
         goal = optional { label, seconds, reached, confidence } for a partial recovery target,
         preview = true for sample values, waiting = true while a sample waits for evidence,
+        phase_unknown = true until a resting tick reveals the phase after loading while already seated,
         has_mp = false for a job with no MP, flash = 0..1 strength of the tick flash,
         next_hp, next_mp = the next resting gain, next_estimated = true while some bonuses are unknown,
         why = the buff id of what keeps ticks from healing you, a key in CANT_HEAL_WORDS, or nil,
@@ -1395,6 +1588,7 @@ end
 ]]
 function hud.draw_resting(view)
     preview.resting = view.preview == true;
+    resting_observing = view.phase_unknown == true and not view.full;
     local element = settings.resting;
     -- Full needs no healing, so it wins.
     local cant = (element.show_why and not view.full) and CANT_HEAL_WORDS[view.why] or nil;
@@ -1406,8 +1600,8 @@ function hud.draw_resting(view)
     resting_timer.solid = view.full and colors.full or nil;
     resting_timer.value_color = view.full and colors.full or nil;
     resting_timer.value = nil;
-    if (element.show_value) then
-        resting_timer.value = view.full and 'full' or (view.waiting and 'waiting') or seconds_text(resting_text, view.left);
+    if (element.show_value or resting_observing) then
+        resting_timer.value = view.full and 'full' or (resting_observing and 'Observing') or (view.waiting and 'waiting') or seconds_text(resting_text, view.left);
         if (cant ~= nil) then
             resting_timer.value, resting_timer.value_color = cant, colors.detail;
         end
@@ -1527,25 +1721,7 @@ function hud.draw_enemy(view)
     enemy_timer.mark_as = marked and colors.on_you or nil;
 
     enemy_timer.label = label_for(element, element.attached and 'ENEMY' or 'ENEMY ATTACK');
-    enemy_timer.corners, enemy_timer.x, enemy_timer.y = nil, nil, nil;
-    if (element.attached and settings.attack.enabled) then
-        -- Follow the attack or re-engage card and share its bottom border. When the card is hidden,
-        -- keep the strip at the normal attack spot.
-        -- With the auto attack timer turned off, it sits at its own spot, where Shift can drag it.
-        if (host.shown) then
-            enemy_timer.x = host.x;
-            enemy_timer.y = host.y + host.height - size.overlap;
-            enemy_timer.corners = ImDrawFlags_RoundCornersBottom;
-        else
-            -- Where that card and the strip under it would be drawn, pulled in together.
-            local width, attack_height = hud.element_size('attack');
-            local _, strip_height = hud.element_size('enemy');
-            local x, y = on_screen(settings.attack.x, settings.attack.y, width,
-                attack_height + strip_height - size.overlap);
-            enemy_timer.x = x;
-            enemy_timer.y = y + attack_height - size.overlap;
-        end
-    end
+    attach_timer(enemy_timer);
 
     draw_timer(enemy_timer);
 end
@@ -1565,7 +1741,7 @@ end
 
 function hud.needs_details()
     local key = timer_under_mouse();
-    return key ~= nil and not preview[key];
+    return key ~= nil and key ~= 'recovery' and key ~= 'enemycast' and not preview[key];
 end
 
 local function draw_hover(details)
@@ -1589,10 +1765,13 @@ local function draw_hover(details)
 end
 
 -- Everything the HUD draws in a frame goes between begin_frame() and end_frame().
-function hud.begin_frame()
+function hud.begin_frame(recovery_view, enemycast_view)
     frame_number = frame_number + 1;
     reengage = false;
+    recovery_unknown = recovery_view ~= nil and recovery_view.known == false;
+    enemycast_waiting = enemycast_view ~= nil and enemycast_view.waiting == true;
     host.shown, host.hovered = false, false;
+    cast_host.shown = false;
     face = chosen_font or imgui.GetFont();
     screen.width, screen.height = hud.screen_size();
     imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, set_point(A, 0, 0));
@@ -1601,18 +1780,45 @@ function hud.begin_frame()
     imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
 end
 
--- Returns true and the layout from before the gesture once a drag finishes, for saving and Undo.
-function hud.end_frame(details)
-    draw_alignment_guides();
-    imgui.PopStyleVar(4);
-    draw_hover(details);
-    if (layout_dirty and not imgui.IsMouseDown(ImGuiMouseButton_Left)) then
+local function finish_layout(held)
+    if (not held) then attached_drag.anchor, gesture_key = nil, nil; end
+    if (layout_dirty and not held) then
         layout_dirty = false;
         local before = layout_before;
         layout_before = nil;
         return true, before;
     end
     return false;
+end
+
+-- A skipped HUD frame must still finish its layout gesture without drawing anything.
+function hud.hide_frame()
+    frame_number = frame_number + 1;
+    -- Hidden idle frames need no ImGui calls; only an unfinished edit needs release polling.
+    local held = (gesture_key ~= nil or layout_dirty or attached_drag.anchor ~= nil)
+        and imgui.IsMouseDown(ImGuiMouseButton_Left);
+    if (held) then gesture_cancelled = true; end
+    movable, hovered_timer, gesture_key = false, nil, nil;
+    attached_drag.anchor = nil;
+    guide_coordinates.x, guide_coordinates.y = nil, nil;
+    return finish_layout(held);
+end
+
+-- Returns true and the layout from before the gesture once a drag finishes, for saving and Undo.
+function hud.end_frame(details)
+    local held = imgui.IsMouseDown(ImGuiMouseButton_Left);
+    if (held and gesture_key ~= nil) then
+        local rect = rectangles[gesture_key];
+        if (rect == nil or rect.frame ~= frame_number) then
+            -- Hiding the grabbed timer ends its hold, but keeps completed movement for Undo.
+            gesture_cancelled, movable, gesture_key = true, false, nil;
+            attached_drag.anchor = nil;
+        end
+    end
+    draw_alignment_guides();
+    imgui.PopStyleVar(4);
+    draw_hover(details);
+    return finish_layout(held);
 end
 
 return hud;

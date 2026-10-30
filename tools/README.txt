@@ -156,6 +156,7 @@ Source parity and automated checks
   tests\.venv\Scripts\python tools\check_source.py --server ..\Phoenix
   tests\.venv\Scripts\python -m unittest discover -s tools\tests -p "test_*.py"
   tests\.venv\Scripts\python tools\generate_effects.py --server ..\Phoenix --check
+  tests\.venv\Scripts\python tools\generate_recovery.py --server ..\Phoenix --check
 
 check_source.py reads the reviewed Git revision without checking it out. It compares TP and resting gains with
 Phoenix's own Lua, and attack delays with an independent reference tied to the reviewed C++ function. The delay
@@ -169,6 +170,23 @@ cause. Source parity does not establish packet latency or live timing. Phoenix's
 clears the deadline before acting, so it cannot validate cooldown enforcement. Use ordinary manual engagement
 for the in-game check. No server module or custom packet feed is required.
 
+Action recovery checks compare the global post-spell gate, weapon skill durations, ranged recovery and Super
+Jump with the recovery module. The generated phoenix_recovery.lua also records category/id/animation signatures,
+known item durations and base spell cast times after loaded SQL overlays. Known-zero item values are distinct
+from unknown IDs; zero does not promise immediate client readiness. The six suspicious food rows stay quarantined.
+Changed quarantine rows and new unreviewed durations stop a refresh, including otherwise unchanged candidates.
+Supported-era spell animations longer than the global gate require review. Completion, interruption, timestamp
+units, packet fields and state-change rules are guarded. Ability and weapon-skill dispatch trees and job helper
+trees are guarded as whole Git trees, so even comment-only changes there require a source review.
+Weapon skill names and animations come from weapon_skills.yaml. Their recovery durations come from the
+weapon_skill category in animation_locks.yaml, with the server's two-second fallback only for a missing
+animation key. The generator applies ordered YAML merge patches from explicit data roots and implicit module
+data folders, matching Phoenix's loader. Duplicate keys and invalid IDs stop generation. YAML data, its loader
+and module patches remain guarded and need review before an automatic refresh can accept a change.
+PyYAML is a tool dependency only; the game loads the generated Lua constants.
+The standard archive now contains 38 files, including core/recovery.lua, core/enemy_cast.lua,
+data/phoenix_recovery.lua and both bundled sounds.
+
 The selected Phoenix profile uses DELAY_REDUCTION_CAP = 0.93. The pinned default is 0.80. Neither proves what a
 running server loaded. Relevant helpers and init-listed module rules are guarded in source_guards.json. Changed,
 new or removed timing rules stop the check and list the paths that need review. The list includes loaded modules
@@ -181,7 +199,7 @@ expected hashes just to make a failure disappear. Read the changed rules, update
 limits, then update the guarded snapshot and the fixture cases together. REF and source_guards.json's ref must
 agree when the reviewed pin changes. Verify reads REF directly and checks out that full commit.
 
-Verify runs tool tests, source checks, both generated-data checks, the offline addon suite and release checks
+Verify runs tool tests, source checks, all three generated-data checks, the offline addon suite and release checks
 on Windows. Draft release depends on it. Tests use pinned Ashita libraries and pinned Phoenix source. The weekly
 refresh runs the same gates on its prepared update before opening a pull request. UI fit checks remain a local
 preview gate; passing CI does not establish in-game behavior.
@@ -202,24 +220,27 @@ Settings > Actions > General > Workflow permissions. The job requests contents a
 for its generated branch; it does not need a personal token.
 
 The job fetches the current live commit and the existing reviewed commit. refresh_data.py compares them,
-checks guarded source dependencies, and prepares both generated data files from one exact candidate revision.
+checks guarded source dependencies, and prepares all three generated data files from one exact candidate revision.
 Changes to the calculation rules, module loading, parser assumptions or unsupported inputs stop the run for
 review. The helper never replaces guard hashes just to accept changed mechanics.
 
 Automatic updates are limited to supported INSERT rows in the known base SQL files: item_basic, item_equipment,
-item_mods, item_latents, traits, blue_traits, spell_list, blue_spell_list, blue_spell_mods and augments. SQL schema
+item_mods, item_latents, traits, blue_traits, spell_list, blue_spell_list, blue_spell_mods, augments and item_usable. SQL schema
 changes need review. Changed imported Lua, including food and equipment-set scripts, also needs review. Any
 code or data change in an enabled module stops the refresh, even if that module does not name a tracked
 modifier. The workflow does not automatically accept every kind of Phoenix data change.
 
+Enabled submodule entries are fingerprinted by their Git commit without opening a private checkout.
+A changed gitlink or enabled path's ancestor stops the refresh for review too.
+
 No meaningful data changes means no release-file changes, version bump, pull request or release. A new Phoenix commit
-or changed source hashes alone do not count. A supported data change updates the generated modifier and effect
+or changed source hashes alone do not count. A supported data change updates the generated modifier, effect and recovery
 tables, their source pin, the guard snapshot's ref metadata, addon.version and CHANGELOG.md. Existing Unreleased
 notes move into the new version's notes so they are included in the draft. The helper writes a report explaining
 what changed. It reads Git objects without changing Git history or contacting GitHub. It publishes nothing.
 
-The workflow then runs source parity, both generated-data checks, tool mutation tests, the offline addon suite
-and release checks on Windows. Only after those pass does it commit those six allowed files to a branch named
+The workflow then runs source parity, all three generated-data checks, tool mutation tests, the offline addon suite
+and release checks on Windows. Only after those pass does it commit those seven allowed files to a branch named
 data-refresh-<source commit> and open a pull request into main. Any unexpected tracked changes stop the job.
 If main changes during validation, the job stops so the next run can validate the new base.
 
@@ -259,6 +280,13 @@ weekly job after that review has reached main.
 
 Release readiness
 -----------------
+
+Menu visibility uses the existing client focus pointer, with separate expanded-chat and other-menu choices.
+The primary expanded-log name reference is Mr-Sithel/infobar at
+https://github.com/Mr-Sithel/infobar/blob/5db129b6eb1d9a435934649d1e78a19cb2fc2152/infobar/modules/hide_menu.lua
+(`menu    fulllog`). Ordinary inline/chatctrl input and macro palettes are excluded; maps retain their own
+setting. A missing signature, invalid header or unreadable menu leaves the new hide rules inactive.
+This is passive client-state detection; offline coverage does not establish a live-client result.
 
 Run the complete addon suite, tool tests, source and generated-data checks, release workflow fixtures and
 preview fit gate from tests\README.txt before making an archive. Keep the current version heading in the

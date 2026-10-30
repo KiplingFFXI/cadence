@@ -137,13 +137,14 @@ do
     check('enemy diagnostics expose learned delay and bounded sample count',
         info.delay == 12 and info.samples == 3 and info.source == 'observed');
 
-    -- An interrupted spell still waits out its 2 s, and a paralyzed spell's interrupt adds nothing more.
+    -- An interrupted spell waits for observation; an already completed hold is not extended twice.
     enemy.reset();
     enemy.on_round(0, MOB, ME);
     enemy.on_hold_begin(1.0, MOB);
     enemy.on_interrupt(4.0, MOB, true);
-    _, left2 = enemy.progress(4.0, MOB);
-    check('an interrupted spell adds its 2 s', near(left2, 5.0), left2);
+    local interrupted_wait, interrupted_hold;
+    _, left2, _, _, interrupted_wait, _, interrupted_hold = enemy.progress(4.0, MOB);
+    check('an interrupted spell waits for its next observed attack', left2 == 0 and interrupted_wait and interrupted_hold == 'observing');
     enemy.reset();
     enemy.on_round(0, MOB, ME);
     enemy.on_hold_begin(1.0, MOB);
@@ -284,7 +285,7 @@ local _, pulled_left = enemy.progress(MOCK.now, 0x01000202);
 check('a pulled target counts down to its first round', windows_named('##cadence_enemy') == 1 and near(pulled_left, 2.8 - (MOCK.now - pulled_at), 0.02),
     tostring(pulled_left));
 
--- A spell interrupted by a hit still waits out its 2 s. A TP move that misses for range ends its hold.
+-- A spell interrupted by a hit waits for observation. A TP move that misses for range ends its hold.
 local SHEEP = 0x01000202;
 round_on(SHEEP, ME);
 local round_at = MOCK.now;
@@ -292,8 +293,8 @@ MOCK.now = round_at + 1;
 MOCK.fire('packet_in', MOCK.action_packet(SHEEP, 8, 0x68776163, ME, { { message = 0 } }));
 MOCK.now = round_at + 3;
 MOCK.fire('packet_in', MOCK.action_packet(SHEEP, 8, 0x68777073, ME, { { message = 0 } }));
-local _, spell_left = enemy.progress(MOCK.now, SHEEP);
-check('an interrupted spell still holds 2 s', near(spell_left, 3.0 + 2.0, 0.001), spell_left);
+local _, spell_left, _, _, spell_wait, _, spell_hold = enemy.progress(MOCK.now, SHEEP);
+check('an interrupted spell does not invent a remaining tail', spell_left == 0 and spell_wait and spell_hold == 'observing');
 round_on(SHEEP, ME);
 round_at = MOCK.now;
 MOCK.now = round_at + 1;
@@ -302,6 +303,63 @@ MOCK.now = round_at + 2;
 MOCK.fire('packet_in', MOCK.action_packet(SHEEP, 4, 0, ME, { { message = 78 } }));
 local _, missed_left = enemy.progress(MOCK.now + 10, SHEEP);
 check('a TP move that misses for range ends its hold', missed_left == 0, missed_left);
+
+-- Enemy player-weapon skills and spells share the source animation timing used by player attacks.
+local function enemy_action(category, param, animation, message)
+    MOCK.fire('packet_in', MOCK.action_packet(SHEEP, category, param, ME,
+        { { animation = animation or 0, message = message or 1 } }));
+end
+local function fresh_hold(category)
+    enemy.reset();
+    MOCK.now = MOCK.now + 30;
+    round_on(SHEEP, ME);
+    MOCK.now = MOCK.now + 1;
+    enemy_action(category, packets.CAST_BEGIN);
+    MOCK.now = MOCK.now + 2;
+end
+for _, case in ipairs({ { 32, 1, 1.5 }, { 1, 16, 1.916 }, { 68, 50, 2.833 } }) do
+    fresh_hold(7);
+    enemy_action(3, case[1], case[2], 185);
+    local _, remaining = enemy.progress(MOCK.now, SHEEP);
+    check('enemy weapon skill ' .. case[1] .. ' uses its source animation', near(remaining, 3 + case[3]), remaining);
+end
+for _, case in ipairs({ { 57, 2 }, { 793, 1 }, { 830, 4 } }) do
+    fresh_hold(8);
+    enemy_action(4, case[1], 0, 230);
+    local _, remaining = enemy.progress(MOCK.now, SHEEP);
+    check('enemy spell ' .. case[1] .. ' uses its source animation', near(remaining, 3 + case[2]), remaining);
+end
+for _, case in ipairs({ { 3, 68, 214 }, { 3, 65535, 1 }, { 4, 65535, 0 } }) do
+    fresh_hold(case[1] == 4 and 8 or 7);
+    enemy_action(case[1], case[2], case[3]);
+    local _, remaining, _, _, wait, _, hold = enemy.progress(MOCK.now + 10, SHEEP);
+    check('unvalidated enemy action ' .. case[1] .. '/' .. case[2] .. '/' .. case[3] .. ' waits for observation',
+        remaining == 0 and wait and hold == 'observing');
+    round_on(SHEEP, ME);
+    _, remaining, _, _, wait, _, hold = enemy.progress(MOCK.now, SHEEP);
+    check('an observed enemy attack resolves unknown action timing', near(remaining, 4) and not wait and hold == nil);
+end
+for _, message in ipairs({ 84, 106 }) do
+    fresh_hold(8);
+    enemy_action(4, 57, 0, message);
+    local _, remaining, _, _, _, _, hold = enemy.progress(MOCK.now, SHEEP);
+    check('a failed enemy spell finish preserves its pending hold ' .. message, near(remaining, 3) and hold == 'spell');
+    enemy_action(8, packets.CAST_INTERRUPT);
+    local _, _, _, _, wait, _, interrupted = enemy.progress(MOCK.now, SHEEP);
+    check('the paired enemy spell interrupt waits for observation ' .. message, wait and interrupted == 'observing');
+    fresh_hold(7);
+    enemy_action(3, 32, 1, message);
+    _, remaining, _, _, _, _, hold = enemy.progress(MOCK.now, SHEEP);
+    check('a failed enemy weapon skill cannot invent a recovery tail ' .. message, near(remaining, 3) and hold == 'tp_move');
+end
+fresh_hold(7);
+enemy_action(11, 123, 0, 185);
+local _, tp_left = enemy.progress(MOCK.now, SHEEP);
+check('monster-specific TP moves retain their two-second estimate', near(tp_left, 5));
+fresh_hold(7);
+MOCK.fire('packet_in', MOCK.action_packet(SHEEP, 3, 32, nil, nil));
+local _, empty_left, _, _, _, _, empty_hold = enemy.progress(MOCK.now, SHEEP);
+check('an empty enemy skill packet cannot finish its pending hold', near(empty_left, 3) and empty_hold == 'tp_move');
 
 -- Attached under the auto attack timer.
 MOCK.player.target_index = 0x200;

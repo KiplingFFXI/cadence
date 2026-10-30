@@ -4,8 +4,8 @@ local theme = require('ui.theme');
 local hud = require('ui.hud');
 local chat_colors = require('ui.chat_colors');
 local preview = {};
-local keys = { 'attack', 'resting', 'enemy' };
-local labels = { attack = 'AUTO ATTACK', resting = 'RESTING', enemy = 'ENEMY ATTACK' };
+local keys = { 'attack', 'resting', 'enemy', 'recovery', 'enemycast' };
+local labels = { attack = 'AUTO ATTACK', resting = 'RESTING', enemy = 'ENEMY ATTACK', recovery = 'ACTION RECOVERY', enemycast = 'ENEMY CAST' };
 local blocks = { attack = 'casting', resting = 'diseased', enemy = 'casting' };
 local cache = {};
 local point, edge, space = { 0, 0 }, { 0, 0 }, { 0, 0 };
@@ -36,11 +36,12 @@ local function build(settings, state)
                 if (timer.show_tp) then
                     lines[#lines + 1] = ('640 TP / %d%s'):format(timer.tp_goal, timer.show_tp_rounds and '  ~2 rounds' or '');
                     if (timer.show_tp_hits) then lines[#lines + 1] = '5 successful hits'; end
-                    if (timer.show_tp_time) then lines[#lines + 1] = '~7.6s to TP goal'; end
+                    if (timer.show_tp_time and state ~= 'unknown') then lines[#lines + 1] = '~7.6s to TP goal'; end
                 end
                 if (state == 'blocked' and timer.show_why and not timer.show_value) then lines[#lines + 1] = blocks[key]; end
                 if (state == 'waiting' and timer.show_reason) then lines[#lines + 1] = 'too far'; end
             elseif (key == 'resting') then
+                if (state ~= 'unknown') then
                 if (timer.show_gains and state ~= 'blocked') then lines[#lines + 1] = '+24 HP  +31 MP'; end
                 if (timer.show_next_gains and state ~= 'blocked') then lines[#lines + 1] = 'Next: +25 HP  +32 MP est.'; end
                 if (timer.show_until_full and state ~= 'blocked') then lines[#lines + 1] = state == 'full' and 'Full HP/MP' or '~28s until full'; end
@@ -51,6 +52,11 @@ local function build(settings, state)
                     lines[#lines + 1] = timer.goal_stat:upper() .. ' ' .. target .. (timer.goal_stat == 'hp' and '  ~16s' or '  ~28s');
                 end
                 if (state == 'blocked' and timer.show_why and not timer.show_value) then lines[#lines + 1] = blocks[key]; end
+                end
+            elseif (key == 'recovery') then
+                if (timer.show_source) then lines[#lines + 1] = state == 'unknown' and 'Action' or 'Spell'; end
+            elseif (key == 'enemycast') then
+                if (timer.show_spell) then lines[#lines + 1] = 'Firaga III'; end
             else
                 if (timer.show_name) then lines[#lines + 1] = 'Sample enemy'; end
                 if (timer.show_delay) then lines[#lines + 1] = 'Attack speed ~4.2s'; end
@@ -88,7 +94,9 @@ function preview.draw(settings, state, edited)
         end
         local bar = timer.numbers_only and 0 or math.max(1, timer.bar_height * text_scale);
         local has_label = style.show_labels and timer.show_label;
-        local top_height = math.max(has_label and label_size or 0, timer.show_value and size or 0);
+        local casting_wait = row.key == 'enemycast' and (state == 'waiting' or state == 'full' or state == 'unknown');
+        local has_value = timer.show_value or casting_wait or state == 'unknown';
+        local top_height = math.max(has_label and label_size or 0, has_value and size or 0);
         local height = 16 * height_scale + top_height + (bar > 0 and bar + 6 * height_scale or 0)
             + #row.lines * (detail_size + 4 * height_scale);
         local x, y = imgui.GetCursorScreenPos(); x, y = x or 0, y or 0;
@@ -100,13 +108,19 @@ function preview.draw(settings, state, edited)
         if (style.accent) then list:AddRectFilled(pos(point, x, y), pos(edge, x + 3, y + height), theme.u32(style.accent_color)); end
         local left, right, top = x + 8, x + width - 8, y + 8 * height_scale;
         local value, ink = '2.4', style.value_color;
-        if (state == 'full') then
+        if (row.key == 'recovery') then
+            value = state == 'unknown' and 'Unknown' or '~1.5s';
+        elseif (row.key == 'enemycast') then
+            value = casting_wait and 'waiting' or '~2.4s';
+        elseif (state == 'unknown') then
+            value = row.key == 'resting' and 'Observing' or row.key == 'attack' and 'recovery unknown' or 'waiting';
+        elseif (state == 'full') then
             value = row.key == 'resting' and 'full' or 'ready';
             ink = timer.ready_color or timer.full_color;
         elseif (state == 'waiting') then value = 'waiting';
         elseif (state == 'blocked') then value = blocks[row.key]; end
         local value_x = right;
-        if (timer.show_value) then
+        if (has_value) then
             imgui.PushFont(face, size);
             local value_width = imgui.CalcTextSize(value);
             imgui.PopFont();
@@ -123,10 +137,11 @@ function preview.draw(settings, state, edited)
         top = top + top_height + 6 * height_scale;
         if (bar > 0) then
             list:AddRectFilled(pos(point, left, top), pos(edge, right, top + bar), theme.u32(style.track_color));
-            local fill = state == 'full' and 1 or 0.6;
-            if (style.bar_drains and state ~= 'full') then fill = 1 - fill; end
-            local start = state == 'full' and (timer.ready_color or timer.full_color) or timer.fill_start;
-            local finish = state == 'full' and start or timer.fill_end;
+            local full = state == 'full' and row.key ~= 'recovery' and row.key ~= 'enemycast';
+            local fill = (full or casting_wait) and 1 or state == 'unknown' and 0 or 0.6;
+            if (style.bar_drains and not full) then fill = 1 - fill; end
+            local start = full and (timer.ready_color or timer.full_color) or timer.fill_start;
+            local finish = full and start or timer.fill_end;
             list:AddRectFilledMultiColor(pos(point, left, top), pos(edge, left + (right - left) * fill, top + bar),
                 theme.u32(start), theme.u32(finish), theme.u32(finish), theme.u32(start));
             if (timer.almost_ready and timer.almost_mark) then

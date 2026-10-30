@@ -6,9 +6,10 @@
     first attack comes 2.8 to 3.2 s after the server sees you engage. The bar uses the soonest, 2.8 s.
     Each attack adds your weapon delay to a timer that drains in 0.4 s server ticks. Leftover time
     carries over. A single gap can be up to 0.4 s off. The gaps average out to your exact delay.
-    Job abilities and weapon skills hold the timer for 2 s.
-    Spells, items and ranged attacks hold it while they run. Then it waits 2 s more after a spell,
-    0.8 s after a ranged attack and one 0.4 s tick after an item.
+    Job abilities and weapon skills hold it for their validated animation time.
+    Spells, items and ranged attacks hold it while they run. Their validated animation time follows,
+    usually 2 s after a spell and 0.8 s after a ranged attack. A zero-tail item waits one server tick.
+    Unknown action timing stays unknown until another accepted action or attack supplies new evidence.
     Sleep, stun, petrification, terror, Lullaby and a penalty stop it. It picks up where it left off
     once they wear off.
     Switching targets keeps it running while you stay engaged. Disengaging ends that timer.
@@ -55,6 +56,8 @@ local state = {
     reason         = nil,   -- What that message said, like 'too far' or 'not facing'.
     held_since     = nil,   -- Set while a spell, item or ranged attack holds the timer.
     held_by        = nil,   -- 'spell', 'ranged' or 'item'.
+    unknown_action_hold = false,
+    unknown_remaining = nil,
     hold_ended     = nil,   -- When the last spell, item or ranged attack ended.
     disabled_since = nil,   -- Set while sleep, stun or the like stops the timer.
     disabled_by    = nil,   -- The buff id of what stops it.
@@ -70,6 +73,16 @@ local state = {
 
 local retained = { active = false };
 local retained_view = {};
+
+local function action_seconds(seconds, fallback)
+    if (seconds == false) then return false; end
+    if (type(seconds) == 'number' and seconds == seconds and seconds >= 0 and seconds < math.huge) then return seconds; end
+    return fallback;
+end
+
+local function clear_unknown_hold()
+    state.unknown_action_hold, state.unknown_remaining = false, nil;
+end
 
 -- The gaps learned with the last few keys. Zoning keeps them, and so does a buff that wears off and
 -- lands again. Another character logging in clears them.
@@ -165,6 +178,7 @@ end
 -- `initial_delay` is the model before drawn-weapon latents apply, or false when it isn't known.
 function attack.engage(now, estimate, loadout_key, joined_late, initial_delay)
     attack.cancel_reengage();
+    clear_unknown_hold();
     use_loadout(loadout_key);
     state.reused         = learned_delay(state.intervals) ~= nil;
     state.active         = true;
@@ -202,7 +216,7 @@ function attack.disengage(now, enabled, context)
         retained.expires = now + (duration and duration + REENGAGE_ELAPSED_SECONDS or REENGAGE_UNKNOWN_SECONDS);
         retained.sampled_delay = state.sampled_delay;
         retained.sampled_at = state.sampled_at;
-        retained.remaining = not state.joined_late and state.next_attack
+        retained.remaining = not state.unknown_action_hold and not state.joined_late and state.next_attack
             and math.max(0, state.next_attack - (state.held_since or state.disabled_since or now)) or nil;
         retained.held_by = state.held_since and state.held_by or nil;
         retained.disabled_by = state.disabled_since and state.disabled_by or nil;
@@ -211,6 +225,7 @@ function attack.disengage(now, enabled, context)
         retained.cause = context and context.cause or nil;
     end
     state.active         = false;
+    clear_unknown_hold();
     state.held_since     = nil;
     state.held_by        = nil;
     state.hold_ended     = nil;
@@ -267,6 +282,7 @@ function attack.on_round(now, estimate, loadout_key, sampled_known, transition)
     state.sampled_at     = state.sampled_delay and now or nil;
     state.last_attack    = now;
     state.next_attack    = now + state.delay;
+    clear_unknown_hold();
     state.joined_late    = false;
     state.held_since     = nil;
     state.held_by        = nil;
@@ -280,14 +296,20 @@ function attack.on_round(now, estimate, loadout_key, sampled_known, transition)
     state.reason  = nil;
 end
 
--- A job ability or weapon skill went off.
-function attack.on_ability(now)
+-- A job ability or weapon skill went off. False means its attack hold is unknown.
+function attack.on_ability(now, seconds)
     if (not state.active) then
         return;
     end
 
-    local remaining   = math.max(state.next_attack - now, 0);
-    state.next_attack = now + remaining + ABILITY_HOLD_SECONDS;
+    local remaining = state.unknown_action_hold and state.unknown_remaining or math.max(state.next_attack - now, 0);
+    seconds = action_seconds(seconds, ABILITY_HOLD_SECONDS);
+    if (seconds == false) then
+        state.unknown_action_hold, state.unknown_remaining = true, remaining;
+    else
+        clear_unknown_hold();
+        state.next_attack = now + remaining + seconds;
+    end
     state.clean       = false;
     state.reason      = nil;
 end
@@ -298,7 +320,7 @@ end
     and ranged attacks send it too. Those already hold the timer.
 ]]
 function attack.on_paralyzed(now, estimate, loadout_key, sampled_known, transition)
-    if (not state.active or state.held_since ~= nil) then
+    if (not state.active or state.held_since ~= nil or state.unknown_action_hold) then
         return;
     end
     if (state.hold_ended ~= nil and now - state.hold_ended < SAME_TICK) then
@@ -332,19 +354,29 @@ function attack.on_cast_begin(now, kind)
         return;
     end
 
+    if (state.unknown_action_hold) then
+        state.next_attack = now + state.unknown_remaining;
+        clear_unknown_hold();
+    end
     state.held_since = now;
     state.held_by    = kind;
     state.clean      = false;
 end
 
--- The spell, item or ranged attack finished or was interrupted.
-function attack.on_cast_end(now)
+-- The spell, item or ranged attack finished or was interrupted. False keeps its hold unknown.
+function attack.on_cast_end(now, seconds)
     if (not state.active or state.held_since == nil) then
         return;
     end
 
     local remaining   = math.max(state.next_attack - state.held_since, 0);
-    state.next_attack = now + remaining + CAST_HOLD_SECONDS[state.held_by];
+    seconds = action_seconds(seconds, CAST_HOLD_SECONDS[state.held_by]);
+    if (seconds == false) then
+        state.unknown_action_hold, state.unknown_remaining = true, remaining;
+    else
+        clear_unknown_hold();
+        state.next_attack = now + remaining + seconds;
+    end
     state.held_since  = nil;
     state.hold_ended  = now;
     state.reason      = nil;
@@ -358,6 +390,7 @@ end
 -- The server said you can't attack. The timer waits at zero until you can. `reason` is what to show
 -- instead of "ready", like 'too far' or 'not facing', or nil.
 function attack.on_out_of_reach(reason)
+    clear_unknown_hold();
     state.clean   = false;
     state.stalled = true;
     state.reason  = reason;
@@ -390,8 +423,9 @@ end
 --[[
     Returns how full the bar is (0..1), the seconds until the next attack, the delay in use, why you
     aren't attacking when the server said so, and what stopped the timer. That's 'spell', 'ranged' or
-    'item' while one holds it, or the buff id of sleep and the like. The seconds are nil until the
-    first attack of a fight cadence joined late. Returns nil when you are not engaged.
+    'item' while one holds it, 'recovery' for an unknown action hold, or the buff id of sleep and the
+    like. The seconds are nil while recovery or a joined-late fight's phase is unknown.
+    Returns nil when you are not engaged.
 ]]
 function attack.progress(now)
     if (not state.active) then
@@ -399,7 +433,9 @@ function attack.progress(now)
     end
 
     -- Sleep and the like come first. They cut a spell off.
-    local why = (state.disabled_since and state.disabled_by) or (state.held_since and state.held_by);
+    local why = (state.disabled_since and state.disabled_by) or (state.held_since and state.held_by)
+        or (state.unknown_action_hold and 'recovery') or nil;
+    if (state.unknown_action_hold) then return 0, nil, state.delay, state.reason, why; end
     if (state.joined_late) then
         return 0, nil, state.delay, state.reason, why;
     end
@@ -474,6 +510,7 @@ end
 -- Zoning. What was learned stays. Your gear came with you.
 function attack.reset()
     attack.cancel_reengage();
+    clear_unknown_hold();
     state.active         = false;
     state.last_attack    = nil;
     state.next_attack    = nil;
@@ -525,7 +562,7 @@ function attack.info(now, next_estimate, next_key)
         samples = #state.intervals, accepted = state.accepted, rejected = state.rejected,
         sample_age = state.sample_at and math.max(0, now - state.sample_at) or nil,
         sample_min = minimum, sample_max = maximum, last_rejection = state.last_rejection,
-        holding = state.held_since and state.held_by or nil,
+        holding = state.unknown_action_hold and 'recovery' or (state.held_since and state.held_by or nil),
         disabled = state.disabled_since and state.disabled_by or nil, reason = state.reason,
         stalled = state.stalled, joined_late = state.joined_late,
         sampled_delay = state.sampled_delay, sampled_at = state.sampled_at,
@@ -537,8 +574,8 @@ function attack.info(now, next_estimate, next_key)
             remaining = retained.remaining, holding = retained.held_by, disabled = retained.disabled_by,
             stalled = retained.stalled, last_target = retained.last_target, cause = retained.cause,
         } or nil,
-        overdue = state.active and state.next_attack ~= nil and now > state.next_attack,
-        next_in = state.next_attack and math.max(0, state.next_attack - now) or nil,
+        overdue = state.active and not state.unknown_action_hold and state.next_attack ~= nil and now > state.next_attack,
+        next_in = not state.unknown_action_hold and state.next_attack and math.max(0, state.next_attack - now) or nil,
     };
 end
 

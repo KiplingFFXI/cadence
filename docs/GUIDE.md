@@ -10,14 +10,16 @@
 - [Timers](#timers-tab), [Enemy](#enemy-tab) and [Appearance](#appearance-tab)
 - [Preview](#preview-tab), [Details](#details-tab) and [Profiles](#profiles-tab)
 - [How the auto attack timer works](#how-the-auto-attack-timer-works)
+- [How the action recovery timer works](#how-the-action-recovery-timer-works)
 - [How the resting timer works](#how-the-resting-timer-works)
 - [How the enemy attack timer works](#how-the-enemy-attack-timer-works)
+- [How the enemy cast bar works](#how-the-enemy-cast-bar-works)
 - [How the TP line works](#how-the-tp-line-works)
 - [What cadence reads and saves](#what-cadence-reads)
 - [Files](#files)
 - [License](#license)
 
-cadence is an Ashita v4 addon for the Phoenix FFXI private server. It shows an auto attack timer that counts down to your next attack, with your TP under it. It also counts down to your next resting tick. If you turn it on, it shows when a monster will attack next. You can restyle the timers, and you move them by holding Shift and dragging.
+cadence is an Ashita v4 addon for Phoenix. It shows auto attack and resting timers, TP estimates, and optional action recovery, enemy attack and enemy cast bars. You can restyle the timers, and you move them by holding Shift and dragging.
 
 Its starting estimates use Phoenix's timing rules and the bonuses your game can identify. Your observed attacks and recovery refine them. Missing information stays marked as estimated.
 
@@ -29,8 +31,11 @@ Its starting estimates use Phoenix's timing rules and the bonuses your game can 
 - **Your TP.** A line under the auto attack bar shows your TP. Next to it is about how many rounds until your chosen goal of 1000, 2000 or 3000, from how much TP your hits really give and what being hit or Regain has been adding. An optional line shows the successful hits your own attacks still need.
 - **Resting timer.** A countdown to your next HP and MP tick while you /heal. Resting ticks on Phoenix land 9, 9 and 12 seconds apart instead of every 10. cadence follows that pattern by watching your real ticks. It also shows what your last tick restored, and says "full" once your HP and MP are topped off.
 - **Enemy attack timer (off by default).** Shows when a monster will attack next, from the attack packets your game already gets. It follows your target or whoever is hitting you, and counts Slow, Elegy, Haste and Hundred Fists on the monster. It also shows observed Sleep, Stun, Petrification and Terror, and waits for a real attack after those end. It can sit under your auto attack timer as a slim strip.
+- **Action recovery (off by default).** Estimates the short recovery after spells, weapon skills, ranged attacks, Super Jump and supported items. Move its card freely or attach it below auto attack. Unverified recovery shows Unknown.
+- **Enemy cast bar (off by default).** Shows the followed monster's spell and estimated cast time. Place it freely or attach it below enemy attack. It waits for an observed finish or interruption after the estimate runs out.
 - **Full look controls.** Start from one of eight skins: Phoenix, Classic FFXI, Minimal, High contrast, Ember, Mint, Lavender and Colorblind safe. Then change any color, the corner roundness, the font, the overall size and the size of the numbers, names and small text. Add a text shadow or outline, and choose the card's background, border and accent stripe. Set each timer's width, overall height and bar thickness. Hide a timer's name, or type your own. Bars can fill or drain, or you can keep only the text. The default look matches the Phoenix site and launcher.
 - **Extras you can switch on or off.** An "almost ready" color for the last moment before an attack, with a mark on the bar where it starts. A flash on each resting tick. A sound once resting fills your HP and MP, one of the two that come with cadence or an .mp3 or .wav of your own. Time until full on the resting timer, like "full in 28s", or when your HP and MP will each be full. Hiding the resting timer once you're full. A shared spot so both timers use one place on screen. Hiding during cutscenes and NPC conversations, while the map is open or while you've hidden the game's interface.
+- **Menu visibility.** Hide all or selected timers for the full-screen chat log and other menus, with a separate choice for each. Timers keep tracking while hidden. Ordinary typing and macro palettes leave them visible.
 - **Settings for each character, or one layout for all.** Ashita saves your settings for each character. Tick "One layout for all characters" and every character uses the same setup.
 - **Profiles and starter layouts.** Save your setup under a name, like "Solo BLM", and load it again on any character. Link a profile to a main job and it loads when you change to that job. Or preview a Minimal, Melee / TP, Resting or Enemy tracking starter layout before applying it. Using and Modified from show which setup you started with. Undo delete and Undo overwrite can recover your last saved-profile change during this session.
 - **Settings Undo.** Undo last change keeps up to eight recent settings edits, including timer moves, colors, profile loads, starter layouts and section resets. One continuous drag is one change.
@@ -54,14 +59,26 @@ To update, type `/addon unload cadence` first, or close the game. Then delete yo
 |---|---|
 | `/cadence` | Opens or closes the settings window. |
 | `/cadence attack [on\|off]` | Turns the auto attack timer on or off. |
+| `/cadence recovery [on\|off]` | Turns the Action recovery timer on or off. It starts off and hides automatically when its estimate ends. |
+| `/cadence recovery attach [on\|off]` | Attaches recovery under auto attack so they share width and move together. Without a value, toggles attachment. |
+| `/cadence recovery seconds\|source\|numbers\|label [on\|off]` | Shows seconds, the action name, text only or the timer's label. |
+| `/cadence recovery width\|height\|barheight <number>` | Sets width, overall height or bar thickness, using the same ranges as the other timers. |
+| `/cadence recovery labeltext <text>` | Sets a custom name for the Action recovery timer. |
+| `/cadence preview recovery` | Shows the Action recovery sample for arranging and styling it. |
 | `/cadence attack reengage [on\|off]` | Turns the re-engage timer on or off. Without a value, toggles it. The bar hides automatically after the estimate ends. |
 | `/cadence resting [on\|off]` | Turns the resting timer on or off. |
 | `/cadence enemy [on\|off]` | Turns the enemy attack timer on or off. |
+| `/cadence enemycast [on\|off]` | Turns the enemy cast bar on or off. It starts off. |
+| `/cadence enemycast attach [on\|off]` | Attaches casting under the enemy attack timer and shares its width and movement. |
+| `/cadence enemycast seconds\|spell\|numbers\|label [on\|off]` | Shows estimated seconds, spell name, text only or the timer's label. |
+| `/cadence enemycast width\|height\|barheight <number>` | Sets the cast bar's width, overall height or bar thickness. |
+| `/cadence enemycast labeltext <text>` | Gives the cast bar a custom name. |
+| `/cadence preview enemycast` | Shows a sample enemy cast for arranging it. |
 | `/cadence attack <part> [on\|off]` | Turns one box of the auto attack timer on or off, like `/cadence attack tp off`. The parts are `seconds` (Seconds left), `delay` (Weapon delay), `reengage` (Show re-engage timer), `tp` (Your TP), `rounds` (Rounds to goal), `hits` (Successful hits), `time` (Time to TP goal), `numbers` (Text only), `mark` (Ready mark), `almost` (Almost ready), `range` (Range / facing), `why` (Why it stopped) and `label` (Show its name, the box in front of its label on the Appearance tab). |
 | `/cadence resting <part> [on\|off]` | The same for the resting timer. The parts are `seconds` (Seconds left), `gains` (Last tick gains), `nextgains` (Next tick gains), `untilfull` (Time until full), `fulltimes` (Full times), `ticks` (Ticks until full), `goal` (Recovery goal), `numbers` (Text only), `hidefull` (Hide once full), `flash` (Flash on each tick), `why` (Why it can't heal), `sound` (Sound, the box in front of the Sound list) and `label` (Show its name). |
 | `/cadence enemy <part> [on\|off]` | The same for the enemy attack timer. The parts are `keeplast` (Keep the last monster), `attach` (Attach under auto attack), `seconds` (Seconds left), `name` (Enemy name), `speed` (Attack speed), `effects` (Slow and haste), `tpmove` (TP move / casting), `onyou` (On you), `numbers` (Text only), `mark` (Ready mark), `almost` (Almost ready) and `label` (Show its name). |
 | `/cadence resting goal hp\|mp\|both percent\|amount <number>` | Picks and shows a recovery goal, such as `/cadence resting goal mp amount 300` or `/cadence resting goal hp percent 75`. |
-| `/cadence preview auto\|attack\|resting\|enemy [normal\|blocked\|waiting\|full]` | Opens settings with the selected sample. `auto` uses live timers where available. |
+| `/cadence preview auto\|attack\|resting\|enemy\|recovery\|enemycast [state]` | Opens settings with the selected sample. Recovery supports `normal` and `unknown`; enemy cast supports `normal` and `waiting`. Other timers support `normal`, `blocked`, `waiting` and `full`. `auto` uses live timers where available. |
 | `/cadence preview pause\|resume` | Stops or starts the sample animation. Live timers keep running. |
 | `/cadence preview inline [on\|off]` | Opens Appearance and shows or hides its embedded sample timers and chat colors. This sample preference lasts for the session and changes no live timer. |
 | `/cadence layout minimal\|melee\|resting\|enemy` | Applies a starter set of timer readouts. Keeps your styling, positions, targets, sounds, enemy-following choices and saved profiles. Undo takes it back. |
@@ -73,11 +90,13 @@ To update, type `/addon unload cadence` first, or close the game. Then delete yo
 | `/cadence relearn attack\|tp\|enemy` | Starts fresh observations for your current attack timing, TP gains or followed enemy. The running countdown keeps its place. |
 | `/cadence attack goal 1000\|2000\|3000` | Picks the TP goal for the counts and ready color. |
 | `/cadence enemy follow first\|target\|hits` | Sets Follows to My target first, My target only or Whoever hits me. |
-| `/cadence attack\|resting\|enemy <slider> <number>` | Sets one of that timer's sliders, like `/cadence attack width 300`. Every timer has `width` (Width, 120 to 640), `height` (Height, 0.5 to 2.5 times normal) and `barheight` (Bar height, 2 to 32). The auto attack and enemy timers have `almostat` (Almost ready at, 0.1 to 2.0 seconds), and the resting timer has `flashlength` (Flash length, 0.2 to 1.5 seconds) and `soundvolume` (Volume, 0 to 100). |
+| `/cadence attack\|resting\|enemy\|recovery\|enemycast <slider> <number>` | Sets one of that timer's sliders, like `/cadence attack width 300`. Every timer has `width` (Width, 120 to 640), `height` (Height, 0.5 to 2.5 times normal) and `barheight` (Bar height, 2 to 32). The auto attack and enemy timers have `almostat` (Almost ready at, 0.1 to 2.0 seconds), and the resting timer has `flashlength` (Flash length, 0.2 to 1.5 seconds) and `soundvolume` (Volume, 0 to 100). |
 | `/cadence attack\|resting\|enemy labeltext <text>` | Types that timer's label, the same as its box under LABELS on the Appearance tab, like `/cadence attack labeltext AA`. It needs no quotes, and keeps up to 23 characters from an English keyboard. `/cadence attack labeltext ""` puts the timer's own name back. |
 | `/cadence resting soundfile <name>` | Picks the sound that plays once resting fills your HP and MP, the same as the Sound list on the Timers tab, like `/cadence resting soundfile ff ix moogle`. It's one of the two sounds that come with cadence or one of the .mp3 and .wav files in `config\addons\cadence\sounds\`, with or without its .mp3 or .wav. Capital letters don't matter, and the name needs no quotes. cadence looks in the folder again first, so a file you just put there works. |
 | `/cadence resting playsound` | Same as Play. Plays the sound now at its volume, even with the sound turned off. |
 | `/cadence hideevents\|hidemap\|hideui [on\|off]` | Sets Hide during events, Hide on the map or Hide with the game UI. |
+| `/cadence visibility chat\|menus off\|all\|selected` | Chooses which timers hide for the full-screen chat log or other menus. Each condition has its own choice. |
+| `/cadence visibility chat\|menus attack\|resting\|enemy\|recovery\|enemycast on\|off` | Selects whether that timer hides and switches the condition to Selected timers. `on` means hide this timer. |
 | `/cadence <word> [on\|off]` | Sets a box on the Appearance tab. The words are `windowlook` (Window matches the look), `labels` (Show labels), `background`, `border`, `accent` (Accent stripe), `outline` (Text outline), `shadow` (Text shadow), `drain` (Drain instead of fill), `onespot` (Share one spot), `onelayout` (One layout for all characters) and `peek` (Peek with Shift). |
 | `/cadence <slider> <number>` | Sets a slider on the Appearance tab. The sliders are `scale` (Scale, 0.5 to 2.5), `textsize` (Text size, 10 to 28), `detailsize` (Detail size, 8 to 32 or `auto`), `labelsize` (Label size, 8 to 32 or `auto`) and `corners` (Corner roundness, 0 to 12). |
 | `/cadence color <what> <rrggbb>` | Sets one of the timers' colors, the same as its swatch, like `/cadence color attack_ready ffffff`. Two more digits set how solid it is, from `00` for clear to `ff` for solid, like `c55151cc`. A timer's color starts with its word, like `attack_tp` or `enemy_on_you`. The Appearance tab's are `background`, `border`, `accent`, `labels`, `values`, `details`, `bar_track` and `outline`. `/cadence help colors` lists them all. |
@@ -103,7 +122,7 @@ To update, type `/addon unload cadence` first, or close the game. Then delete yo
 | `/cadence lock` / `unlock` | Stops or allows moving the timers with Shift + drag. |
 | `/cadence reset` | Puts the timers back where they started. On a screen too short for them, they start higher up. |
 | `/cadence reset look` | Same as Reset look. `/cadence undo` takes it back. |
-| `/cadence resetsection <name>` | Resets `attack`, `resting`, `timers`, `enemy`, `appearance`, `window`, `windowcolors`, `preview` or `profiles`. Keeps timer positions, custom labels and saved profiles. `profiles` clears only your job links. Undo takes a section reset back. |
+| `/cadence resetsection <name>` | Resets `attack`, `resting`, `recovery`, `timers`, `enemy`, `enemycast`, `visibility`, `appearance`, `window`, `windowcolors`, `preview` or `profiles`. Keeps timer positions, custom labels and saved profiles. `visibility` restores both menu choices; `profiles` clears only your job links. Undo takes a section reset back. |
 | `/cadence reset all` | Puts every setting back to its default, including where the timers sit and which ones are on, and clears your job links. Type it twice within 10 seconds. Undo can't take it back. Your saved profiles stay. The settings window keeps its spot and size, and One layout for all characters stays as it is. While that's on, every character gets the defaults. |
 | `/cadence hide` | Hides the timers until you type it again. `/cadence show` and Show them in the settings window bring them back too. It isn't saved, so they also come back when the addon reloads or the game restarts. |
 | `/cadence info` | Says in chat what cadence has worked out about you right now. That's the version, your auto attack delay and where it came from, how many learned delays are saved, your TP per hit, and whether the resting timer knows the 9, 9, 12 pattern. In a fight, with the auto attack timer and Your TP on, it also says about how much more TP a round has lately come from things like being hit or Regain, when that's at least 1. Out of a fight, the delay is the one your next fight starts on. It says nothing about monsters. If a timer looks off, paste these lines into your bug report. |
@@ -117,6 +136,8 @@ Saved timer and appearance settings have commands too. Search, folds and readout
 ## Moving and styling
 
 Hold Shift and drag any timer to move it. Drag its right edge to change its width, its bottom edge to change its overall height, or the bottom right corner for both. Changing height scales that timer's text, spacing and bar together while keeping its width. It works with Text only too. Bar height in settings still changes just the colored bar's thickness. The timer under your mouse gets an outline while Shift is down. Shift does nothing to the timers while you type in the game's chat line, so capital letters can't grab one. The enemy strip attached under the auto attack timer moves with that timer and takes its width.
+
+Dragging an attached timer's body moves the group, including when its host is idle and hidden. Its bottom edge changes only that timer's height. Width comes from the host. Turning the host off restores the child's own saved position and width; its attached children follow it there.
 
 Each timer's Height slider goes from 0.5x to 2.5x. Set it to 1.00x to restore its normal height, or type `/cadence resting height 1` for the resting timer. A height change affects only that timer and can be undone.
 
@@ -140,6 +161,7 @@ Readouts use compact rows. Enabled only hides unchecked rows from the list witho
 |---|---|
 | Your TP | On by default. Shows your TP under the auto attack bar. It turns the color you pick once you reach your TP goal. |
 | Show re-engage timer | Off by default. Shows an estimated re-engage countdown on the auto attack card after combat ends, then hides automatically. |
+| Action recovery | Off by default. Shows recovery after supported completed actions, or Unknown when the duration is unverified. Expand Recovery options for attachment, its action name, seconds, size and colors. |
 | Rounds to goal | On by default. Shows about how many rounds until your TP goal, next to your TP. TP from being hit and from Regain counts too. |
 | TP goal | Choose 1000, 2000 or 3000 for the counts and ready color. |
 | Successful hits | Off by default. Adds the normal hits your own attacks still need, before TP from other sources. |
@@ -160,11 +182,19 @@ Readouts use compact rows. Enabled only hides unchecked rows from the list witho
 | Refresh | Looks in the sounds folder again, so a file you just put there shows up in the list. cadence also looks each time the settings window opens. |
 | Volume | How loud the sound plays, from 0 to 100. It's 100 by default. |
 | Play | Plays the sound now, so you can hear it. It works with the box off too. If the file won't open or play, a note under Play says so. Chat says so too when you turn Sound on, pick the file while Sound is on, or press Play. |
-| Hide during events | On by default. Hides the timers during cutscenes and NPC conversations, the same way XIUI's "Hide During Events" does. The settings window hides too and comes back when the event ends. Shop windows, the auction house and fishing aren't events, so nothing hides while they're open. Map sellers and conquest guards sell through a conversation, so cadence hides there. |
+| Hide during events | On by default. Hides the timers during cutscenes and NPC conversations. The settings window hides too and comes back when the event ends. Shop windows and the auction house follow Other menus instead; fishing does not count as an event. Map sellers and conquest guards sell through a conversation, so cadence hides there. |
 | Hide on the map | On by default. Hides the timers and the settings window while any map view is open, like XIUI does. The widescan list doesn't count as a map. |
 | Hide with the game UI | On by default. Hides the timers and the settings window while you've hidden the game's interface (Scroll Lock by default), like XIUI does. |
 
+Under **Timers > ALL TIMERS > Menu visibility**, set **Full-screen chat log** and **Other menus** independently to **Off**, **All timers**, or **Selected timers**. Both start at All timers. Selected timers lets you choose Auto attack, Resting, Enemy attack, Action recovery and Enemy cast separately. Selecting none leaves every timer visible. Reset menu visibility restores both conditions to All timers; Undo can restore your choices.
+
+Other menus includes inventory, equipment, and magic or ability menus. Ordinary chat typing, the chat-mode selector and macro palettes do not trigger these rules. Maps still follow Hide on the map; cutscenes and NPC conversations follow Hide during events. Those existing global switches take priority. If menu detection is unavailable, these controls are greyed out and leave timers visible.
+
+Only the chosen timer displays hide. Their observations, countdowns and resting completion sound keep running, and the bars return when the menu closes. Attached timers have independent hide choices, so hiding a parent does not hide an unselected child. The settings window stays available while changing these menu rules. Choices are saved with profiles and shared layouts.
+
 ### Enemy tab
+
+Enemy attack and Enemy cast have separate toggles and options. Both use Follows and Keep the last monster, including when only the cast bar is on. Cast options includes Attach under enemy attack, Seconds left, Spell name, Text only, label controls, width, height, bar thickness and fill colors.
 
 | Option | What it does |
 |---|---|
@@ -201,7 +231,7 @@ Window and Window colors each have their own collapsible section, and the color 
 | One layout for all characters | Every character uses the same timer setup. Each character's own layout is kept, and shared changes don't replace it. With two characters logged in at once, the last shared change saved wins. When you turn it off, this character keeps the shared layout and the others go back to their own. Job links and hidden-tab choices stay with each character and save to that character's own file either way. |
 | Peek with Shift | On by default. While the settings window is open, hold Shift and it goes see-through. Clicks pass through it too, so you can see and drag a timer that's under it. A click on an empty spot under it goes to the game. Shift and drag doesn't move the window while it's see-through. It stays solid while you type in one of its boxes or in the game's chat line, drag a slider, or have a dropdown or color picker open, so capital letters still work. |
 
-Reset this section above the tabs restores the current tab's settings and can be undone. Timers resets attack and resting choices; Enemy resets enemy choices. Appearance resets styling, window controls and window colors while keeping positions, custom timer labels, locks and job links. Preview resets saved goal-display and alignment controls. Profiles clears job links while keeping saved profiles. Details has no reset. For narrower changes, `/cadence resetsection window` resets window controls and chat colors, while `windowcolors` resets only its colors; `attack` and `resting` reset just one timer.
+Reset this section above the tabs restores the current tab's settings and can be undone. Timers resets attack, resting and action recovery choices; Enemy resets enemy attack and casting choices. Appearance resets styling, window controls and window colors while keeping positions, custom timer labels, locks and job links. Preview resets saved goal-display and alignment controls. Profiles clears job links while keeping saved profiles. Details has no reset. For narrower changes, `/cadence resetsection window` resets window controls and chat colors, while `windowcolors` resets only its colors; `attack`, `resting`, `recovery` and `enemycast` reset just one timer. Menu visibility has its own Reset menu visibility button or `/cadence resetsection visibility` command.
 
 The Font list has Ashita's own pixel font and the fonts cadence finds in Windows. Those are Segoe UI Semibold (the default), Tahoma Bold, Segoe UI Bold, Segoe UI, Verdana Bold, Arial Bold, Calibri Bold, Trebuchet MS Bold, Bahnschrift, Consolas Bold and Georgia Bold. Any .ttf or .otf you put in `config\addons\cadence\fonts\` shows up there too. Fonts are loaded when cadence loads, the same way XIUI does it. A new file shows up after `/addon reload cadence`. On Linux and Steam Deck the list is usually just Tahoma Bold and Ashita's font.
 
@@ -247,6 +277,8 @@ Every color of the settings window, as rows of swatches under four headings. Eac
 
 Pick a timer and a sample state, then pause it if you want to inspect the layout. Samples say preview and never feed the live timing calculations. Auto keeps showing live timers where available. Closing settings removes samples.
 
+Recovery offers Normal and Unknown; enemy cast offers Normal and Waiting. Changing timers resets a state that does not apply to the new selection. Waiting and unknown information stays visible even when labels or seconds are hidden.
+
 Time to TP goal adds an approximate number of seconds to your selected TP goal. It appears once attack timing and recent hit rates have enough evidence. Casting, disabling effects, range or facing problems, overdue attacks and changing equipment can make it unavailable. The row stays in place while the estimate is hidden.
 
 Recovery goal can use HP, MP or both, as a percentage or an amount. It shows time to that target and says reached once you have enough. An amount above your maximum is capped at your current maximum. This does not replace full HP/MP, Hide once full or the existing full-recovery sound. Alignment guides can be switched on here too.
@@ -271,7 +303,7 @@ A profile is a named copy of your timer and appearance settings, the timers' spo
 
 Using names the saved profile or starter layout you last applied. Modified from means its choices have changed; restoring those choices clears the mark. A missing saved profile is shown as no longer available. Window navigation and job links do not mark a profile modified. For a starter layout, personal styling does not count as a modification, since it only sets timer readouts.
 
-STARTER LAYOUTS offers Minimal, Melee / TP, Resting and Enemy tracking. Minimal keeps attack and resting countdowns with fewer extra rows. Melee / TP adds delay and TP progress. Resting concentrates on gains, full times and your recovery goal. Enemy tracking enables all three timers and enemy detail. Read the listed changes, then choose Preview layout to see a sample or Apply layout to use it. They keep positions, sizes, colors, fonts, labels, sounds, TP and recovery targets, enemy following and attachment, and saved profiles. Close layout preview leaves your setup as it was. Applying a layout can be undone.
+STARTER LAYOUTS offers Minimal, Melee / TP, Resting and Enemy tracking. Minimal keeps attack and resting countdowns with fewer extra rows. Melee / TP adds delay and TP progress. Resting concentrates on gains, full times and your recovery goal. Enemy tracking enables attack, resting and enemy attack with enemy detail. Recovery and enemy cast choices stay as you set them. Read the listed changes, then choose Preview layout to see a sample or Apply layout to use it. They keep positions, sizes, colors, fonts, labels, sounds, TP and recovery targets, enemy following and attachment, and saved profiles. Close layout preview leaves your setup as it was. Applying a layout can be undone.
 
 The profiles live in `config\addons\cadence\profiles.json`. cadence reads it again each time the settings window opens and before each change, picking up changes another game window has already saved. If the file can't be read, cadence never writes over it, and the Profiles tab and the profile commands say where it is so you can fix or remove it. A profile with a setting missing loads with that setting at its default, and it gets the same settings check as your own settings.
 
@@ -289,6 +321,8 @@ The profiles live in `config\addons\cadence\profiles.json`. cadence reads it aga
 | JOB LINKS | A list for each main job, WAR to PUP, two to a line beside the profiles. Pick a profile and it loads each time you change to that job and zone. (none) loads nothing. A link to a profile that's gone, like one another character deleted, shows (gone) in front of its name. |
 
 Profiles and shared layouts keep their previous saved file if a write fails. cadence reports the failure so you can retry.
+
+If another game window is changing profiles at the same moment, cadence asks you to retry. The retry includes the other window's saved changes. Save as new also checks that the name is still free before saving.
 
 What a button did shows under the buttons, in the done or the problem message color from Window colors in Appearance.
 
@@ -310,7 +344,7 @@ cadence works out your delay from your weapons, job traits, known equipment and 
 
 What cadence measured stays through zoning. It's kept for each mix of weapons, jobs, levels and haste buffs. When Haste wears off and lands again, the bar goes straight back to the delay it learned with Haste on. March, Slow and Elegy can be stronger or weaker each time, so each new one is measured again, including a refresh that keeps the same icon. If the same one stays on between fights, the next fight starts on what was learned with it. A gear change that affects attack speed updates the estimate for the next interval. The already scheduled countdown finishes first, just as it does on the server. An unrelated gear change keeps the learned timing. Logging in on another character starts over.
 
-Job abilities and weapon skills hold the timer for 2 seconds. Spells, items and ranged attacks hold it while they run. Then it waits 2 seconds more after a spell, 0.8 seconds after a ranged attack and 0.4 seconds after an item.
+Weapon skills hold the timer for their Phoenix animation duration, and most job abilities hold it for 2 seconds; Super Jump holds it for 5. Spells, items and ranged attacks hold it while they run. Completed spells use their own attack hold, usually 2 seconds, and ranged attacks use 0.8 seconds. Items use their known duration with a minimum of 0.4 seconds. These attack holds are separate from the Action recovery timer. Unverified holds and interruptions say **recovery unknown** until a new accepted action or observed attack establishes timing.
 
 Sleep, Lullaby, stun, petrification, terror and a penalty stop the timer. The bar stops where it is and carries on from the same spot once they wear off, the way the server's timer does. cadence leaves any gap they interrupted out of what it learns. While a spell, item or ranged attack runs, or one of those effects is on you, the bar dims and says why in place of the seconds, like "casting" or "asleep".
 
@@ -322,11 +356,27 @@ The monster you're fighting is the one your attacks go to, even while you have a
 
 Your game and the server see where everyone stands a moment apart. So "too far" or "not facing" only goes away once you're a little way back in, or as soon as an attack lands. If the bar fills and you still don't attack, the server's own message says why and wins over what cadence worked out. The server says it again each time an attack comes due, until you can attack.
 
+## How the action recovery timer works
+
+Enable Action recovery under Timers or type `/cadence recovery on`. Its separate card appears after a supported completed action, whether you are engaged or idle, and hides when its estimate ends. Hold Shift to move or resize it. Recovery options sets its label, readouts, size and colors; Appearance includes the same label controls. Profiles and Undo include these choices.
+
+Turn on **Attach under auto attack** in Recovery options, or use `/cadence recovery attach on`, to place recovery below the auto attack timer. They share width and move together, while recovery keeps its own height and bar thickness. Recovery stays visible when auto attack is idle. If the enemy timer is attached too, it sits below recovery. Turning auto attack off puts recovery back at its own saved position and width; turning attachment off does the same. Attachment starts off.
+
+Completed spells start a 2.5-second estimate, or longer if their known animation duration requires it. Ranged attacks use 0.8 seconds and Super Jump 5 seconds. Weapon skills use their Phoenix animation duration, such as 1.5 seconds for Fast Blade or 1.916 seconds for Combo. Items use their known Phoenix recovery duration, such as 3 seconds for a Warp scroll or 5 seconds for a Cure scroll. These are separate from individual recasts and the auto attack countdown. The action name identifies the source. `~` marks estimated time because the result reaches your game after the server has already acted.
+
+Interrupted, cancelled, paralyzed and rejected actions do not start a countdown. Completed spells still count when resisted or when their effect does not apply. Failed retries and repeated results do not restart the timer. A new accepted spell, item or ranged action, death, zoning, character changes or turning the timer off clears it.
+
+Ordinary recognized job abilities and items with no added recovery do not start a countdown. Their completion clears an older estimate. Unrecognized action signatures, missing item durations and questionable item values show **Unknown** briefly. That notice disappearing does not mean recovery has finished. Cadence distinguishes abilities and weapon skills using their category, action ID and animation together.
+
+Silence, stun, individual recasts and client animations may still prevent an action after the estimate ends, so the timer never announces that every spell is ready. Fast Cast, haste and Chainspell do not shorten the spell recovery estimate. Snapshot, Rapid Shot and weapon delay change ranged aiming, not this post-shot recovery. Ordinary job ability animations do not have a verified universal casting delay.
+
 ## How the resting timer works
 
 Resting ticks every 10 seconds from the moment you sit, but the first tick restores nothing. The server only runs these ticks on its 3 second effect check, so each one lands up to 3.2 seconds after its 10 second mark. The gaps between ticks end up going 9, 9, 12, 9, 9, 12.
 
 cadence counts down about 21 seconds to your first tick. After that it watches your HP, MP and TP for each real tick and predicts the next one from that pattern. Once it has seen a few ticks, it usually lands within about 0.3 seconds of the real one. A flat 10 second countdown is often 1 to 2 seconds off.
+
+If cadence loads while you are already resting, it says **Observing** until a real tick establishes timing. It does not start a new 21-second wait. Recovery amounts and full times remain unknown where the earlier ticks or capped gains leave too little information; uncapped HP and MP gains establish each resource separately.
 
 cadence uses your job's Clear Mind, eligible Signet bonuses, known gear and augments, food and known effects to estimate recovery before the first tick. Clean, uncapped ticks then refine the amounts. Changing recovery gear updates the estimate without restarting the countdown. Regen and Refresh are counted separately.
 
@@ -348,7 +398,7 @@ Your game can't see a monster's delay. cadence starts at 4.0 seconds, which is w
 
 Once cadence learns the speed of the monster the timer follows, it remembers it by that monster's name until you reload cadence or log in on another character. The next one with that name in the same zone starts from that speed instead of 4.0 seconds. It still says "est." until its own attacks show it.
 
-TP moves and spells pause the timer while they run. It says "TP move" or "casting" in place of the seconds, and picks up about 2 seconds after they finish. cadence can't see a monster's TP, so it can't warn you that a TP move is about to replace an attack. A monster chasing you has no visible pause. Without an observed hold, the bar says "ready" when it runs out, then "waiting" once a whole delay goes by with no attack.
+TP moves and spells pause the timer while they run. It says "TP move" or "casting" in place of the seconds. Completed spells and recognized player weapon skills use their known Phoenix animation duration before attacks resume; monster-specific TP moves keep an estimated 2-second hold. An interrupted spell or unknown duration waits for an observed attack to establish timing again. cadence can't see a monster's TP, so it can't warn you that a TP move is about to replace an attack. A monster chasing you has no visible pause. Without an observed hold, the bar says "ready" when it runs out, then "waiting" once a whole delay goes by with no attack.
 
 Observed Sleep, Stun, Petrification and Terror stop the countdown, and those interrupted gaps do not teach a new speed. When an observed hold ends or its estimated duration expires, cadence waits for another attack before predicting the next one. Missing effect messages stay unknown.
 
@@ -361,6 +411,16 @@ The server sets a monster's next attack when it attacks. An effect that lands mi
 Hojo, Carnage Elegy, Haste and Leviathan's Slowga are always the same strength. Once the monster's own speed is learned, the slowed one is known right away. Slow, Slow II and Battlefield Elegy depend on the caster, so they say "est." until a few attacks show them. A monster's Hundred Fists makes it attack at a quarter of its delay while it lasts.
 
 Only whoever cast an effect is told it wore off. Someone else's Slow shows "slow?" once it might have been half resisted, and comes off once it can't still be on. A few blue magic spells and Titan's Rock Throw slow a monster without saying so. The timer only catches up with those from the monster's attacks.
+
+## How the enemy cast bar works
+
+Enable **Enemy cast** on the Enemy tab or type `/cadence enemycast on`. The bar follows the same monster as enemy attack, even when enemy attack is turned off. An observed spell start supplies the spell name. Phoenix's base cast time supplies an estimated countdown marked `~`.
+
+Monster-specific casting speed, Fast Cast, Chainspell and other modifiers can change the actual duration. When the estimated time runs out, the bar says **waiting** until an observed finish, interruption or replacement action ends it. Missing base times also show waiting. The bar does not predict spells or TP moves that have not started, and it does not turn an expired estimate into confirmed completion. A missed finish eventually clears the stale display.
+
+Hold Shift to move or resize the card. **Attach under enemy attack** in Cast options, or `/cadence enemycast attach on`, places it below enemy attack and shares that timer's width and movement. Its height and bar thickness stay independent. With enemy attack turned off, or attachment disabled, it returns to its own saved position and width. Profiles, Undo, shared layouts and Preview include these choices.
+
+Death, despawn, zoning, character changes and turning the cast bar off clear its observations. Switching targets shows any cast already observed for the new monster. Reloading during a cast cannot reconstruct a start you missed.
 
 ## How the TP line works
 
@@ -390,11 +450,11 @@ Record timing details is off by default. Turning it on keeps only the latest 256
 |---|---|
 | Your character's status in memory | Knowing when you're engaged or resting. |
 | The game's "event running" flag in memory (the same one XIUI reads) | Hiding during cutscenes and NPC conversations. If a game update stops cadence finding it, your event status is used instead. |
-| Whether the game's interface is hidden, and the name of the window that has focus, in memory (found the same way XIUI finds them) | Hiding while you've hidden the interface or while a map is open. If a game update stops cadence finding them, those options are greyed out. |
-| Packet 0x028 (actions) | Your melee rounds, abilities, weapon skills, spells, items and ranged attacks, which of your hits landed, and whether an ability of yours was Meditate. With the enemy attack timer on, monsters' attack rounds, TP moves and spells, and Slow, Elegy, Haste and Hundred Fists landing on monsters from anyone, or Dispel and the like taking them off. With the TP line on, whether a monster's action hit you. |
-| Your target, and for what's near you whether it's a monster, its server id, its status and its name, in memory | Picking which monster the enemy attack timer follows, and spotting when it engages or dies. The followed monster's name shows on the timer, and its speed is remembered by that name and its zone. The zone is part of its server id. When you engage, "too far" and "not facing" start out checking your target. |
+| Whether the game's interface is hidden, and the name of the window that has focus, in memory | Hiding with the game interface, on maps, or for the full-screen chat log and other menus according to your choices. If a game update stops cadence finding them, the affected options are greyed out. |
+| Packet 0x028 (actions) | Your melee rounds, abilities, weapon skills, spells, items and ranged attacks, which of your hits landed, and whether an ability of yours was Meditate. With either enemy bar on, monsters' attack rounds, TP moves and spells, and Slow, Elegy, Haste and Hundred Fists landing on monsters from anyone, or Dispel and the like taking them off. Spell starts and finishes also drive the enemy cast bar. With the TP line on, whether a monster's action hit you. |
+| Your target, and for what's near you whether it's a monster, its server id, its status and its name, in memory | Picking which monster the enemy bars follow, and spotting when it engages or dies. The followed monster's name shows on the timer, and its speed is remembered by that name and its zone. The zone is part of its server id. When you engage, "too far" and "not facing" start out checking your target. |
 | Where you and the monster you're fighting stand, which way you face and how big each of you is, in memory | "too far" and "not facing" on the auto attack timer before your attack is due. |
-| Packet 0x029 (battle messages) | Messages saying an attack can't happen, like "out of range", and direct recovery that must be kept separate from resting ticks. With the enemy attack timer on, your own observed effects wearing off a monster, and a monster being defeated. |
+| Packet 0x029 (battle messages) | Messages saying an attack can't happen, like "out of range", and direct recovery that must be kept separate from resting ticks. With either enemy bar on, your own observed effects wearing off a monster, and a monster being defeated. |
 | Packet 0x00E (entity update) | Dropping a monster's current clock and effects when it leaves sight, before that identity can be reused. Learned speeds kept by name and zone stay. |
 | Packet 0x058 (assist) | Which monster your attacks moved to, so "too far" and "not facing" check that one. The server sends it when you engage, when you switch monsters mid-fight and when you /assist. |
 | Packet 0x0DF (HP, MP and TP) | Spotting each resting tick, how much TP each of your rounds gave, and how much more came in from anything else between your rounds. One comes for each party member. Only yours is read past whose it is. |
@@ -422,6 +482,7 @@ The `cadence` folder you install holds these.
 - `core/` holds the timing and math. That's `attack.lua`, `reach.lua`, `resting.lua`, `enemy.lua`, `monster_effects.lua`, `tp.lua` and `delay.lua`, plus `shared_layout.lua` for one layout across characters. `packets.lua` and `player.lua` read packets and memory. `stat_state.lua` keeps known bonuses current, and `modifiers.lua` works out their amounts. `file_store.lua` protects saved profiles and shared layouts, and `diagnostics.lua` keeps the local timing reports.
 - `data/phoenix_modifiers.lua` holds the Phoenix job, item, food and modifier rules.
 - `data/phoenix_effects.lua` holds supported enemy spell durations and the gear bonuses used for your own casts.
+- `data/phoenix_recovery.lua` holds action signatures, weapon skill and spell animation durations, supported item recovery durations and base enemy cast times. `core/recovery.lua` and `core/enemy_cast.lua` track their observed actions.
 - `ui/navigation.lua`, `ui/search.lua` and `ui/tips.lua` handle wrapping and hidden tabs, search matches and timer hover explanations.
 - `ui/history.lua` keeps settings Undo and section resets. `ui/layouts.lua` holds starter layouts, and `ui/preview.lua` draws the embedded samples.
 - `ui/` holds the drawing. That's `hud.lua` for the timers, `settings_window.lua` for the settings window, `window_font.lua` for the settings window's fonts, `chat_colors.lua` for the chat colors and the lines cadence prints, `sound.lua` for the resting sound, `profiles.lua` for saved profiles and job links, `theme.lua` for the Phoenix colors, the settings window's palette for each preset and the window colors a palette spreads over, grouped the way the Window colors section shows them, `presets.lua` for the preset looks and `defaults.lua` for the default settings, the slider ranges and the settings check.

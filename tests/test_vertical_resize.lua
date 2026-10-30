@@ -106,7 +106,7 @@ check('joined timers draw their separate vertical text sizes', seen_fonts.ENEMY
     and seen_fonts['AUTO ATTACK'] and seen_fonts.ENEMY < seen_fonts['AUTO ATTACK']);
 local attack_scale, enemy_scale = s.attack.height_scale, s.enemy.height_scale;
 begin('##grip_height_enemy'); mouse_y = 750; frame(); finish();
-check('a pinned attached strip cannot resize itself through its host', s.enemy.height_scale == enemy_scale
+check('a pinned attached strip resizes its own height without resizing its host', s.enemy.height_scale > enemy_scale
     and s.attack.height_scale == attack_scale);
 s.attack.enabled = false; hud.refresh(s); frame();
 original = height('enemy');

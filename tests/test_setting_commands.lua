@@ -67,6 +67,18 @@ MOCK.fire('command', { command = '/cadence' });
     only come into the check that every slider has a command.
 ]]
 local SLIDERS = {
+    { 'Width##enemycast', 'enemycast width', 'enemycast', 'width', 120, 640, 320, 0, false,
+        'The enemy cast timer\'s width is set to %s px.' },
+    { 'Height##enemycast', 'enemycast height', 'enemycast', 'height_scale', 0.5, 2.5, 1.25, 2, false,
+        'The enemy cast timer\'s height is set to %sx.' },
+    { 'Bar height##enemycast', 'enemycast barheight', 'enemycast', 'bar_height', 2, 32, 8, 0, false,
+        'The enemy cast timer\'s bar height is set to %s px.' },
+    { 'Width##recovery', 'recovery width', 'recovery', 'width', 120, 640, 320, 0, false,
+        'The action recovery timer\'s width is set to %s px.' },
+    { 'Height##recovery', 'recovery height', 'recovery', 'height_scale', 0.5, 2.5, 1.25, 2, false,
+        'The action recovery timer\'s height is set to %sx.' },
+    { 'Bar height##recovery', 'recovery barheight', 'recovery', 'bar_height', 2, 32, 8, 0, false,
+        'The action recovery timer\'s bar height is set to %s px.' },
     { 'Width##attack', 'attack width', 'attack', 'width', 120, 640, 300, 0, false,
         'The auto attack timer\'s width is set to %s px.' },
     { 'Height##attack', 'attack height', 'attack', 'height_scale', 0.5, 2.5, 1.25, 2, false,
@@ -246,6 +258,10 @@ presets.forget_undo();
 -- Colors ----------------------------------------------------------------------------------------------------
 -- Every timer color, as its word, its section and key, and its swatch's label in the window.
 local COLORS = {
+    { 'enemycast_fill_start', 'enemycast', 'fill_start', '##enemycast_start' },
+    { 'enemycast_fill_end', 'enemycast', 'fill_end', '##enemycast_end' },
+    { 'recovery_fill_start', 'recovery', 'fill_start', '##recovery_start' },
+    { 'recovery_fill_end', 'recovery', 'fill_end', '##recovery_end' },
     { 'attack_tp',          'attack',  'tp_color',      '##tp_colorYour TP' },
     { 'attack_fill_start',  'attack',  'fill_start',    '##attack_start' },
     { 'attack_fill_end',    'attack',  'fill_end',      '##attack_end' },
@@ -340,14 +356,17 @@ presets.reset(s);
 presets.forget_undo();
 
 -- Labels ----------------------------------------------------------------------------------------------------
--- The enemy timer is off by default, and only a timer that's on draws its sample.
+-- Optional timers start off, and only a timer that's on draws its sample.
 MOCK.fire('command', { command = '/cadence enemy on' });
+MOCK.fire('command', { command = '/cadence recovery on' });
+MOCK.fire('command', { command = '/cadence enemycast on' });
 -- Each label box in the window, by the timer it names.
 -- Leave room for the preview marker as well as the custom label and live detail fields.
-for _, timer in ipairs({ 'attack', 'resting', 'enemy' }) do
+for _, timer in ipairs({ 'attack', 'resting', 'enemy', 'recovery', 'enemycast' }) do
     MOCK.fire('command', { command = '/cadence ' .. timer .. ' width 640' });
 end
-local BOXES = { attack = 'Auto attack##label', resting = 'Resting##label', enemy = 'Enemy##label' };
+local BOXES = { attack = 'Auto attack##label', resting = 'Resting##label', enemy = 'Enemy##label',
+    recovery = 'Recovery##label', enemycast = 'Enemy cast##label' };
 local function box_text(key)
     frames(1);
     local c = last('InputTextWithHint', BOXES[key]);
@@ -363,9 +382,10 @@ end
 frames(1);
 local boxes = 0;
 for _, c in ipairs(MOCK.imgui_calls) do if (c[1] == 'InputTextWithHint') then boxes = boxes + 1; end end
-check('the window has a label box for each timer', boxes == 3, boxes);
+check('the window has a label box for each timer', boxes == 5, boxes);
 for _, case in ipairs({ { 'attack', 'Aa', 'The auto attack timer' }, { 'resting', 'Heal Me', 'The resting timer' },
-        { 'enemy', 'Big Mob', 'The enemy attack timer' } }) do
+        { 'enemy', 'Big Mob', 'The enemy attack timer' }, { 'recovery', 'Next cast', 'The action recovery timer' },
+        { 'enemycast', 'Casting', 'The enemy cast timer' } }) do
     local key, label, timer = case[1], case[2], case[3];
     ok, detail = answers(('/cadence %s labeltext %s'):format(key, label), ('%s\'s label is set to "%s".')
         :format(timer, label));
@@ -375,7 +395,9 @@ end
 ok, detail = answers('/cadence attack labeltext "My AA"', 'The auto attack timer\'s label is set to "My AA".');
 check('quotes work too', ok and s.attack.label_text == 'My AA', detail);
 for _, case in ipairs({ { 'attack', 'The auto attack timer', 'AUTO ATTACK' }, { 'resting', 'The resting timer', 'RESTING' },
-        { 'enemy', 'The enemy attack timer', 'ENEMY ATTACK' } }) do
+        { 'enemy', 'The enemy attack timer', 'ENEMY ATTACK' },
+        { 'recovery', 'The action recovery timer', 'ACTION RECOVERY' },
+        { 'enemycast', 'The enemy cast timer', 'ENEMY CAST' } }) do
     ok, detail = answers(('/cadence %s labeltext ""'):format(case[1]), ('%s\'s label is back to %s.')
         :format(case[2], case[3]));
     check(case[1] .. ' labeltext "" puts its own name back', ok and s[case[1]].label_text == '' and box_text(case[1]) == ''
@@ -449,14 +471,30 @@ local HELP = {
         '/cadence detailsize <8-32>|auto  sets how big the small text is. Auto follows Text size.',
         '/cadence labelsize <8-32>|auto  sets how big the timer names are. Auto follows Text size.',
         '/cadence corners <0-12>  sets how round the timers\' corners are.',
-        '/cadence attack|resting|enemy labeltext <text>  gives that timer a name of your own, like AA. "" puts its own '
+        '/cadence attack|resting|enemy|recovery|enemycast labeltext <text>  gives that timer a name of your own, like AA. "" puts its own '
             .. 'name back.',
         '/cadence color background|border|accent|labels|values|details|bar_track|outline <rrggbb>  sets one of the Appearance '
             .. 'tab\'s colors. /cadence help colors lists every color.',
     } },
-    colors = { 1, 8, {
+    recovery = { 3, 7, {
+        '/cadence recovery width <120-640>  sets how wide the action recovery timer is.',
+        '/cadence recovery height <0.50-2.50>  sets its overall height.',
+        '/cadence recovery barheight <2-32>  sets how thick its bar is.',
+        '/cadence recovery labeltext <text>  gives it a name of your own, like AA. "" puts its own name back.',
+        '/cadence color recovery_fill_start|recovery_fill_end <rrggbb>  sets one of its colors.',
+    } },
+    enemycast = { 3, 7, {
+        '/cadence enemycast width <120-640>  sets how wide the enemy cast timer is.',
+        '/cadence enemycast height <0.50-2.50>  sets its overall height.',
+        '/cadence enemycast barheight <2-32>  sets how thick its bar is.',
+        '/cadence enemycast labeltext <text>  gives it a name of your own, like AA. "" puts its own name back.',
+        '/cadence color enemycast_fill_start|enemycast_fill_end <rrggbb>  sets one of its colors.',
+    } },
+    colors = { 1, 10, {
         '/cadence color <what> <rrggbb>  sets one of the timers\' colors. <what> is one of these, under its heading in '
             .. 'the settings window.',
+        'ENEMY CAST  enemycast_fill_start, enemycast_fill_end',
+        'ACTION RECOVERY  recovery_fill_start, recovery_fill_end',
         'AUTO ATTACK TIMER  attack_tp, attack_fill_start, attack_fill_end, attack_ready, attack_almost',
         'RESTING TIMER  resting_fill_start, resting_fill_end, resting_full, resting_flash',
         'ENEMY ATTACK TIMER  enemy_on_you',
@@ -466,12 +504,13 @@ local HELP = {
         'The color is six hex digits like c55151. Two more, from 00 to ff, set how solid it is, like c55151cc.',
     } },
 };
-for _, word in ipairs({ 'attack', 'resting', 'enemy', 'look', 'colors' }) do
+for _, word in ipairs({ 'attack', 'resting', 'enemy', 'recovery', 'enemycast', 'look', 'colors' }) do
     local from, total, lines = HELP[word][1], HELP[word][2], HELP[word][3];
     local text, count_now = help_lines(word, from);
     check('help ' .. word, count_now == total and text == table.concat(lines, '\n'), text:gsub('\n', ' / '));
 end
 check('help color is the same as help colors', help_lines('color') == help_lines('colors'));
+check('recovery help includes its attachment switch', help_lines('recovery'):find('attach (Attach under auto attack)', 1, true) ~= nil);
 -- The whole help has the Appearance tab's sliders and the color command under the Appearance tab.
 local help = said('/cadence help');
 local look_at, numbers_at, colors_at = nil, nil, nil;

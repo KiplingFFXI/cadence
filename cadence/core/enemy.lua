@@ -8,7 +8,8 @@
     A monster's delay can't be seen from the client. Most monsters use the default delay of 240, or
     4 s. That's the first guess until its own attacks show the real one. A monster with the same name
     as one learned earlier in that zone starts from that one's delay instead.
-    TP moves and spells pause the timer while they run. It picks up about 2 s after they finish.
+    TP moves and spells pause the timer while they run. Known spells and weapon skills use their
+    animation time; other TP moves keep the usual 2 s estimate.
     Observed control effects stop learning. Their end waits for a new attack to set the clock.
     A monster chasing you still has no visible pause. A bar that runs out shows ready. It
     shows waiting once a whole delay goes by with no attack. The next attack puts it back in step.
@@ -88,7 +89,7 @@ local function new_clock(now)
         effects       = {},     -- [effect id] = { power, exact, sure_until, ends_at }
         controls      = {},     -- Observed attack-preventing effects, with uncertain durations.
         control_since = nil,
-        resync        = false,  -- A control ended; only another attack can set the next due time.
+        resync        = false,  -- A control or unknown action ended; a new attack must set the next due time.
         changes       = 0,      -- Goes up each time an effect lands or comes off.
         round_changes = 0,      -- `changes` and whether it had any effects when it last attacked.
         round_plain   = true,
@@ -422,25 +423,27 @@ function enemy.on_hold_begin(now, id, kind)
 end
 
 --[[
-    The TP move or spell finished, or a TP move was cut off. A finish adds the 2 s the server waits
-    after one. A TP move only gets cut off when the monster is stunned or put to sleep. Then `stunned`
-    is true and adds no tail. The bar runs out, then waits for the next round. A TP move with no
-    ready time finishes without starting.
+    The action finished, or a TP move was cut off. Known spells and weapon skills supply their
+    animation time. Other TP moves keep the usual 2 s estimate. False marks unknown timing and
+    waits for the next attack. A stunned TP move adds no tail.
 ]]
-function enemy.on_hold_end(now, id, stunned)
+function enemy.on_hold_end(now, id, stunned, seconds)
     local clock = clocks[id];
     if (clock == nil or clock.next_attack == nil) then
         return;
     end
     expire(clock, now);
-    if (clock.held_since == nil and clock.next_attack - now <= TICK_SECONDS) then
+    if (seconds == nil) then seconds = HOLD_TAIL_SECONDS; end
+    if (seconds == false) then
+        clock.resync = true;
+    elseif (clock.held_since == nil and clock.next_attack - now <= TICK_SECONDS) then
         -- Some monsters, like flying wyrms, attack with TP moves. The attack used up its delay.
         clock.last_attack = now;
-        clock.next_attack = now + clock.delay + HOLD_TAIL_SECONDS;
+        clock.next_attack = now + clock.delay + (stunned and 0 or seconds);
     else
         local from = clock.held_since or now;
         local remaining = math.max(clock.next_attack - from, 0);
-        clock.next_attack = now + remaining + (stunned and 0 or HOLD_TAIL_SECONDS);
+        clock.next_attack = now + remaining + (stunned and 0 or seconds);
     end
     clock.seen        = now;
     clock.last_action = now;
@@ -448,12 +451,13 @@ function enemy.on_hold_end(now, id, stunned)
     clock.clean       = false;
 end
 
--- The TP move or spell was cut off. A spell still waits out its 2 s and ends like a finish. A
--- paralyzed spell sends its finish first. That already ended the hold.
+-- A spell interrupt does not reveal how much of its action state remains. A TP move cut off by
+-- control adds no tail. An already ended hold must not be extended by a second interrupt packet.
 function enemy.on_interrupt(now, id, spell)
     local clock = clocks[id];
     if (clock ~= nil and clock.held_since ~= nil) then
-        enemy.on_hold_end(now, id, not spell);
+        if (spell) then enemy.on_hold_end(now, id, false, false);
+        else enemy.on_hold_end(now, id, true); end
     end
 end
 
@@ -501,8 +505,8 @@ end
 --[[
     Returns how full the bar is (0..1), the seconds until the next round, the delay in use, whether
     that delay was learned, whether the monster is overdue by a whole delay, a tag for its effects,
-    and 'tp_move' or 'spell' while one holds its timer. The tag is like "slow", or "slow?" once
-    another player's Slow might have worn off. Returns nil when there's no clock for it yet.
+    and the reason it is held, including 'observing' while its phase is unknown. The tag is like
+    "slow", or "slow?" once another player's Slow might have worn off. Returns nil without a clock.
 ]]
 function enemy.progress(now, id)
     local clock = clocks[id];

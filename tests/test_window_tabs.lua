@@ -529,7 +529,7 @@ check('help appearance joins timer style, window and window colors, and the old 
 lines = said('/cadence help');
 local pointer, timers_at = nil, nil;
 for n, line in ipairs(lines) do
-    if (line == '/cadence help attack|resting|enemy|appearance|colors|preset|font|reset|chatcolors|profiles|preview|details|ui  '
+    if (line == '/cadence help attack|resting|enemy|recovery|enemycast|appearance|colors|preset|font|reset|chatcolors|profiles|preview|details|ui  '
         .. 'tells you more about one of them.') then
         pointer = n;
     end

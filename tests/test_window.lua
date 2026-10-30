@@ -53,10 +53,10 @@ for _, c in ipairs(calls('TextColored')) do
     if (c[3] == 'AUTO ATTACK TIMER') then heading_found = true; end
 end
 for _, c in ipairs(calls('TextUnformatted')) do
-    if (type(c[2]) == 'string' and c[2]:find('^Auto attack, resting and enemy timers')) then title_found = true; end
+    if (type(c[2]) == 'string' and c[2]:find('^Attack, resting, enemy and recovery timers')) then title_found = true; end
 end
 check('the heading says AUTO ATTACK TIMER', heading_found);
-check('the title line names the three timers', title_found);
+check('the title line names the four timers', title_found);
 
 -- Resizing saves nothing while the edge is held, and saves once when it's let go.
 local saves = MOCK.saved;

@@ -89,6 +89,7 @@ jobs:
           python tools/check_source.py --server "$RUNNER_TEMP/Phoenix"
           python tools/generate_modifiers.py --server "$RUNNER_TEMP/Phoenix" --check
           python tools/generate_effects.py --server "$RUNNER_TEMP/Phoenix" --check
+          python tools/generate_recovery.py --server "$RUNNER_TEMP/Phoenix" --check
 
       - name: Run tool mutations and addon tests
         if: steps.refresh.outputs.changed == 'true'
@@ -128,16 +129,16 @@ jobs:
             exit 1
           fi
           expected=$(printf '%s\n' CHANGELOG.md cadence/cadence.lua cadence/data/phoenix_effects.lua \
-            cadence/data/phoenix_modifiers.lua tools/generate_modifiers.py tools/source_guards.json | sort)
+            cadence/data/phoenix_modifiers.lua cadence/data/phoenix_recovery.lua tools/generate_modifiers.py tools/source_guards.json | sort)
           if [ "$(git diff --name-only HEAD -- | sort)" != "$expected" ]; then
-            echo "The prepared changes do not match the six allowed data refresh files. No branch was pushed."
+            echo "The prepared changes do not match the seven allowed data refresh files. No branch was pushed."
             exit 1
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch --create "$BRANCH"
           git add -- CHANGELOG.md cadence/cadence.lua cadence/data/phoenix_effects.lua \
-            cadence/data/phoenix_modifiers.lua tools/generate_modifiers.py tools/source_guards.json
+            cadence/data/phoenix_modifiers.lua cadence/data/phoenix_recovery.lua tools/generate_modifiers.py tools/source_guards.json
           git commit --quiet --message "Refresh Phoenix data for cadence $VERSION"
           existing=$(git ls-remote --heads origin "refs/heads/$BRANCH")
           if [ -n "$existing" ]; then

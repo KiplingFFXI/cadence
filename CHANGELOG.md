@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.4.0
+
+- Added automatic hiding for the full-screen chat log and other menus. Each can hide all timers or just the ones you choose, while timing continues in the background.
+- Added an optional Action recovery timer for completed spells, weapon skills, ranged attacks, Super Jump and supported items. It works while idle or engaged and hides automatically.
+- Recovery shows estimated time, with its own position, size, colors and action label. Interrupted, paralyzed and rejected casts do not start a countdown.
+- Recovery can attach under auto attack, sharing its width and movement while keeping its own height. An attached enemy timer follows below it.
+- Added recovery commands, previews, profiles and undo support. The timer starts off.
+- Recovery distinguishes job abilities from weapon skills, including shared action IDs and animation variants. Known actions with no added recovery create no countdown. Unverified durations show Unknown.
+- Added an optional enemy cast bar with spell names and estimated base cast times. It waits for an observed finish or interruption, and can move freely or attach under enemy attack. It starts off.
+- Auto attack now follows the separate attack holds for Super Jump and supported items. Unknown action holds and interruptions cannot turn into a false Ready countdown.
+- Reloading while already resting observes the existing tick pattern instead of restarting it. HP and MP amounts stay uncertain until enough recovery has been observed.
+- Stacked Haste effects retain known item bonuses when another effect changes the timer list.
+- Attached timers can be moved and resized while their host is idle. Each child keeps its own height, and disabled hosts restore the child's saved position and width.
+- Recovery and Cast options include label controls. Previews offer relevant states, including Unknown recovery and Waiting casts, and long status text fits narrow cards.
+- Simultaneous profile saves preserve each other's changes. A busy save asks you to retry, and Save as new cannot overwrite a newly taken name.
+- Reduced repeated packet processing and unused equipment polling. Incomplete or empty actions cannot move a timer.
+- Weapon skill recovery and auto attack holds use Phoenix's animation durations for each weapon skill.
+- Spell recovery accounts for known animations that last longer than the usual recovery period.
+- Enemy attack holds follow known spell and weapon skill animation times. Interrupted spells and unknown holds wait for a new attack before predicting timing again.
+- Refreshed the bundled data from Phoenix's current live source, including updated job ability animations.
+- Fixed packet handling that could stop updates on native Ashita events.
+- Hiding the timers during a drag or resize no longer leaves stale movement or alignment guides. Completed movement still saves once and can be undone.
+
 ## 1.3.0
 
 - Added Show re-engage timer, an optional estimate that stays visible between fights and hides automatically when it finishes. It starts off.

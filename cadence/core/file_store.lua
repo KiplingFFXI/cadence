@@ -7,7 +7,24 @@ if (ffi.os == 'Windows') then
     pcall(ffi.cdef, [[
         unsigned long __stdcall GetCurrentProcessId(void);
         int __stdcall MoveFileExA(const char*, const char*, unsigned long);
+        void* __stdcall CreateFileA(const char*, unsigned long, unsigned long, void*, unsigned long, unsigned long, void*);
+        unsigned long __stdcall GetLastError(void);
+        int __stdcall CloseHandle(void*);
     ]]);
+end
+
+-- Hold the profile file's lock through the whole read/change/write operation. Never wait in a frame.
+function store.with_lock(path, action, ...)
+    if (ffi.os ~= 'Windows') then return false, 'file'; end
+    local opened, handle = pcall(ffi.C.CreateFileA, path .. '.lock', 0xC0000000, 0, nil, 4, 0x80, nil);
+    if (not opened or handle == nil or handle == ffi.cast('void*', -1)) then
+        local reason = opened and tonumber(ffi.C.GetLastError()) or 0;
+        return false, (reason == 32 or reason == 33) and 'busy' or 'file';
+    end
+    local ok, first, second, third = pcall(action, ...);
+    ffi.C.CloseHandle(handle);
+    if (not ok) then return false, 'file'; end
+    return first, second, third;
 end
 
 function store.write(path, value)

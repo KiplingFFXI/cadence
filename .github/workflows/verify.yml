@@ -53,6 +53,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tools/generate_effects.py --server .ci/phoenix --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/generate_recovery.py --server .ci/phoenix --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run tool mutations and addon tests
         env:

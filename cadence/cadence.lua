@@ -1,7 +1,7 @@
 addon.name    = 'cadence';
 addon.author  = 'Kipling';
-addon.version = '1.3.0';
-addon.desc    = 'Auto attack, resting tick and enemy attack timers for Phoenix.';
+addon.version = '1.4.0';
+addon.desc    = 'Attack, resting, enemy casting and action recovery timers for Phoenix.';
 addon.link    = 'https://github.com/KiplingFFXI/cadence';
 
 --[[
@@ -91,11 +91,13 @@ local BUFF_CHECK_SECONDS = 0.2;
 local VK_SHIFT = 0x10;
 
 -- Timers from top to bottom in the default layout.
-local ELEMENTS = { 'resting', 'attack', 'enemy' };
+local ELEMENTS = { 'resting', 'attack', 'enemy', 'recovery', 'enemycast' };
 local TIMER_NAMES = {
     attack  = 'The auto attack timer',
     resting = 'The resting timer',
     enemy   = 'The enemy attack timer',
+    recovery = 'The action recovery timer',
+    enemycast = 'The enemy cast timer',
 };
 local STACK_GAP = 6;
 
@@ -121,6 +123,14 @@ local loaded_settings = settings.load(kept_defaults);
 unshare(loaded_settings, kept_defaults, defaults.make());
 
 local cadence = {
+    recovery = require('core.recovery'),
+    recovery_data = require('data.phoenix_recovery'),
+    recovery_categories = { [2] = true, [3] = true, [4] = true, [5] = true, [6] = true,
+        [8] = true, [9] = true, [12] = true, [14] = true, [15] = true },
+    enemy_cast = require('core.enemy_cast'),
+    enemy_cast_view = {},
+    enemy_cast_preview = { spell = 'Fire III', duration = 6, estimated = true, preview = true },
+    recovery_preview = { duration = 2.5, kind = 'spell', estimated = true, preview = true },
     settings    = loaded_settings,   -- The settings in use. While one layout is shared, that's the shared copy.
     own         = loaded_settings,   -- This character's own settings, which Ashita writes to their file.
     my_id       = 0,       -- Your server id, which picks your own packets out of everyone's.
@@ -250,6 +260,11 @@ local function tracking_tp()
     return element.enabled and element.show_tp;
 end
 
+function cadence.needs_modifiers()
+    return cadence.settings.attack.enabled or cadence.settings.resting.enabled or resting.is_active()
+        or settings_window.is_open() or diagnostics.is_enabled();
+end
+
 -- Update predicted gains at the same pace as buffs. Changing gear never restarts either timer.
 local function check_modifiers(now)
     if (now - cadence.modifiers_at < BUFF_CHECK_SECONDS) then
@@ -362,6 +377,8 @@ end
 -- Runs on every change to the settings, so a profile, a reset or another character's settings open
 -- or close their own sound file.
 local function apply_settings()
+    if (not cadence.settings.recovery.enabled) then cadence.recovery.reset(); end
+    if (not cadence.settings.enemycast.enabled) then cadence.enemy_cast.reset(); end
     if (not cadence.settings.attack.enabled or cadence.settings.attack.linger_seconds == 0) then
         attack.cancel_reengage();
     end
@@ -414,6 +431,19 @@ end
 
 -- A server status packet settles combat transitions even when no frame was drawn between them.
 local function track_attack_status(now, status, confirmed)
+    if (not cadence.settings.attack.enabled and not diagnostics.is_enabled()) then
+        if (cadence.attack_tracking ~= false) then attack.reset(); tp.on_zone(); end
+        cadence.attack_tracking = false;
+        if (status ~= cadence.attack_status) then
+            local index = status == STATUS_ENGAGED and player.target_index() or nil;
+            cadence.battle_id = index and player.monster_id(index) or nil;
+        end
+        cadence.attack_status = status;
+        return;
+    elseif (cadence.attack_tracking == false) then
+        cadence.attack_status, cadence.modifiers_at = nil, -1;
+    end
+    cadence.attack_tracking = true;
     if (status == cadence.attack_status) then return; end
     if (status == STATUS_ENGAGED) then
         local estimate, key, loadout = current_delay();
@@ -450,10 +480,11 @@ end
 -- Resting follows the client status. Combat uses server status once one has arrived.
 local function track_status(now, status)
     track_attack_status(now, cadence.server_status or status, false);
+    if (STATUS_DEAD[status]) then cadence.recovery.reset(); cadence.enemy_cast.reset(); end
     if (status == STATUS_RESTING or STATUS_DEAD[status]) then attack.cancel_reengage(); end
     if (status == cadence.last_status) then return; end
     if (status == STATUS_RESTING) then
-        resting.start(now);
+        resting.start(now, cadence.last_status == nil);
     elseif (cadence.last_status == STATUS_RESTING) then
         resting.stop();
     end
@@ -603,9 +634,51 @@ end
     when the map is open. Each one has its own setting. The game is only read for the ones turned on.
 ]]
 local function hidden_by_game(style, entity)
-    return (style.hide_during_events and player.in_event(entity))
-        or (style.hide_with_game_ui and player.interface_hidden())
-        or (style.hide_on_map and player.map_open());
+    if ((style.hide_during_events and player.in_event(entity))
+        or (style.hide_with_game_ui and player.interface_hidden())) then return true; end
+    local visibility = cadence.settings.visibility;
+    local chat, menus, map = player.menu_visibility(visibility.chat ~= 'off', visibility.menus ~= 'off', style.hide_on_map);
+    return style.hide_on_map and map, chat, menus;
+end
+
+function cadence.menu_hides(chat, menus, chat_key, menus_key)
+    local visibility = cadence.settings.visibility;
+    return (chat and (visibility.chat == 'all' or (visibility.chat == 'selected' and visibility[chat_key])))
+        or (menus and (visibility.menus == 'all' or (visibility.menus == 'selected' and visibility[menus_key])));
+end
+
+function cadence.draw_recovery(now, sample, forced, sample_clock)
+    local view = not forced and cadence.recovery.progress(now) or nil;
+    if (view) then
+        view.preview = false;
+        hud.draw_recovery(view);
+    elseif (sample) then
+        local view = cadence.recovery_preview;
+        local unknown = cadence.preview.state == 'unknown';
+        local phase = (sample_clock or now) % 2.5;
+        view.known, view.kind = not unknown, unknown and 'unknown' or 'spell';
+        view.duration, view.left, view.fill = 2.5, 2.5 - phase, phase / 2.5;
+        if (unknown) then view.duration, view.left, view.fill = nil, nil, 0; end
+        hud.draw_recovery(view);
+    end
+end
+
+function cadence.enemy_cast_snapshot(now)
+    local view = {};
+    return cadence.enemy_cast.progress(now, cadence.enemy_id, view) and view or nil;
+end
+
+function cadence.draw_enemycast(now, sample, forced, sample_clock)
+    if (not forced and cadence.enemy_cast.progress(now, cadence.enemy_id, cadence.enemy_cast_view)) then
+        cadence.enemy_cast_view.preview = false;
+        hud.draw_enemycast(cadence.enemy_cast_view);
+    elseif (sample) then
+        local view = cadence.enemy_cast_preview;
+        local phase = (sample_clock or now) % view.duration;
+        view.waiting = cadence.preview.state == 'waiting';
+        view.left, view.fill = view.waiting and 0 or view.duration - phase, view.waiting and 1 or phase / view.duration;
+        hud.draw_enemycast(view);
+    end
 end
 
 -- What the resting timer shows this frame. One table is reused so drawing makes no garbage.
@@ -622,9 +695,9 @@ end
 
 local function draw_resting(now, sample, forced, preview_state, sample_clock)
     local view = resting_view;
-    view.preview, view.goal, view.waiting = false, nil, false;
+    view.preview, view.goal, view.waiting, view.phase_unknown = false, nil, false, false;
     local fill, left, _, gained_hp, gained_mp, full;
-    if (not forced) then fill, left, _, gained_hp, gained_mp, full = resting.progress(now); end
+    if (not forced) then fill, left, _, gained_hp, gained_mp, full, view.phase_unknown = resting.progress(now); end
     if (fill ~= nil) then
         local element = cadence.settings.resting;
         view.fill, view.left, view.gained_hp, view.gained_mp, view.full = fill, left, gained_hp, gained_mp, full;
@@ -734,11 +807,13 @@ local function pick_enemy(now)
         local id = index and player.monster_id(index);
         local status = id and player.entity_status(index);
         watch_target(now, id, status);
-        if (id ~= nil and (enemy.has(id) or status == STATUS_ENGAGED)) then
+        if (id ~= nil and (enemy.has(id) or status == STATUS_ENGAGED
+            or (cadence.settings.enemycast.enabled and cadence.enemy_cast.progress(now, id)))) then
             return id, index;
         end
         local kept = cadence.enemy_id;
-        if (id == nil and kept ~= nil and cadence.settings.enemy.keep_last and enemy.active(now, kept)) then
+        if (id == nil and kept ~= nil and cadence.settings.enemy.keep_last
+            and (enemy.active(now, kept) or (cadence.settings.enemycast.enabled and cadence.enemy_cast.progress(now, kept)))) then
             local kept_index = monster_index(kept);
             if (kept_index ~= nil) then
                 return kept, kept_index;
@@ -771,6 +846,7 @@ local function follow_enemy(now, id, index)
         -- A monster can die while another one is followed. Its clock goes as soon as it's picked.
         if (STATUS_DEAD[cadence.enemy_status]) then
             enemy.forget(id);
+            cadence.enemy_cast.forget(id);
         elseif (id ~= nil) then
             enemy.recall(now, id, cadence.enemy_name);
         end
@@ -787,6 +863,7 @@ local function follow_enemy(now, id, index)
     if (STATUS_DEAD[status] or cadence.enemy_status == STATUS_ENGAGED) then
         enemy.remember(id, cadence.enemy_name);
         enemy.forget(id);
+        if (STATUS_DEAD[status]) then cadence.enemy_cast.forget(id); end
     end
     cadence.enemy_status = status;
 end
@@ -863,6 +940,7 @@ end
 -- Does what the settings window asked for this frame. With the sound on, a file picked in the Sound list
 -- opens before the settings are applied, so a file that won't open is tried once and chat says so once.
 local function change_preview(value)
+    if (not settings_window.valid_preview_state(value.timer, value.state)) then value.state = 'normal'; end
     local now = os.clock();
     if (value.paused and not cadence.preview.paused) then
         cadence.preview_at = now - cadence.preview_offset;
@@ -898,7 +976,7 @@ end
 function ui_tools.reset_section(id)
     local changed, label = ui_tools.history.reset_section(cadence.settings, id, { record = false });
     if (label == 'section') then
-        say('Type /cadence resetsection attack|resting|timers|enemy|appearance|window|windowcolors|preview|profiles.');
+        say('Type /cadence resetsection attack|resting|recovery|timers|enemy|enemycast|visibility|appearance|window|windowcolors|preview|profiles.');
         return false;
     end
     if (changed) then
@@ -984,11 +1062,24 @@ local function handle_window(result)
     end
 end
 
+function cadence.save_layout(moved, before)
+    if (not moved) then return; end
+    if (before) then
+        presets.remember_snapshot(before);
+        ui_tools.history.record_patch(cadence.settings, before, 'Move or resize timers');
+        ui_tools.undoing = true;
+    end
+    save_settings();
+    ui_tools.undoing = nil;
+end
+
 local function render()
     local now = os.clock();
     local entity = player.entity();
     if (entity == nil) then
         attack.cancel_reengage();
+        cadence.recovery.reset(); cadence.enemy_cast.reset();
+        cadence.save_layout(hud.hide_frame());
         return;
     end
 
@@ -996,7 +1087,8 @@ local function render()
     if (cadence.job_check) then
         check_job();
     end
-    if (entity.Status == STATUS_ENGAGED or entity.Status == STATUS_RESTING or settings_window.is_open()) then
+    if (cadence.needs_modifiers()
+        and (entity.Status == STATUS_ENGAGED or entity.Status == STATUS_RESTING or settings_window.is_open())) then
         check_modifiers(now);
     end
     track_status(now, entity.Status);
@@ -1015,38 +1107,54 @@ local function render()
     local retained       = not resting.is_active() and attack.reengage_progress(now) ~= nil;
     local attack_visible = entity.Status ~= STATUS_RESTING and not STATUS_DEAD[entity.Status];
     local show_attack    = s.attack.enabled and attack_visible and (attack.is_active() or retained or attack_sample);
-    local enemy_live     = s.enemy.enabled and update_enemy(now);
+    local enemy_live     = (s.enemy.enabled or s.enemycast.enabled) and update_enemy(now);
     local show_enemy     = s.enemy.enabled and (enemy_live or window_open);
-    if (s.enemy.enabled and now - cadence.swept_at > SWEEP_SECONDS) then
+    local cast_live = s.enemycast.enabled and cadence.enemy_cast.progress(now, cadence.enemy_id, cadence.enemy_cast_view);
+    local recovery_view = s.recovery.enabled and cadence.recovery.progress(now) or nil;
+    local show_enemycast = s.enemycast.enabled and not STATUS_DEAD[entity.Status]
+        and (cast_live or window_open);
+    local show_recovery  = s.recovery.enabled and not STATUS_DEAD[entity.Status]
+        and (recovery_view ~= nil or window_open);
+    if ((s.enemy.enabled or s.enemycast.enabled) and now - cadence.swept_at > SWEEP_SECONDS) then
         cadence.swept_at = now;
         enemy.sweep(now, cadence.enemy_id);
+        cadence.enemy_cast.sweep(now);
     end
     local forced = window_open and cadence.preview.timer ~= 'auto';
     local preview_now = cadence.preview.paused and cadence.preview_at or (now - cadence.preview_offset);
     if (forced) then
         show_resting, show_attack, show_enemy = cadence.preview.timer == 'resting', cadence.preview.timer == 'attack', cadence.preview.timer == 'enemy';
+        show_recovery = cadence.preview.timer == 'recovery';
+        show_enemycast = cadence.preview.timer == 'enemycast';
         resting_sample, attack_sample = show_resting, show_attack;
         enemy_live = false;
     end
-    if (not (show_resting or show_attack or show_enemy or window_open)) then
+    if (not (show_resting or show_attack or show_enemy or show_recovery or show_enemycast or window_open)) then
         -- With nothing on screen, your buffs are only read to see a March, Slow or Elegy wear off.
         if (attack.watching_buffs()) then
             check_buffs(now);
         end
+        cadence.save_layout(hud.hide_frame());
         return;
     end
 
     -- Buffs are checked even while the game hides, so a stun then isn't learned as a slow attack.
-    check_buffs(now);
+    if (show_attack or show_resting or show_enemy or window_open or attack.watching_buffs()) then
+        check_buffs(now);
+    end
 
     -- /cadence hide keeps everything running but draws no timers. The settings window still opens.
     if (cadence.hidden) then
         show_resting, show_attack, show_enemy = false, false, false;
+        show_recovery = false;
+        show_enemycast = false;
     end
 
     -- Nothing is drawn while the game hides, the settings window included. It comes back with the
     -- game. A slider held as hiding starts never gets let go, so it saves here.
-    if (hidden_by_game(s.style, entity)) then
+    local hidden, chat_open, menus_open = hidden_by_game(s.style, entity);
+    if (hidden) then
+        cadence.save_layout(hud.hide_frame());
         if (cadence.unsaved) then
             save_settings();
             cadence.unsaved = false;
@@ -1054,15 +1162,29 @@ local function render()
         return;
     end
 
+    -- Only drawing changes. Packet observations, learned timing and completion sounds keep running.
+    if (chat_open or menus_open) then
+        show_attack = show_attack and not cadence.menu_hides(chat_open, menus_open, 'chat_attack', 'menus_attack');
+        show_resting = show_resting and not cadence.menu_hides(chat_open, menus_open, 'chat_resting', 'menus_resting');
+        show_enemy = show_enemy and not cadence.menu_hides(chat_open, menus_open, 'chat_enemy', 'menus_enemy');
+        show_recovery = show_recovery and not cadence.menu_hides(chat_open, menus_open, 'chat_recovery', 'menus_recovery');
+        show_enemycast = show_enemycast and not cadence.menu_hides(chat_open, menus_open, 'chat_enemycast', 'menus_enemycast');
+    end
+
     local shift = shift_held() and not typing_in_game();
     hud.set_movable(shift);
-    hud.begin_frame();
-    hud.join_below(show_enemy and s.enemy.attached and s.attack.enabled);
+    hud.begin_frame(not forced and recovery_view or nil, not forced and cast_live and cadence.enemy_cast_view or nil);
+    hud.join_below(show_enemy and s.enemy.attached and s.attack.enabled,
+        show_recovery and s.recovery.attached and s.attack.enabled,
+        show_enemycast and s.enemycast.attached and s.enemy.enabled);
     if (show_resting) then
         draw_resting(now, resting_sample, forced, cadence.preview.state, preview_now);
     end
     if (show_attack) then
         draw_attack(now, attack_sample, forced, cadence.preview.state, preview_now);
+    end
+    if (show_recovery) then
+        cadence.draw_recovery(now, window_open, forced, preview_now);
     end
     if (show_enemy) then
         if (not enemy_live) then
@@ -1070,20 +1192,12 @@ local function render()
         end
         hud.draw_enemy(enemy_view);
     end
+    if (show_enemycast) then cadence.draw_enemycast(now, window_open, forced, preview_now); end
     local need_details = (window_open and settings_window.needs_details()) or hud.needs_details();
     if (need_details and (cadence.details == nil or now - cadence.details_at >= 0.2)) then
         cadence.details, cadence.details_at = report_snapshot(now), now;
     end
-    local moved, before = hud.end_frame(need_details and cadence.details or nil);
-    if (moved) then
-        if (before) then
-            presets.remember_snapshot(before);
-            ui_tools.history.record_patch(s, before, 'Move or resize timers');
-            ui_tools.undoing = true;
-        end
-        save_settings();
-        ui_tools.undoing = nil;
-    end
+    cadence.save_layout(hud.end_frame(need_details and cadence.details or nil));
 
     local window_result = settings_window.draw(s, addon.version, cadence.hidden, shift, cadence.preview, cadence.details);
     handle_window(window_result);
@@ -1111,6 +1225,16 @@ local RESET_ALL_SECONDS = 10;
     Preset and Font have commands of their own.
 ]]
 local SETTINGS = {
+    { tab = 'Enemy', section = 'enemycast', word = 'attach', key = 'attached', name = 'Attach under enemy attack' },
+    { tab = 'Enemy', section = 'enemycast', word = 'seconds', key = 'show_value', name = 'Seconds left' },
+    { tab = 'Enemy', section = 'enemycast', word = 'spell', key = 'show_spell', name = 'Spell name' },
+    { tab = 'Enemy', section = 'enemycast', word = 'numbers', key = 'numbers_only', name = 'Text only' },
+    { tab = 'Appearance', section = 'enemycast', word = 'label', key = 'show_label', name = 'Show its name' },
+    { tab = 'Timers', section = 'recovery', word = 'attach', key = 'attached', name = 'Attach under auto attack' },
+    { tab = 'Timers', section = 'recovery', word = 'seconds', key = 'show_value', name = 'Seconds left' },
+    { tab = 'Timers', section = 'recovery', word = 'source', key = 'show_source', name = 'Action source' },
+    { tab = 'Timers', section = 'recovery', word = 'numbers', key = 'numbers_only', name = 'Text only' },
+    { tab = 'Appearance', section = 'recovery', word = 'label', key = 'show_label', name = 'Show its name' },
     { tab = 'Appearance', section = 'style', word = 'tips', key = 'hover_tips', name = 'Timer hover help' },
     { tab = 'Appearance', section = 'style', word = 'record', key = 'record_diagnostics', name = 'Record timing details' },
     { tab = 'Timers', section = 'attack',  word = 'seconds',    key = 'show_value',         name = 'Seconds left' },
@@ -1182,6 +1306,18 @@ local SETTINGS = {
     one above that end.
 ]]
 local NUMBERS = {
+    { tab = 'Enemy', section = 'enemycast', word = 'width', key = 'width', name = 'Width',
+        what = 'how wide the enemy cast timer is', said = 'The enemy cast timer\'s width is set to %s px.' },
+    { tab = 'Enemy', section = 'enemycast', word = 'height', key = 'height_scale', name = 'Height', places = 2,
+        what = 'its overall height', said = 'The enemy cast timer\'s height is set to %sx.' },
+    { tab = 'Enemy', section = 'enemycast', word = 'barheight', key = 'bar_height', name = 'Bar height',
+        what = 'how thick its bar is', said = 'The enemy cast timer\'s bar height is set to %s px.' },
+    { tab = 'Timers', section = 'recovery', word = 'width', key = 'width', name = 'Width',
+        what = 'how wide the action recovery timer is', said = 'The action recovery timer\'s width is set to %s px.' },
+    { tab = 'Timers', section = 'recovery', word = 'height', key = 'height_scale', name = 'Height', places = 2,
+        what = 'its overall height', said = 'The action recovery timer\'s height is set to %sx.' },
+    { tab = 'Timers', section = 'recovery', word = 'barheight', key = 'bar_height', name = 'Bar height',
+        what = 'how thick its bar is', said = 'The action recovery timer\'s bar height is set to %s px.' },
     { tab = 'Timers', section = 'attack', word = 'width', key = 'width', name = 'Width',
         what = 'how wide the timer is',
         said = 'The auto attack timer\'s width is set to %s px.' },
@@ -1255,6 +1391,14 @@ local NUMBERS = {
     the order help lists them. `word` is what you type, and `section` and `key` are where it's saved.
 ]]
 local COLOR_GROUPS = {
+    { name = 'ENEMY CAST', colors = {
+        { word = 'enemycast_fill_start', section = 'enemycast', key = 'fill_start' },
+        { word = 'enemycast_fill_end', section = 'enemycast', key = 'fill_end' },
+    } },
+    { name = 'ACTION RECOVERY', colors = {
+        { word = 'recovery_fill_start', section = 'recovery', key = 'fill_start' },
+        { word = 'recovery_fill_end', section = 'recovery', key = 'fill_end' },
+    } },
     { name = 'AUTO ATTACK TIMER', colors = {
         { word = 'attack_tp',          section = 'attack',  key = 'tp_color' },
         { word = 'attack_fill_start',  section = 'attack',  key = 'fill_start' },
@@ -1293,7 +1437,7 @@ local COLOR_GROUPS = {
 
 -- The name each timer shows while its label is empty. Attached under the auto attack timer, the enemy
 -- timer shows ENEMY.
-local OWN_NAMES = { attack = 'AUTO ATTACK', resting = 'RESTING', enemy = 'ENEMY ATTACK' };
+local OWN_NAMES = { attack = 'AUTO ATTACK', resting = 'RESTING', enemy = 'ENEMY ATTACK', recovery = 'ACTION RECOVERY', enemycast = 'ENEMY CAST' };
 
 -- How a color is typed, for help.
 local HEX_HELP = 'The color is six hex digits like c55151. Two more, from 00 to ff, set how solid it is, like '
@@ -1532,7 +1676,7 @@ local function print_look_help()
             say_number(row);
         end
     end
-    say('/cadence attack|resting|enemy labeltext <text>  gives that timer a name of your own, like AA. "" puts its '
+    say('/cadence attack|resting|enemy|recovery|enemycast labeltext <text>  gives that timer a name of your own, like AA. "" puts its '
         .. 'own name back.');
     say(('/cadence color %s <rrggbb>  sets one of the Appearance tab\'s colors. /cadence help colors lists every color.')
         :format(color_words('style')));
@@ -1697,10 +1841,15 @@ local function print_help(word)
     elseif (word == 'reset') then
         print_reset_help();
         return;
+    elseif (word == 'visibility') then
+        say('/cadence visibility chat|menus off|all|selected  chooses when timers hide.');
+        say('/cadence visibility chat|menus attack|resting|enemy|recovery|enemycast on|off  chooses a timer and switches to Selected timers.');
+        say('Chat means the full-screen chat log. Other menus excludes maps, typing and macro palettes. Hidden timers keep tracking.');
+        return;
     elseif (word == 'ui' or word == 'layout' or word == 'tabs' or word == 'resetsection') then
         say('/cadence layout minimal|melee|resting|enemy  picks timer readouts and keeps your look and positions.');
         say('/cadence layout preview <name>  shows the proposed layout before you apply it.');
-        say('/cadence resetsection attack|resting|timers|enemy|appearance|window|windowcolors|preview|profiles  resets one section.');
+        say('/cadence resetsection attack|resting|recovery|timers|enemy|enemycast|visibility|appearance|window|windowcolors|preview|profiles  resets one section.');
         say('/cadence tab <name> on|off  shows or hides a settings tab. Appearance always stays available. /cadence tabs all shows every tab.');
         say('/cadence preview inline [on|off]  shows a sample inside Appearance. Search Previous and Next step through matching settings.');
         say('/cadence details [attack|tp|resting|enemy]  opens the matching timing details.');
@@ -1726,7 +1875,7 @@ local function print_help(word)
         print_chat_color_help();
         return;
     elseif (word == 'preview' or word == 'details') then
-        say('/cadence preview auto|attack|resting|enemy [normal|blocked|waiting|full]  selects a sample while settings are open.');
+        say('/cadence preview auto|attack|resting|enemy|recovery|enemycast [normal|blocked|waiting|full]  selects a sample while settings are open.');
         say('/cadence preview pause|resume  stops or starts the sample animation. /cadence preview inline [on|off] shows the Appearance sample.');
         say('/cadence attack time [on|off]  shows estimated seconds to your TP goal.');
         say('/cadence resting goal [on|off]  shows your recovery goal.');
@@ -1740,13 +1889,13 @@ local function print_help(word)
     end
 
     say('/cadence  opens or closes the settings window. Leave out on|off and a switch flips.');
-    say('/cadence hide|show  hides or shows the timers. /cadence record, /cadence guides and /cadence tips [on|off] set recording, alignment and hover help.');
+    say('/cadence hide|show  hides or shows timers. /cadence help visibility explains chat/menu hiding. /cadence record|guides|tips [on|off] sets recording, alignment or hover help.');
     say('/cadence info [details]  explains your timing and bonuses. /cadence report saves a local timing report.');
-    say('/cadence help attack|resting|enemy|appearance|colors|preset|font|reset|chatcolors|profiles|preview|details|ui  '
+    say('/cadence help attack|resting|enemy|recovery|enemycast|appearance|colors|preset|font|reset|chatcolors|profiles|preview|details|ui  '
         .. 'tells you more about one of them.');
-    say('/cadence attack|resting|enemy [on|off]  turns a timer on or off.');
+    say('/cadence attack|resting|enemy|recovery|enemycast [on|off]  turns a timer on or off.');
     say('Timers tab');
-    say('/cadence attack|resting <part> [on|off]  sets one of its boxes, like /cadence attack tp off. A slider takes '
+    say('/cadence attack|resting|recovery <part> [on|off]  sets one of its boxes, like /cadence attack tp off. A slider takes '
         .. 'a number, like /cadence attack width 300.');
     say_tab('Timers');
     say('Enemy tab');
@@ -1756,7 +1905,7 @@ local function print_help(word)
     say('Appearance tab');
     say(('/cadence preset %s  picks a preset. /cadence undo takes it back.'):format(table.concat(presets.IDS, '|')));
     say('/cadence font <name>  picks the font. /cadence lock|unlock stops or allows moving with Shift + drag.');
-    say('/cadence attack|resting|enemy label [on|off]  shows or hides that timer\'s name. Type your own with '
+    say('/cadence attack|resting|enemy|recovery|enemycast label [on|off]  shows or hides that timer\'s name. Type your own with '
         .. 'labeltext, like /cadence attack labeltext AA.');
     say_tab('Appearance');
     say('/cadence color <what> <rrggbb>  sets one of the timers\' colors. /cadence help colors lists them.');
@@ -1883,6 +2032,8 @@ report_snapshot = function (now)
         attack = attack.info(now, cadence.delay_estimate, cadence.delay_key), tp = tp.info(now),
         resting = resting.info and resting.info(now) or nil,
         enemy = enemy.info and enemy.info(now, cadence.enemy_id) or nil,
+        recovery = cadence.recovery.progress(now),
+        enemycast = cadence.enemy_cast_snapshot(now),
     };
 end
 
@@ -2247,7 +2398,7 @@ local function save_profile(words)
         say(('There\'s already a profile called "%s". /cadence profile overwrite saves over it.'):format(taken));
     elseif (profiles.no_link_word(name)) then
         say(profiles.NO_LINK_NAME:format(name));
-    elseif (not profiles.save(cadence.settings, name)) then
+    elseif (not profiles.save(cadence.settings, name, true)) then
         say(profiles.problem());
     else
         save_settings();
@@ -2489,6 +2640,8 @@ local function set_timer(key, word)
     else
         timer.enabled = not timer.enabled;
     end
+    if (key == 'recovery' and not timer.enabled) then cadence.recovery.reset(); end
+    if (key == 'enemycast' and not timer.enabled) then cadence.enemy_cast.reset(); end
     save_settings();
     say(('%s is %s.'):format(TIMER_NAMES[key], timer.enabled and 'on' or 'off'));
 end
@@ -2512,20 +2665,38 @@ local function set_preview(timer, state)
     local value = { timer = current.timer, state = current.state, paused = current.paused };
     if (timer == 'pause' or timer == 'resume') then
         value.paused = timer == 'pause';
-    elseif (timer == 'auto' or timer == 'attack' or timer == 'resting' or timer == 'enemy') then
+    elseif (timer == 'auto' or timer == 'attack' or timer == 'resting' or timer == 'enemy' or timer == 'recovery' or timer == 'enemycast') then
         value.timer = timer;
         if (state ~= nil) then
-            if (state ~= 'normal' and state ~= 'blocked' and state ~= 'waiting' and state ~= 'full') then
-                say('Preview states are normal, blocked, waiting and full.'); return;
+            if (not settings_window.valid_preview_state(timer, state)) then
+                say('Choose a preview state available for this timer in the settings window.'); return;
             end
             value.state = state;
         end
     else
-        say('Type /cadence preview auto|attack|resting|enemy [normal|blocked|waiting|full], or pause|resume.'); return;
+        say('Type /cadence preview auto|attack|resting|enemy|recovery|enemycast [state], or pause|resume.'); return;
     end
     change_preview(value);
     settings_window.set_open(true);
     cadence.broken = false;
+end
+
+function cadence.set_visibility(context, option, value)
+    if ((context ~= 'chat' and context ~= 'menus') or option == nil) then
+        say('Type /cadence visibility chat|menus off|all|selected, or chat|menus <timer> on|off.'); return;
+    end
+    local visibility = cadence.settings.visibility;
+    if ((option == 'off' or option == 'all' or option == 'selected') and value == nil) then
+        visibility[context] = option;
+    elseif (TIMER_NAMES[option] ~= nil and ON_WORDS[value] ~= nil) then
+        visibility[context .. '_' .. option] = ON_WORDS[value];
+        visibility[context] = 'selected';
+    else
+        say('Type /cadence visibility chat|menus off|all|selected, or chat|menus attack|resting|enemy|recovery|enemycast on|off.'); return;
+    end
+    save_settings();
+    say((context == 'chat' and 'Full-screen chat log' or 'Other menus') .. ' visibility: '
+        .. (visibility[context] == 'off' and 'off.' or visibility[context] == 'all' and 'hide all timers.' or 'hide selected timers.'));
 end
 
 ashita.events.register('command', 'cadence_command', function (e)
@@ -2581,6 +2752,8 @@ ashita.events.register('command', 'cadence_command', function (e)
         run_setting(row, word);
     elseif (number_row ~= nil) then
         set_number(number_row, word);
+    elseif (sub == 'visibility') then
+        cadence.set_visibility(word, args[4] and args[4]:lower(), args[5] and args[5]:lower());
     elseif (sub == 'preview' and word == 'inline') then
         local on = args[4] and ON_WORDS[args[4]:lower()];
         if (args[4] ~= nil and on == nil) then say('Type /cadence preview inline on|off.');
@@ -2689,14 +2862,72 @@ local CAST_KIND = {
     [CATEGORY.RANGED_START] = 'ranged',
 };
 
+function cadence.on_recovery_action(e, category, now)
+    if (not cadence.settings.recovery.enabled or not cadence.recovery_categories[category] or cadence.my_id == 0) then return; end
+    local entity = player.entity();
+    if (entity == nil or STATUS_DEAD[entity.Status] or STATUS_DEAD[cadence.server_status]
+        or (entity.MonstrosityFlag ~= nil and entity.MonstrosityFlag ~= 0)) then
+        cadence.recovery.reset();
+        return;
+    end
+    local param = packets.action_param(e);
+    local count = packets.action_results(e, cadence.results);
+    if (count == 0) then return; end
+    for i = 1, count do
+        if (PARALYZED_OR_INTIMIDATED[cadence.results[i].message]) then return; end
+    end
+    if (category == CATEGORY.SPELL_START or category == CATEGORY.ITEM_START or category == CATEGORY.RANGED_START) then
+        cadence.recovery.on_action(now, category, param, nil, e.data);
+        return;
+    end
+    local result = cadence.results[1];
+    cadence.recovery.on_action(now, category, param, result.animation, e.data, result.message);
+    if (diagnostics.is_enabled()) then diagnostics.record('recovery', now, cadence.recovery.progress(now)); end
+end
+
+function cadence.on_enemy_cast_action(e, actor, category, now)
+    if (not cadence.settings.enemycast.enabled or cadence.my_id == 0
+        or STATUS_DEAD[cadence.server_status]) then return; end
+    local entity = player.entity();
+    if (entity == nil or STATUS_DEAD[entity.Status]) then return; end
+    if (category ~= CATEGORY.SPELL_START and category ~= CATEGORY.SPELL_FINISH
+        and category ~= CATEGORY.MELEE and category ~= CATEGORY.WEAPONSKILL
+        and category ~= CATEGORY.MOBSKILL_FINISH and category ~= CATEGORY.MOBSKILL_START) then return; end
+    if (packets.action_results(e, cadence.results) == 0) then return; end
+    local param = packets.action_param(e);
+    if (category == CATEGORY.SPELL_START) then
+        if (param == packets.CAST_BEGIN) then
+            if (monster_index(actor) == nil) then return; end
+            local spell_id = cadence.results[1].param;
+            if (spell_id == nil or spell_id <= 0) then return; end
+            local ok, name = pcall(function()
+                local spell = AshitaCore:GetResourceManager():GetSpellById(spell_id);
+                return spell and spell.Name and spell.Name[1];
+            end);
+            if (not ok or type(name) ~= 'string' or name == '') then name = 'Spell ' .. spell_id; end
+            cadence.enemy_cast.on_start(now, actor, spell_id, name, cadence.recovery_data.spell_casts[spell_id], e.data);
+        elseif (param == packets.CAST_INTERRUPT) then
+            local spell_id = cadence.results[1].param;
+            if (spell_id > 0) then cadence.enemy_cast.on_end(actor, spell_id, e.data); end
+        end
+    elseif (category == CATEGORY.SPELL_FINISH) then
+        if (param > 0) then cadence.enemy_cast.on_end(actor, param, e.data); end
+    elseif (category == CATEGORY.MELEE or category == CATEGORY.WEAPONSKILL or category == CATEGORY.MOBSKILL_FINISH
+        or (category == CATEGORY.MOBSKILL_START and param == packets.CAST_BEGIN)) then
+        cadence.enemy_cast.on_end(actor, nil, e.data);
+    end
+end
+
 local function on_my_action(e, category, now)
+    cadence.on_recovery_action(e, category, now);
     if (category == CATEGORY.MELEE) then
-        local estimate, key, loadout = current_delay();
-        attack.on_round(now, estimate, key, loadout.modifiers.delay_known, loadout.modifiers.transition);
         -- A round means the server let you attack, so any range or facing word starts over from here.
         cadence.battle_id = packets.action_target(e);
         tp.on_target(cadence.battle_id);
         reach.forget();
+        if (not cadence.settings.attack.enabled and not diagnostics.is_enabled()) then return; end
+        local estimate, key, loadout = current_delay();
+        attack.on_round(now, estimate, key, loadout.modifiers.delay_known, loadout.modifiers.transition);
         if (tracking_tp()) then
             local hits, hit_back, clean_start = packets.melee_hits(e);
             tp.on_round(now, hits, hit_back, clean_start, loadout);
@@ -2707,26 +2938,43 @@ local function on_my_action(e, category, now)
         return;
     end
 
+    if (not cadence.settings.attack.enabled and not diagnostics.is_enabled()) then return; end
     -- Anything else you do can change your TP, like a weapon skill using it up. Meditate is told apart
     -- by its job ability id.
     tp.on_own_action(now, category == CATEGORY.ABILITY and packets.action_param(e) or nil);
-    if (category == CATEGORY.WEAPONSKILL or category == CATEGORY.ABILITY) then
-        attack.on_ability(now);
+    if (category == CATEGORY.WEAPONSKILL or category == CATEGORY.ABILITY
+        or category == CATEGORY.DANCER or category == CATEGORY.RUNE_FENCER) then
+        local count = packets.action_results(e, cadence.results);
+        local first, param = count > 0 and cadence.results[1] or nil, packets.action_param(e);
+        local kind, seconds, status = cadence.recovery.classify(category, param, first and first.animation, first and first.message);
+        if (status ~= 'ignored') then
+            local ability = cadence.recovery_data.abilities[param];
+            local tail = kind == 'weaponskill' and seconds or status ~= 'unknown' and ability and ability.attack_seconds;
+            attack.on_ability(now, tail or false);
+        end
     elseif (CAST_KIND[category] ~= nil) then
         local param = packets.action_param(e);
         if (param == packets.CAST_BEGIN) then
+            local count = packets.action_messages(e, cadence.messages);
+            for i = 1, count do if (PARALYZED_OR_INTIMIDATED[cadence.messages[i]]) then return; end end
             attack.on_cast_begin(now, CAST_KIND[category]);
         elseif (param == packets.CAST_INTERRUPT) then
-            attack.on_cast_end(now);
+            -- An interrupt does not reveal when the server releases its current action state.
+            attack.on_cast_end(now, false);
         end
     elseif (category == CATEGORY.SPELL_FINISH) then
         if (packets.action_param(e) == 0) then
             on_failed_action(e, now);
         else
-            attack.on_cast_end(now);
+            local count = packets.action_messages(e, cadence.messages);
+            for i = 1, count do if (PARALYZED_OR_INTIMIDATED[cadence.messages[i]]) then return; end end
+            attack.on_cast_end(now, cadence.recovery_data.spell_attack_seconds[packets.action_param(e)] or false);
         end
-    elseif (category == CATEGORY.ITEM_FINISH or category == CATEGORY.RANGED_FINISH) then
-        attack.on_cast_end(now);
+    elseif (category == CATEGORY.ITEM_FINISH) then
+        local seconds = cadence.recovery_data.items[packets.action_param(e)];
+        attack.on_cast_end(now, seconds and math.max(cadence.recovery_data.attack_tails.item_min, seconds) or false);
+    elseif (category == CATEGORY.RANGED_FINISH) then
+        attack.on_cast_end(now, cadence.recovery_data.attack_tails.ranged);
     end
 end
 
@@ -2741,12 +2989,22 @@ local function on_enemy_action(e, actor, category, now)
         elseif (param == packets.CAST_INTERRUPT) then
             enemy.on_interrupt(now, actor, category == CATEGORY.SPELL_START);
         end
-    elseif (category == CATEGORY.MOBSKILL_FINISH or category == CATEGORY.WEAPONSKILL) then
+    elseif (category == CATEGORY.WEAPONSKILL) then
         -- A monster using a player weapon skill finishes it with category 3, not 11.
+        local count = packets.action_results(e, cadence.results);
+        local first = count > 0 and cadence.results[1] or nil;
+        local kind, seconds, status = cadence.recovery.classify(category, packets.action_param(e),
+            first and first.animation, first and first.message);
+        if (status ~= 'ignored') then
+            enemy.on_hold_end(now, actor, false, kind == 'weaponskill' and seconds or false);
+        end
+    elseif (category == CATEGORY.MOBSKILL_FINISH) then
         enemy.on_hold_end(now, actor);
     elseif (category == CATEGORY.SPELL_FINISH) then
         if (packets.action_param(e) ~= 0) then
-            enemy.on_hold_end(now, actor);
+            local count = packets.action_messages(e, cadence.messages);
+            for i = 1, count do if (PARALYZED_OR_INTIMIDATED[cadence.messages[i]]) then return; end end
+            enemy.on_hold_end(now, actor, false, cadence.recovery_data.spell_attack_seconds[packets.action_param(e)] or false);
         elseif (packets.action_messages(e, cadence.messages) > 0) then
             local message = cadence.messages[1];
             if (PARALYZED_OR_INTIMIDATED[message]) then
@@ -2842,15 +3100,16 @@ local function on_action(e)
     if (actor == cadence.my_id) then
         on_my_action(e, category, now);
     elseif (actor >= FIRST_MONSTER_ID) then
+        cadence.on_enemy_cast_action(e, actor, category, now);
         -- A monster's action on you can give you TP too.
         if (tracking_tp() and packets.action_has_target(e, cadence.my_id)) then
             tp.on_stir();
         end
-        if (cadence.settings.enemy.enabled) then
+        if ((cadence.settings.enemy.enabled or cadence.settings.enemycast.enabled)) then
             on_enemy_action(e, actor, category, now);
         end
     end
-    if (cadence.settings.enemy.enabled and monster_effects.can_land(category)) then
+    if ((cadence.settings.enemy.enabled or cadence.settings.enemycast.enabled) and monster_effects.can_land(category)) then
         watch_effects(e, actor, category, now);
     end
 end
@@ -2865,7 +3124,7 @@ local function on_message(e)
     end
     if (actor == cadence.my_id and CANT_ATTACK[message] ~= nil) then
         attack.on_out_of_reach(CANT_ATTACK[message] or nil);
-    elseif (target >= FIRST_MONSTER_ID and cadence.settings.enemy.enabled) then
+    elseif (target >= FIRST_MONSTER_ID and (cadence.settings.enemy.enabled or cadence.settings.enemycast.enabled)) then
         if (actor == cadence.my_id and monster_effects.WEARS_OFF[message]) then
             enemy.on_effect_gone(os.clock(), target, param);
         elseif (monster_effects.DEFEATED[message]) then
@@ -2873,6 +3132,7 @@ local function on_message(e)
                 enemy.remember(target, cadence.enemy_name);
             end
             enemy.forget(target);
+            cadence.enemy_cast.forget(target);
         end
     end
 end
@@ -2893,6 +3153,7 @@ local function on_status(e)
     if (cadence.my_id == 0 or who ~= cadence.my_id) then return; end
     local previous = cadence.server_status;
     cadence.server_status = status;
+    if (STATUS_DEAD[status]) then cadence.recovery.reset(); cadence.enemy_cast.reset(); end
     track_attack_status(os.clock(), status, previous == STATUS_ENGAGED);
 end
 
@@ -2905,9 +3166,11 @@ local function on_vitals(e)
     local hp, mp, tp_value = packets.vitals(e);
     local hp_max, mp_max = player.max_vitals();
     stat_state.on_vitals(now, hp, mp, tp_value, hp_max, mp_max);
-    local loadout = read_loadout(now);
-    resting.on_model(loadout.modifiers);
-    if (tracking_tp()) then tp.on_loadout(loadout); end
+    if (cadence.needs_modifiers()) then
+        local loadout = read_loadout(now);
+        resting.on_model(loadout.modifiers);
+        if (tracking_tp()) then tp.on_loadout(loadout); end
+    end
     resting.on_vitals(now, hp, mp, tp_value, hp_max, mp_max);
     tp.on_vitals(now, tp_value);
     if (diagnostics.is_enabled()) then
@@ -2921,6 +3184,7 @@ local function on_zone_in(e)
     cadence.my_id = packets.zone_in(e);
     cadence.last_status, cadence.attack_status, cadence.server_status = nil, nil, nil;
     attack.reset();
+    cadence.recovery.reset(); cadence.enemy_cast.reset();
     resting.reset();
     enemy.reset();
     cadence.enemy_id = nil;
@@ -2933,7 +3197,8 @@ local function on_zone_in(e)
 end
 
 ashita.events.register('packet_in', 'cadence_packet_in', function (e)
-    if (not packets.valid(e) or e.blocked or e.injected or e.is_injected or e.blocked_original) then return; end
+    if (type(e) ~= 'table' and type(e) ~= 'userdata') then return; end
+    if (e.blocked or e.injected or not packets.begin_event(e)) then return; end
     stat_state.on_packet(e, os.clock(), cadence.my_id);
     local id = e.id;
     if (id == packets.ID.ACTION) then
@@ -2952,11 +3217,13 @@ ashita.events.register('packet_in', 'cadence_packet_in', function (e)
         local vanished = packets.despawned(e);
         if (vanished ~= nil) then
             enemy.on_disappear(vanished);
+            cadence.enemy_cast.forget(vanished);
             if (cadence.enemy_id == vanished) then cadence.enemy_id, cadence.enemy_status, cadence.enemy_name = nil, nil, nil; end
             if (cadence.target_id == vanished) then cadence.target_id, cadence.target_status = nil, nil; end
             if (cadence.battle_id == vanished) then cadence.battle_id = nil; end
         end
     end
+    packets.end_event();
 end);
 
 --[[
@@ -2982,6 +3249,8 @@ ashita.events.register('load', 'cadence_load', function ()
     window_font.load_all();
     sound.make_folder();
     cadence.my_id = player.server_id() or 0;
+    local entity = player.entity();
+    if (entity and entity.Status ~= STATUS_RESTING) then cadence.last_status = entity.Status; end
     pick_settings();
 end);
 
@@ -3016,6 +3285,7 @@ settings.register('settings', 'cadence_settings_update', function (s)
     hud.cancel_layout_gesture();
     presets.forget_undo();
     attack.reset();
+    cadence.recovery.reset(); cadence.enemy_cast.reset();
     cadence.attack_status, cadence.server_status = nil, nil;
     attack.forget_learned();
     tp.forget();

@@ -4,9 +4,17 @@ local function check(name, ok)
     out[#out + 1] = (ok and 'ok   ' or 'FAIL ') .. name;
     if (not ok) then failed = failed + 1; end
 end
+local packet_fields = { id = true, size = true, data = true, data_raw = true, data_modified = true,
+    data_modified_raw = true, chunk_size = true, chunk_data = true, chunk_data_raw = true,
+    injected = true, blocked = true };
 local function native(fields)
     local value = newproxy(true);
-    getmetatable(value).__index = fields;
+    getmetatable(value).__index = function (_, key)
+        if (not packet_fields[key]) then
+            error('Packet events do not expose ' .. key);
+        end
+        return fields[key];
+    end;
     return value;
 end
 local packets = require('core.packets');
@@ -63,9 +71,10 @@ memory.GetParty = function () return party; end;
 AshitaCore.GetMemoryManager = function () return memory; end;
 MOCK.player.main_job, MOCK.player.main_level, MOCK.player.sub_job, MOCK.player.sub_level = 1, 30, 6, 15;
 MOCK.player.hp, MOCK.player.hp_max, MOCK.player.mp, MOCK.player.mp_max = 526, 562, 0, 0;
-MOCK.player.tp, MOCK.player.status, MOCK.player.zone, MOCK.player.buffs = 137, 33, 147, { 253, 251 };
+MOCK.player.tp, MOCK.player.status, MOCK.player.zone, MOCK.player.buffs = 137, 0, 147, { 253, 251 };
 dofile(ADDON_DIR .. '/cadence.lua'); MOCK.fire('load');
 local resting, observer = require('core.resting'), require('core.stat_state');
+MOCK.player.status = 33;
 MOCK.frame(0);
 local diagnostics = require('core.diagnostics');
 diagnostics.enable(true);
@@ -99,7 +108,7 @@ MOCK.now = 25; MOCK.fire('packet_in', message);
 check('registered native action and message paths still exclude direct HP recovery', direct_calls == 2);
 resting.on_direct_change = original_direct;
 
-for _, flag in ipairs({ 'blocked', 'injected', 'is_injected', 'blocked_original' }) do
+for _, flag in ipairs({ 'blocked', 'injected' }) do
     local fields = MOCK.vitals_packet(1001, 1, 0, 0); fields[flag] = true;
     MOCK.fire('packet_in', native(fields));
 end

@@ -115,12 +115,16 @@ local TIMER_LOOK = {
     attack = { 'width', 'height_scale', 'bar_height', 'fill_start', 'fill_end', 'ready_color', 'almost_color', 'tp_color',
         'numbers_only', 'almost_mark', 'show_label' },
     resting = { 'width', 'height_scale', 'bar_height', 'fill_start', 'fill_end', 'full_color', 'flash_color', 'numbers_only', 'show_label' },
+    recovery = { 'width', 'height_scale', 'bar_height', 'fill_start', 'fill_end', 'numbers_only', 'show_label' },
+    enemycast = { 'width', 'height_scale', 'bar_height', 'fill_start', 'fill_end', 'numbers_only', 'show_label' },
     enemy = { 'width', 'height_scale', 'bar_height', 'fill_start', 'fill_end', 'ready_color', 'almost_color', 'on_you_color',
         'numbers_only', 'almost_mark', 'show_label' },
 };
 local SECTIONS = {
     { id = 'timers', name = 'Timers' }, { id = 'attack', name = 'Auto attack' }, { id = 'resting', name = 'Resting' },
-    { id = 'enemy', name = 'Enemy' }, { id = 'appearance', name = 'Appearance' }, { id = 'window', name = 'Window' },
+    { id = 'recovery', name = 'Action recovery' }, { id = 'enemy', name = 'Enemy' }, { id = 'enemycast', name = 'Enemy cast' },
+    { id = 'visibility', name = 'Menu visibility' },
+    { id = 'appearance', name = 'Appearance' }, { id = 'window', name = 'Window' },
     { id = 'windowcolors', name = 'Window colors' }, { id = 'preview', name = 'Preview' }, { id = 'profiles', name = 'Job links' },
 };
 local function find_section(id)
@@ -139,11 +143,14 @@ local function copy_keys(settings, base, section, keys)
 end
 
 local function reset(settings, base, id)
-    if (id == 'timers') then reset(settings, base, 'attack'); reset(settings, base, 'resting');
+    if (id == 'timers') then reset(settings, base, 'attack'); reset(settings, base, 'resting'); reset(settings, base, 'recovery');
     elseif (TIMER_LOOK[id]) then
         for key, value in pairs(base[id]) do
             if (not TIMER_KEEP[key]) then settings[id][key] = history.copy(value); end
         end
+        if (id == 'enemy') then reset(settings, base, 'enemycast'); end
+    elseif (id == 'visibility') then
+        for key, value in pairs(base.visibility) do settings.visibility[key] = value; end
     elseif (id == 'window') then
         copy_keys(settings, base, 'window_style', { 'font', 'font_size', 'rounding', 'spacing' });
         copy_keys(settings, base, 'style', { 'hover_tips', 'record_diagnostics' });

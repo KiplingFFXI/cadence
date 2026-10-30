@@ -103,9 +103,8 @@ MOCK.player.buffs = {};
 round();
 check('an attack ends the pause', near(left_now(), 4.0, 0.001), left_now());
 
--- Stunned mid-spell. The spell is cut off, and the pause counts from there. The spell started with
--- 3.6 s left. Cutting it off still adds the 2 s wait after a spell, so 5.6 s are left once the stun
--- ends.
+-- An interrupt does not reveal the spell state's remaining lifetime. Keep that uncertainty until
+-- an observed attack supplies a new phase, including when the disabling effect has worn off.
 T = T + 100;
 engaged_at(T);
 run_to(T + 14.0);
@@ -114,13 +113,14 @@ run_to(T + 14.2);
 MOCK.player.buffs = { 10 };
 run_to(T + 14.8);
 MOCK.fire('packet_in', MOCK.action_packet(ME, 8, 0x7073, ME, { { message = 16 } }));
-local cut_off = left_now();
-check('stunned mid-spell, the pause counts from the cut off', near(cut_off, 5.6, 0.05), cut_off);
+check('stunned mid-spell, the remaining spell suspension stays unknown', left_now() == nil);
 run_to(T + 17.0);
-check('and the bar stays put', near(left_now(), cut_off, 0.001), left_now());
+check('the stun cannot manufacture a remaining spell duration', left_now() == nil);
 MOCK.player.buffs = {};
 run_to(T + 17.4);
-check('then carries on', near(left_now(), 5.6 - 0.4, 0.25), left_now());
+check('wearing off stun keeps the unobserved spell recovery unknown', left_now() == nil);
+round();
+check('the next real attack restores the normal phase', near(left_now(), 4));
 
 -- Disengaging while asleep leaves nothing behind for the next fight.
 T = T + 100;

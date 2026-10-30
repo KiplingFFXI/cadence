@@ -30,18 +30,21 @@ LUA = [
     'cadence/core/delay.lua',
     'cadence/core/diagnostics.lua',
     'cadence/core/enemy.lua',
+    'cadence/core/enemy_cast.lua',
     'cadence/core/file_store.lua',
     'cadence/core/monster_effects.lua',
     'cadence/core/modifiers.lua',
     'cadence/core/packets.lua',
     'cadence/core/player.lua',
     'cadence/core/reach.lua',
+    'cadence/core/recovery.lua',
     'cadence/core/resting.lua',
     'cadence/core/shared_layout.lua',
     'cadence/core/stat_state.lua',
     'cadence/core/tp.lua',
     'cadence/data/phoenix_modifiers.lua',
     'cadence/data/phoenix_effects.lua',
+    'cadence/data/phoenix_recovery.lua',
     'cadence/ui/chat_colors.lua',
     'cadence/ui/defaults.lua',
     'cadence/ui/history.lua',
@@ -382,7 +385,7 @@ def test_job(scratch, bumped_copy, crlf_copy, new):
           and 'needs: verify' in text and 'contents: read' in text)
     check('Verify runs addon, packaging and source checks', all(step in verify for step in (
           'python tests/run.py', 'python tests/test_release.py', 'python tools/check_source.py',
-          'python tools/generate_modifiers.py', 'python tools/generate_effects.py',
+          'python tools/generate_modifiers.py', 'python tools/generate_effects.py', 'python tools/generate_recovery.py',
           "python -m unittest discover -s tools/tests")))
     check('Verify never schedules or publishes changes', 'schedule:' not in verify
           and 'git push' not in verify and 'git commit' not in verify and 'contents: write' not in verify)

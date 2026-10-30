@@ -54,7 +54,7 @@ run_to(110.0);
 check('shown once it\'s full', value():find('|too far|', 1, true) ~= nil);
 
 -- A job ability moves the timer on, so the old reason goes.
-MOCK.fire('packet_in', MOCK.action_packet(ME, 6, 35, ME, { { message = 100 } }));
+MOCK.fire('packet_in', MOCK.action_packet(ME, 6, 35, ME, { { message = 100, animation = 3 } }));
 run_to(112.2);
 check('an ability clears it', value():find('|ready|', 1, true) ~= nil);
 

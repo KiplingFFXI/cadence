@@ -18,7 +18,7 @@ AshitaCore.GetMemoryManager = function () return base_memory; end;
 MOCK.player.main_job, MOCK.player.sub_job, MOCK.player.sub_level = 4, 3, 37;
 MOCK.player.hp_max, MOCK.player.mp_max, MOCK.player.hp, MOCK.player.mp = 900, 300, 500, 100;
 MOCK.player.zone, MOCK.player.buffs = 100, { 253 };
-MOCK.player.status = 33;
+MOCK.player.status = 0;
 MOCK.player.equipment[0] = 17559;
 MOCK.items[17559] = { Delay = 366, Skill = 12 };
 dofile(ADDON_DIR .. '/cadence.lua');
@@ -47,6 +47,7 @@ local function packet(id, size, fields)
     return { id = id, size = size, data = MOCK.to_string(b), data_raw = b };
 end
 
+MOCK.player.status = 33;
 frame(1);
 local model = observer.info();
 check('live-shaped memory feeds BLM traits Dark Staff and regional Signet', model.mp_base == 37 and model.mp_step == 3 and model.hp_base == 31 and model.hp_step == 4 and model.mp_known);

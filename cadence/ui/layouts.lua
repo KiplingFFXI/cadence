@@ -1,7 +1,7 @@
 -- Starter layouts choose timer readouts. Personal styling, targets and positions stay yours.
 local history = require('ui.history');
 local layouts = {};
-local KEEP = 'Keeps positions, sizes, colors, fonts, labels, sounds, TP and recovery targets, enemy following and attachment, and saved profiles.';
+local KEEP = 'Keeps positions, sizes, colors, fonts, labels, sounds, TP and recovery targets, enemy following and attachment, action recovery and enemy cast choices, and saved profiles.';
 local LIST = {
     { id = 'minimal', name = 'Minimal', description = 'Attack and resting countdowns with fewer extra readouts.',
         changes = { 'Enables attack and resting timers and turns the enemy timer off.',
@@ -14,7 +14,7 @@ local LIST = {
         changes = { 'Enables the resting timer and turns attack and enemy timers off.',
             'Shows last and next gains, ticks until full, separate HP/MP full times and the recovery goal.', KEEP } },
     { id = 'enemy', name = 'Enemy tracking', description = 'Enemy timing alongside your attack and resting countdowns.',
-        changes = { 'Enables all three timers.',
+        changes = { 'Enables attack, resting and enemy attack timers.',
             'Shows enemy name, attack interval, speed effects, action holds and attacks on you.',
             'Keeps your chosen enemy-following and attachment behavior.', KEEP } },
 };

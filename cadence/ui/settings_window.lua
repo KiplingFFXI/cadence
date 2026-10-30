@@ -109,7 +109,7 @@ local TIPS = {
     goal_value     = 'The amount or percent you want to reach. A fixed amount above your maximum stops at that maximum.',
     layout_guides  = 'Shows alignment guides and helps timer edges line up while you hold Shift and drag. Turn it off for free movement.',
     preview_timer  = 'Chooses the timer sample shown while settings are open. Auto uses the usual samples. These controls are not saved.',
-    preview_state  = 'Shows how the sample looks during ordinary timing, a pause, a wait or full recovery. It does not change your live timers.',
+    preview_state  = 'Shows a sample state supported by the selected timer, including unknown recovery or a waiting cast. It does not change your live timers.',
     preview_pause  = 'Freezes the sample so you can compare its text, colors and layout. Your live timers keep running.',
     relearn_attack = 'Forgets learned attack intervals and starts from the current model. The pending attack countdown keeps its place.',
     relearn_tp     = 'Forgets observed TP per hit and recent round gains. The next clean hits teach it again.',
@@ -132,6 +132,17 @@ local TIPS = {
     why            = 'While a spell, ranged attack or item holds your auto attack, the bar dims and says why instead '
         .. 'of the seconds, like "casting" for a spell. Sleep, stun and so on do the same, like "asleep" for sleep.',
 
+    recovery_timer = 'Shows estimated recovery after spells, weapon skills, job abilities, items and ranged attacks. Unavailable timing shows unknown briefly. Works while idle or engaged.',
+    recovery_value = 'Shows estimated seconds left with a ~. Other recasts or action locks can still prevent casting after this estimate ends.',
+    recovery_source = 'Names the action that started recovery. Not every job ability creates a recovery delay. Unavailable timing has a short unknown notice, not a countdown.',
+    recovery_attached = 'Matches auto attack\'s width and moves with it, above an attached enemy timer. Recovery still shows while idle. '
+        .. 'With auto attack off, it uses its own spot.',
+    recovery_label = 'Rename the action recovery timer. Leave it empty for ACTION RECOVERY. Untick the box to hide its name.',
+    enemycast_timer = 'Shows the followed monster\'s observed spell cast. Base cast time is an estimate. Waiting never confirms completion. Uses Follows and Keep the last monster even when enemy attack is off.',
+    enemycast_attached = 'Matches the enemy attack timer\'s width and follows beneath it, including when enemy attack is attached to auto attack. With enemy attack off, it uses its saved separate position and width.',
+    enemycast_spell = 'Shows the spell named in the observed cast start. An unavailable name is shown by spell ID.',
+    enemycast_value = 'Shows estimated seconds left with a ~. After the estimate ends, waiting stays until an observed finish or interruption. Stale observations are eventually discarded.',
+    enemycast_label = 'Rename the enemy cast timer. Leave it empty for ENEMY CAST. Untick the box to hide its name.',
     resting_timer  = 'Turns the resting timer on or off. It shows up while you /heal.',
     resting_value  = 'Shows the seconds until your next resting tick.',
     gains          = 'Shows what your last tick restored, like +24 HP +31 MP.',
@@ -154,6 +165,13 @@ local TIPS = {
     hide_on_map    = 'Hides the timers and this window while the map is open. The widescan list doesn\'t count.',
     hide_events    = 'Hides the timers and this window during cutscenes and NPC conversations.',
     hide_ui        = 'Hides the timers and this window while the game\'s interface is hidden with Scroll Lock.',
+    hide_chat_log  = 'Hides all timers or selected timers while the full-screen chat log is open. Ordinary chat typing does not count. Cadence settings stay available.',
+    hide_menus     = 'Hides all timers or selected timers while other game menus are open. Maps use Hide on the map. Ordinary chat typing does not count. Cadence settings stay available.',
+    chat_timer    = 'Hides this timer while the full-screen chat log is open. Used only with Selected timers. Ordinary chat typing does not count.',
+    menu_timer    = 'Hides this timer while other menus are open. Used only with Selected timers. Maps and ordinary chat typing do not count.',
+    cant_see_chat_log = 'Full-screen chat log detection is unavailable on this game version. Your choice stays saved but has no effect until detection is available.',
+    cant_see_menus = 'Menu detection is unavailable on this game version. Your choice stays saved but has no effect until detection is available.',
+    reset_visibility = 'Restores All timers for both menu choices and selects every timer. Undo restores the previous choices.',
     drains         = 'Bars start full and empty out, instead of filling up.',
     show_timers    = 'Brings the timers back. Typing /cadence hide again or /cadence show does the same.',
 
@@ -163,7 +181,7 @@ local TIPS = {
     keep_last      = 'Keeps the timer on the monster it was following while you target a party member, an NPC or '
         .. 'nothing. It lets go once that monster dies, stops fighting or goes quiet for 10 s, longer for a slow one.',
     attached       = 'Puts the enemy timer right under your auto attack timer as a slim strip that moves with it. '
-        .. 'With the auto attack timer off, it sits at its own spot.',
+        .. 'With the auto attack timer off, it uses its own position and width.',
     enemy_value    = 'Shows the seconds until the monster\'s next attack, then "ready" when it can attack. It shows '
         .. '"waiting" once it\'s overdue by a whole attack, like while the monster is asleep or chasing you.',
     enemy_name     = 'Shows the monster\'s name.',
@@ -177,7 +195,7 @@ local TIPS = {
         .. 'either way. Someone else\'s effect gets a question mark once it might have worn off.',
     enemy_width    = 'How wide the timer is. You can also hold Shift and drag its right edge. Attached, it\'s '
         .. 'as wide as the auto attack timer.',
-    enemy_height   = 'How tall the whole enemy timer is, including its text and spacing. Width stays the same. You can also hold Shift and drag its bottom edge when it is at its own spot.',
+    enemy_height   = 'How tall the whole enemy timer is, including its text and spacing. Width stays the same. Hold Shift and drag its bottom edge, including while attached.',
     enemy_bar      = 'How thick the bar is before the timer height is applied. Height changes the whole timer.',
     enemy_ready    = 'The bar\'s color once the monster can attack.',
     enemy_almost   = 'The bar turns this color just before the monster attacks.',
@@ -643,8 +661,8 @@ end
 
 -- The timer size and bar thickness sliders. Bar height is greyed out while
 -- it shows just numbers.
-local function size_sliders(id, element)
-    whole_slider('Width##' .. id, element, 'width', RANGES[id].width, '%d px', TIPS.width);
+local function size_sliders(id, element, width_disabled)
+    whole_slider('Width##' .. id, element, 'width', RANGES[id].width, '%d px', TIPS.width, width_disabled);
     float_slider('Height##' .. id, element, 'height_scale', RANGES[id].height_scale, '%.2fx', TIPS.height);
     whole_slider('Bar height##' .. id, element, 'bar_height', RANGES[id].bar_height, '%d px', TIPS.bar_height,
         element.numbers_only);
@@ -920,9 +938,55 @@ local function draw_resting_section(resting)
     end_fade(faded);
 end
 
--- Hide during events, Hide on the map and Hide with the game UI. Under the auto attack timer, the first two
--- share a line. Stacked, each one gets a line.
-local function draw_all_timers(style)
+ui_state.visibility_modes = defaults.VISIBILITY_MODES;
+ui_state.visibility_names = { off = 'Off', all = 'All timers', selected = 'Selected timers' };
+ui_state.visibility_rows = {
+    { key = 'chat', label = 'Full-screen chat log##visibility', tip = TIPS.hide_chat_log, unavailable = TIPS.cant_see_chat_log,
+        timer_tip = TIPS.chat_timer, controls = {} },
+    { key = 'menus', label = 'Other menus##visibility', tip = TIPS.hide_menus, unavailable = TIPS.cant_see_menus,
+        timer_tip = TIPS.menu_timer, controls = {} },
+};
+for _, row in ipairs(ui_state.visibility_rows) do
+    for _, timer in ipairs({ { 'attack', 'Auto attack' }, { 'resting', 'Resting' }, { 'enemy', 'Enemy attack' },
+        { 'recovery', 'Action recovery' }, { 'enemycast', 'Enemy cast' } }) do
+        row.controls[#row.controls + 1] = { label = timer[2] .. '##hide_' .. row.key .. '_' .. timer[1], key = row.key .. '_' .. timer[1] };
+    end
+end
+
+function settings_window.draw_menu_visibility(visibility)
+    if (not section_open('Menu visibility', false)) then return; end
+    for _, row in ipairs(ui_state.visibility_rows) do
+        local available = row.key == 'chat' and player.can_check_chat() or row.key == 'menus' and player.can_check_menus();
+        imgui.BeginDisabled(not available);
+        imgui.SetNextItemWidth(px(CONTROL_WIDTH));
+        if (imgui.BeginCombo(row.label, ui_state.visibility_names[visibility[row.key]])) then
+            for _, mode in ipairs(ui_state.visibility_modes) do
+                if (imgui.Selectable(mode[2], visibility[row.key] == mode[1]) and visibility[row.key] ~= mode[1]) then
+                    visibility[row.key] = mode[1];
+                    mark_changed(true, row.label);
+                end
+            end
+            imgui.EndCombo();
+        end
+        imgui.EndDisabled();
+        help(available and row.tip or row.unavailable, row.label);
+        if (visibility[row.key] == 'selected' or search.active()) then
+            local any_selected = false;
+            for i, control in ipairs(row.controls) do
+                if (i % 2 == 0) then imgui.SameLine(px(SECOND_COLUMN)); end
+                checkbox_unless(not available or visibility[row.key] ~= 'selected', control.label, visibility, control.key, row.timer_tip);
+                any_selected = any_selected or visibility[control.key];
+            end
+            if (visibility[row.key] == 'selected' and not any_selected) then note('No timers selected.'); end
+        end
+    end
+    if (imgui.SmallButton('Reset menu visibility')) then result.reset_section = 'visibility'; end
+    help(TIPS.reset_visibility, 'Reset menu visibility');
+end
+
+-- Global game visibility choices, followed by menu rules for all or selected timers.
+local function draw_all_timers(settings)
+    local style = settings.style;
     heading('ALL TIMERS');
     checkbox('Hide during events', style, 'hide_during_events', TIPS.hide_events);
     if (not stacked) then
@@ -934,23 +998,43 @@ local function draw_all_timers(style)
     local see_ui = player.can_check_interface();
     checkbox_unless(not see_ui, 'Hide with the game UI', style, 'hide_with_game_ui',
         see_ui and TIPS.hide_ui or TIPS.cant_see_ui);
+    settings_window.draw_menu_visibility(settings.visibility);
 end
 
--- Side by side, ALL TIMERS sits under the auto attack timer, in the room the longer resting timer leaves
--- there. Stacked, it comes last.
+function settings_window.draw_recovery_section(recovery, attack)
+    heading_with_toggle('ACTION RECOVERY', 'recovery', recovery, TIPS.recovery_timer);
+    if (section_open('Recovery options', false)) then
+        local faded = fade_if_off(recovery);
+        checkbox('Attach under auto attack##recovery', recovery, 'attached', TIPS.recovery_attached);
+        checkbox('Seconds left##recovery', recovery, 'show_value', TIPS.recovery_value);
+        checkbox('Action source##recovery', recovery, 'show_source', TIPS.recovery_source);
+        checkbox('Text only##recovery', recovery, 'numbers_only', TIPS.numbers_only);
+        if (imgui.SmallButton('Edit label##recovery')) then query[1] = 'Recovery'; navigation.select('Appearance'); end
+        help(TIPS.recovery_label, 'Edit recovery label');
+        size_sliders('recovery', recovery, recovery.attached and attack and attack.enabled);
+        color('##recovery_start', recovery, 'fill_start');
+        imgui.SameLine();
+        color('##recovery_end', recovery, 'fill_end');
+        imgui.SameLine(); imgui.TextUnformatted('Fill'); help(TIPS.fill, 'Fill');
+        end_fade(faded);
+    end
+end
+
+-- Side by side, ALL TIMERS sits under the attack and recovery options. Stacked, it comes last.
 local function draw_timers_tab(settings)
     if (begin_sections('##timer_sections')) then
         imgui.TableNextColumn();
         draw_attack_section(settings.attack);
+        settings_window.draw_recovery_section(settings.recovery, settings.attack);
         if (not stacked) then
-            draw_all_timers(settings.style);
+            draw_all_timers(settings);
         end
         next_section();
         draw_resting_section(settings.resting);
         imgui.EndTable();
     end
     if (stacked) then
-        draw_all_timers(settings.style);
+        draw_all_timers(settings);
     end
 end
 
@@ -990,11 +1074,11 @@ local function draw_enemy_section(enemy, style)
     end_fade(faded);
 end
 
-local function draw_enemy_look(enemy)
+local function draw_enemy_look(enemy, attack)
     heading('ENEMY BAR');
     local faded = fade_if_off(enemy);
     bar_toggles('enemy', enemy);
-    whole_slider('Width##enemy', enemy, 'width', RANGES.enemy.width, '%d px', TIPS.enemy_width, enemy.attached);
+    whole_slider('Width##enemy', enemy, 'width', RANGES.enemy.width, '%d px', TIPS.enemy_width, enemy.attached and attack.enabled);
     float_slider('Height##enemy', enemy, 'height_scale', RANGES.enemy.height_scale, '%.2fx', TIPS.enemy_height);
     whole_slider('Bar height##enemy', enemy, 'bar_height', RANGES.enemy.bar_height, '%d px', TIPS.enemy_bar,
         enemy.numbers_only);
@@ -1009,9 +1093,32 @@ local function draw_enemy_tab(settings)
     if (begin_sections('##enemy_sections')) then
         imgui.TableNextColumn();
         draw_enemy_section(settings.enemy, settings.style);
+        if (not stacked) then settings_window.draw_enemycast_section(settings.enemycast, settings.enemy); end
         next_section();
-        draw_enemy_look(settings.enemy);
+        draw_enemy_look(settings.enemy, settings.attack);
+        if (stacked) then
+            next_section();
+            settings_window.draw_enemycast_section(settings.enemycast, settings.enemy);
+        end
         imgui.EndTable();
+    end
+end
+
+function settings_window.draw_enemycast_section(cast, enemy)
+    heading_with_toggle('ENEMY CAST', 'enemycast', cast, TIPS.enemycast_timer);
+    if (section_open('Cast options', false)) then
+        local faded = fade_if_off(cast);
+        checkbox('Attach under enemy attack##enemycast', cast, 'attached', TIPS.enemycast_attached);
+        checkbox('Spell name##enemycast', cast, 'show_spell', TIPS.enemycast_spell);
+        checkbox('Seconds left##enemycast', cast, 'show_value', TIPS.enemycast_value);
+        checkbox('Text only##enemycast', cast, 'numbers_only', TIPS.numbers_only);
+        if (imgui.SmallButton('Edit label##enemycast')) then query[1] = 'Enemy cast'; navigation.select('Appearance'); end
+        help(TIPS.enemycast_label, 'Edit enemy cast label');
+        size_sliders('enemycast', cast, cast.attached and enemy and enemy.enabled);
+        color('##enemycast_start', cast, 'fill_start');
+        imgui.SameLine(); color('##enemycast_end', cast, 'fill_end');
+        imgui.SameLine(); imgui.TextUnformatted('Fill'); help(TIPS.fill, 'Fill');
+        end_fade(faded);
     end
 end
 
@@ -1110,6 +1217,8 @@ local function draw_size_sections(settings)
         labels_off);
     label_box('Enemy##label', '##show_label_enemy', settings.enemy, settings.enemy.attached and 'ENEMY'
         or 'ENEMY ATTACK', TIPS.enemy_label, labels_off);
+    label_box('Recovery##label', '##show_label_recovery', settings.recovery, 'ACTION RECOVERY', TIPS.recovery_label, labels_off);
+    label_box('Enemy cast##label', '##show_label_enemycast', settings.enemycast, 'ENEMY CAST', TIPS.enemycast_label, labels_off);
 end
 
 -- A dropdown of the fonts that loaded, with Ashita's own pixel font first. It fits the longest name, like
@@ -1350,8 +1459,8 @@ local function draw_window_colors_tab()
 end
 
 
-ui_state.sample_choices = { { 'normal', 'Normal' }, { 'blocked', 'Blocked' }, { 'waiting', 'Waiting' }, { 'full', 'Full' } };
-ui_state.sample_names = { normal = 'Normal', blocked = 'Blocked', waiting = 'Waiting', full = 'Full' };
+ui_state.sample_choices = { { 'normal', 'Normal' }, { 'blocked', 'Blocked' }, { 'waiting', 'Waiting' }, { 'full', 'Full' }, { 'unknown', 'Unknown timing' } };
+ui_state.sample_names = { normal = 'Normal', blocked = 'Blocked', waiting = 'Waiting', full = 'Full', unknown = 'Unknown timing' };
 function settings_window.draw_inline_preview(settings, proposed)
     note(proposed and 'Starter layout sample. Apply it to use these choices.' or 'Sample timers. Your live timers keep running.');
     imgui.SetNextItemWidth(px(CONTROL_WIDTH));
@@ -1458,7 +1567,7 @@ local function save_as_new(settings)
         return false, ('A profile called "%s" is already there. Pick it and use Overwrite.'):format(taken);
     elseif (profiles.no_link_word(name)) then
         return false, profiles.NO_LINK_NAME:format(name);
-    elseif (not profiles.save(settings, name)) then
+    elseif (not profiles.save(settings, name, true)) then
         return false, profiles.problem();
     end
     picked = name;
@@ -1681,8 +1790,20 @@ local function draw_profiles_tab(settings)
     end
 end
 
-local PREVIEW_TIMERS = { { 'auto', 'Auto' }, { 'attack', 'Auto attack' }, { 'resting', 'Resting' }, { 'enemy', 'Enemy' } };
+local PREVIEW_TIMERS = { { 'auto', 'Auto' }, { 'attack', 'Auto attack' }, { 'resting', 'Resting' }, { 'enemy', 'Enemy' },
+    { 'recovery', 'Action recovery' }, { 'enemycast', 'Enemy cast' } };
 local PREVIEW_STATES = { { 'normal', 'Normal' }, { 'blocked', 'Blocked' }, { 'waiting', 'Waiting' }, { 'full', 'Full' } };
+ui_state.preview_states = {
+    recovery = { { 'normal', 'Normal' }, { 'unknown', 'Unknown' } },
+    enemycast = { { 'normal', 'Normal' }, { 'waiting', 'Waiting' } },
+};
+function settings_window.preview_states(timer)
+    return ui_state.preview_states[timer] or PREVIEW_STATES;
+end
+function settings_window.valid_preview_state(timer, state)
+    for _, entry in ipairs(settings_window.preview_states(timer)) do if (entry[1] == state) then return true; end end
+    return false;
+end
 local GOAL_STATS = { { 'hp', 'HP' }, { 'mp', 'MP' }, { 'both', 'Both' } };
 local GOAL_MODES = { { 'percent', 'Percent' }, { 'amount', 'Amount' } };
 local EMPTY_DETAILS, DEFAULT_PREVIEW = {}, { timer = 'auto', state = 'normal', paused = false };
@@ -1712,7 +1833,8 @@ local function draw_preview_tab(settings)
         note('Try the timers here. Your live timers keep running.');
         local previous = current_preview or DEFAULT_PREVIEW;
         local timer = choice('Timer##preview', previous.timer or 'auto', PREVIEW_TIMERS, TIPS.preview_timer);
-        local state = choice('State##preview', previous.state or 'normal', PREVIEW_STATES, TIPS.preview_state);
+        local previous_state = settings_window.valid_preview_state(timer, previous.state) and previous.state or 'normal';
+        local state = choice('State##preview', previous_state, settings_window.preview_states(timer), TIPS.preview_state);
         local paused = previous.paused == true;
         flag[1] = paused;
         if (imgui.Checkbox('Pause preview', flag)) then paused = flag[1]; end
@@ -2064,6 +2186,16 @@ SEARCH_WORDS.Window, SEARCH_WORDS['Window colors'] = nil, nil;
 SEARCH_WORDS.Appearance = SEARCH_WORDS.Appearance .. ' Inline preview Sample state TABS Restore all tabs';
 SEARCH_WORDS.Profiles = SEARCH_WORDS.Profiles .. ' STARTER LAYOUTS Starter layout Preview layout Apply layout Close layout preview Minimal Melee TP Resting Enemy tracking Undo overwrite Modified from';
 SEARCH_WORDS.Timers = SEARCH_WORDS.Timers .. ' Enabled only Options TP color Details Show re-engage timer cooldown ' .. TIPS.linger;
+SEARCH_WORDS.Timers = table.concat({ SEARCH_WORDS.Timers, ' Menu visibility Full-screen chat log Other menus Off All timers Selected timers Auto attack Resting Enemy attack Action recovery Enemy cast Reset menu visibility',
+    TIPS.hide_chat_log, TIPS.hide_menus, TIPS.chat_timer, TIPS.menu_timer, TIPS.reset_visibility }, ' ');
+SEARCH_WORDS.Timers = table.concat({ SEARCH_WORDS.Timers, ' ACTION RECOVERY Recovery options Action source recovery Attach under auto attack Width Height Bar height Text only',
+    TIPS.recovery_timer, TIPS.recovery_value, TIPS.recovery_source, TIPS.recovery_attached }, ' ');
+SEARCH_WORDS.Appearance = SEARCH_WORDS.Appearance .. ' Recovery label ' .. TIPS.recovery_label;
+SEARCH_WORDS.Preview = SEARCH_WORDS.Preview .. ' Action recovery';
+SEARCH_WORDS.Enemy = table.concat({ SEARCH_WORDS.Enemy, ' ENEMY CAST Cast options Attach under enemy attack Spell name Width Height Bar height Text only',
+    TIPS.enemycast_timer, TIPS.enemycast_attached, TIPS.enemycast_spell, TIPS.enemycast_value }, ' ');
+SEARCH_WORDS.Appearance = SEARCH_WORDS.Appearance .. ' Enemy cast label ' .. TIPS.enemycast_label;
+SEARCH_WORDS.Preview = SEARCH_WORDS.Preview .. ' Enemy cast';
 SEARCH_WORDS.Enemy = SEARCH_WORDS.Enemy .. ' Enabled only Options Details';
 for name, words in pairs(SEARCH_WORDS) do SEARCH_WORDS[name] = words .. ' Undo last change Reset this section'; end
 
@@ -2208,9 +2340,9 @@ function settings_window.draw(settings, version, timers_hidden, shift, preview, 
     if (imgui.Begin('cadence##cadence_settings', open, peek and PEEK_FLAGS or WINDOW_FLAGS)) then
         remember_window(settings.window);
         -- The version goes on its own line when the subtitle doesn't fit, so it never breaks at a dot.
-        local subtitle = ('Auto attack, resting and enemy timers for Phoenix  |  v%s'):format(version);
+        local subtitle = ('Attack, resting, enemy and recovery timers for Phoenix  |  v%s'):format(version);
         if (imgui.CalcTextSize(subtitle) > imgui.GetContentRegionAvail()) then
-            subtitle = ('Auto attack, resting and enemy timers for Phoenix\nv%s'):format(version);
+            subtitle = ('Attack, resting, enemy and recovery timers for Phoenix\nv%s'):format(version);
         end
         note(subtitle, look.faded_text);
         if (timers_hidden) then

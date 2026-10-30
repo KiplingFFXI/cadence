@@ -55,6 +55,8 @@ local HIDDEN_OFFSET   = 0xB4;
 local FOCUS_OFFSET    = 0x54;
 local SHORT_NAME      = 0x46 + 8;
 local MAP_NAME        = 0x0070616D;   -- 'map' as the low three bytes of a little-endian word.
+local MENU_PREFIX     = 0x756E656D;   -- 'menu'.
+local NAME_SPACES     = 0x20202020;
 
 local interface_check = ashita.memory.find('FFXiMain.dll', 0, INTERFACE_CHECK, 0, 0);
 local menu_check      = ashita.memory.find('FFXiMain.dll', 0, MENU_CHECK, 16, 0);
@@ -64,6 +66,51 @@ if (focus_slot ~= 0 and focus_slot ~= interface + FOCUS_OFFSET) then
     interface, focus_slot = 0, 0;
 end
 local hidden_flag = (interface ~= 0) and (interface + HIDDEN_OFFSET) or 0;
+
+-- Typing and the native macro palettes leave the timers visible. Action menus are ordinary menus.
+local INPUT_MENUS = { inline = true, chatctrl = true,
+    mcr1pall = true, mcr2pall = true, mcr1long = true, mcr2long = true };
+local last_name_low, last_name_high, last_chat, last_menu;
+
+local function pointer(value, extra)
+    return type(value) == 'number' and value >= 0x10000 and value <= 0xFFFFFFFF - (extra or 0)
+        and value == math.floor(value);
+end
+
+-- The eight-byte name can end in spaces or zeroes. Decode it only when it changes.
+local function classify_menu(low, high)
+    if (low == last_name_low and high == last_name_high) then return last_chat, last_menu; end
+    last_name_low, last_name_high, last_chat, last_menu = low, high, false, false;
+    local name = '';
+    for i = 0, 7 do
+        local word = i < 4 and low or high;
+        local byte = math.floor(word / 256 ^ (i % 4)) % 256;
+        if (byte == 0) then break; end
+        if (byte < 32 or byte > 126) then return false, false; end
+        name = name .. string.char(byte);
+    end
+    name = name:gsub(' +$', '');
+    last_chat = name == 'fulllog';
+    last_menu = name ~= '' and not last_chat and not INPUT_MENUS[name];
+    return last_chat, last_menu;
+end
+
+local function read_menu_visibility(want_chat, want_menus, want_map)
+    local menu = ashita.memory.read_uint32(focus_slot);
+    if (not pointer(menu, 4)) then return false, false, false; end
+    local header = ashita.memory.read_uint32(menu + 4);
+    if (not pointer(header, SHORT_NAME + 7)) then return false, false, false; end
+    local low = ashita.memory.read_uint32(header + SHORT_NAME);
+    if (type(low) ~= 'number' or low < 0 or low > 0xFFFFFFFF or low ~= math.floor(low)) then return false, false, false; end
+    local map = bit.band(low, 0xFFFFFF) == MAP_NAME;
+    if (map or not (want_chat or want_menus)) then return false, false, want_map and map; end
+    if (ashita.memory.read_uint32(header + 0x46) ~= MENU_PREFIX
+        or ashita.memory.read_uint32(header + 0x4A) ~= NAME_SPACES) then return false, false, false; end
+    local high = ashita.memory.read_uint32(header + SHORT_NAME + 4);
+    if (type(high) ~= 'number' or high < 0 or high > 0xFFFFFFFF or high ~= math.floor(high)) then return false, false, false; end
+    local chat, other = classify_menu(low, high);
+    return want_chat and chat, want_menus and other, false;
+end
 
 -- Your entity, or nil while zoning.
 function player.entity()
@@ -86,18 +133,18 @@ end
 
 -- True while a map view has focus. False when this game version can't be checked.
 function player.map_open()
-    if (focus_slot == 0) then
-        return false;
-    end
-    local menu = ashita.memory.read_uint32(focus_slot);
-    if (menu == 0) then
-        return false;
-    end
-    local header = ashita.memory.read_uint32(menu + 4);
-    if (header == 0) then
-        return false;
-    end
-    return bit.band(ashita.memory.read_uint32(header + SHORT_NAME), 0xFFFFFF) == MAP_NAME;
+    local _, _, map = player.menu_visibility(false, false, true);
+    return map;
+end
+
+-- One focus read separates the full-screen log, other menus and maps. Missing reads leave timers up.
+-- The native full-screen log's short name is fulllog; opening the chat input is not the same thing.
+function player.menu_visibility(want_chat, want_menus, want_map)
+    want_chat, want_menus, want_map = want_chat ~= false, want_menus ~= false, want_map ~= false;
+    if (focus_slot == 0 or not (want_chat or want_menus or want_map)) then return false, false, false; end
+    local ok, chat, other, map = pcall(read_menu_visibility, want_chat, want_menus, want_map);
+    if (not ok) then return false, false, false; end
+    return chat, other, map;
 end
 
 -- Whether this game version lets cadence see the hidden interface and the map.
@@ -106,6 +153,14 @@ function player.can_check_interface()
 end
 
 function player.can_check_map()
+    return focus_slot ~= 0;
+end
+
+function player.can_check_chat()
+    return focus_slot ~= 0;
+end
+
+function player.can_check_menus()
     return focus_slot ~= 0;
 end
 

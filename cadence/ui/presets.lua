@@ -30,6 +30,8 @@ local PRESET_KEYS = {
         'label_color', 'value_color', 'detail_color', 'text_shadow', 'rounding', 'window_look' },
     attack  = { 'fill_start', 'fill_end', 'ready_color', 'almost_color', 'tp_color' },
     resting = { 'fill_start', 'fill_end', 'full_color', 'flash_color' },
+    recovery = { 'fill_start', 'fill_end' },
+    enemycast = { 'fill_start', 'fill_end' },
     enemy   = { 'fill_start', 'fill_end', 'ready_color', 'almost_color', 'on_you_color' },
     chat    = { 'tag_brackets', 'tag_word', 'replies' },
 };
@@ -41,6 +43,8 @@ local LOOK_KEYS = {
         'bar_drains', 'text_outline', 'outline_color' },
     attack  = { 'width', 'height_scale', 'bar_height', 'numbers_only', 'almost_mark', 'label_text', 'show_label' },
     resting = { 'width', 'height_scale', 'bar_height', 'numbers_only', 'label_text', 'show_label' },
+    recovery = { 'width', 'height_scale', 'bar_height', 'numbers_only', 'label_text', 'show_label' },
+    enemycast = { 'width', 'height_scale', 'bar_height', 'numbers_only', 'label_text', 'show_label' },
     enemy   = { 'width', 'height_scale', 'bar_height', 'numbers_only', 'almost_mark', 'label_text', 'show_label' },
     window_style = { 'font', 'font_size' },
 };
@@ -197,6 +201,11 @@ local function build_look(name)
         return defaults.make();
     end
     local built = look();
+    local first, last = built.attack.fill_start, built.attack.fill_end;
+    built.recovery = { fill_start = { first[1], first[2], first[3], first[4] },
+        fill_end = { last[1], last[2], last[3], last[4] } };
+    built.enemycast = { fill_start = { first[1], first[2], first[3], first[4] },
+        fill_end = { last[1], last[2], last[3], last[4] } };
     built.window_style = theme.window_style(built.style.window_look);
     return built;
 end

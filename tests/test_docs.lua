@@ -153,7 +153,7 @@ local missing_commands = {};
 for _, command in ipairs({ '/cadence attack <part>', '/cadence resting <part>', '/cadence enemy <part>',
     '/cadence resting goal', '/cadence preview auto', '/cadence layout preview', '/cadence details',
     '/cadence tab <name>', '/cadence guides', '/cadence relearn', '/cadence attack goal',
-    '/cadence attack\\|resting\\|enemy <slider>', '/cadence resting soundfile', '/cadence resting playsound',
+    '/cadence attack\\|resting\\|enemy\\|recovery\\|enemycast <slider>', '/cadence resting soundfile', '/cadence resting playsound',
     '/cadence preset', '/cadence undo', '/cadence font', '/cadence windowfont', '/cadence color',
     '/cadence windowcolor', '/cadence chatcolor', '/cadence profile save', '/cadence profile overwrite',
     '/cadence profile undooverwrite', '/cadence profile load', '/cadence profile rename',

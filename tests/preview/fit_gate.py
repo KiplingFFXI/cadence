@@ -169,7 +169,7 @@ def overlaps(addon, tab, font, size):
     """Draws a tab tall in a window font with the overlap probe. Every line the probe logged is a problem."""
     name = 'overlap_%s_%s%d.png' % (tab.replace(' ', '_'), font, size)
     # Expanded pages need enough height to inspect every row below the fixed navigation.
-    height = {'Appearance': 4200, 'Timers': 2600, 'Profiles': 2200}.get(tab, TALL_WINDOW[1])
+    height = {'Appearance': 4200, 'Timers': 2600, 'Enemy': 2600, 'Profiles': 2200}.get(tab, TALL_WINDOW[1])
     screen = (TALL_SCREEN[0], height + 60)
     window = (WIDTH, height)
     cmd = [sys.executable, PREVIEW, '--addon', addon, '--out', os.path.join(OUT, name), '--full', '--tab', tab,

@@ -57,6 +57,12 @@ What's here
   run.py                  the test runner
   mock_ashita.lua         the stand-in for Ashita and the game
 
+  test_action_recovery.lua  spell/per-weapon-skill deadlines, overlaps, late duplicate results and allocation limits
+  test_action_recovery_classification.lua  shared JA/WS IDs and animation variants, ranged recovery, Super Jump, items and unknown durations
+  test_action_recovery_integration.lua  own incoming actions, failures, lifecycle clearing, commands and idle visibility
+  test_action_recovery_ui.lua  recovery card styling, layout, resizing, hover help and saved-setting compatibility
+  test_recovery_attachment.lua  joined recovery/enemy geometry, hidden hosts, screen bounds and detached positions
+
   test_api_bar_caps.lua   prints the bar draw calls and the corner rounding ImGui gives them (a table,
                           not pass or fail)
   test_api_shared_spot.lua  the shared spot, with ImGui's window placement working like the real one
@@ -96,6 +102,10 @@ What's here
   test_tp_lifecycle.lua  character changes drop pending samples and zone changes clear fight evidence
   test_enemy.lua          the enemy attack timer's clocks on their own, then the whole addon with
                           monsters attacking, following, the attached strip, death and zoning
+  test_enemy_cast.lua     bounded observed casts, unknown timing, waiting, duplicate results and lifecycle cleanup
+  test_enemy_cast_ui.lua  cast settings, presets, saved layouts, history, preview and disabled defaults
+  test_enemy_cast_hud.lua standalone and joined geometry, hidden readouts, resizing and steady frame allocations
+  test_enemy_cast_integration.lua normal monster start/finish packets, target switching, identity cleanup and passive behavior
   test_enemy_effects.lua  Slow, Elegy, Haste and Hundred Fists on a monster, and the tag they show
   test_events.lua         hiding during events
   test_events_fallback.lua  the patterns not found, with the event status taking over and the game UI
@@ -364,6 +374,31 @@ test_enemy_controls.lua checks disappearance, reused IDs, controls and clean res
 test_effect_snapshots.lua checks supported cast inputs and uncertain duration evidence.
 test_ui_discovery.lua and test_timer_hover.lua cover search, navigation, copy and tips.
 
+test_attached_editing.lua covers idle attachment hosts, shared movement and child height controls.
+test_attack_action_tails.lua covers known, zero and unknown attack holds.
+test_item_effect_identity.lua covers stacked item effects, timer-list changes and recasts.
+test_packet_event_cache.lua covers event-scoped decoding, reused events and empty/truncated actions.
+test_preview_states.lua covers relevant sample states and label-control shortcuts.
+test_profile_transactions.lua covers competing saves, retry, name collisions and real Windows file locks.
+test_resting_joined_late.lua covers loading during existing rests and unknown recovery amounts.
+test_resting_load_integration.lua covers cold-load, zone and observed sit transitions through addon callbacks.
+test_timing_dispatch.lua covers source attack holds, failed-action ordering and polling with every timer off.
+test_uncertain_display.lua covers forced uncertainty readouts and narrow-card text fitting.
+test_menu_visibility_ui.lua covers independent menu modes, selected timers, search, reset and unavailable detection.
+test_menu_detector.lua covers focused menu headers, full-screen chat, exclusions, invalid pointers and bounded reads.
+test_hidden_layout_gesture.lua covers drags hidden by menus, maps, events, the game UI, a missing player or
+no visible timers, including stale guides, hold suppression, one save and Undo.
+test_menu_visibility_integration.lua covers all five timer choices, attachments, background timing, commands,
+Undo, profiles and shared layouts while the expanded chat log or another menu is open.
+
+Menu visibility client checks:
+- Open the full-screen chat log, close it, and type in the normal input line. Only the expanded log hides timers.
+- Open inventory, equipment and magic/ability menus. Check All timers and Selected timers for each condition.
+- Keep macro palettes visible without hiding the timers. Maps retain their separate existing switch.
+- Select attached children independently from their parent, and confirm settings stay available.
+- Open a menu during a Shift-drag, release the mouse, then close the menu. Guides must be gone while hidden,
+  and the completed layout change must save once and remain undoable.
+
 Manual client checks still needed:
 - Narrow the window, search for settings, expand/collapse groups and scroll. Navigation
   must stay reachable. Search Details and compare Copy shown with complete Copy all.
@@ -420,7 +455,8 @@ test_resting_hidden_buffs.lua keeps blocking effects current with the timer disa
 
 test_native_packet_events.lua sends userdata events like Ashita's through packet readers
 and the addon callbacks. It covers HP-only recovery and full times, attack observations,
-and rejected incomplete updates. Table fixtures alone cannot catch native event guards.
+and rejected incomplete updates. Strict userdata rejects undocumented fields, matching Ashita's native event
+contract. Table fixtures alone cannot catch native event guards or invalid field access.
 
 test_vertical_resize.lua checks whole-timer height changes, unchanged widths and bar settings,
 text-only resizing, attached strips, bounds, alignment and one Undo step per gesture.

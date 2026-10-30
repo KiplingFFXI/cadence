@@ -16,16 +16,17 @@ from lupa import luajit21
 import bump_version
 import generate_effects
 import generate_modifiers
-from source_parity import GitSource, check_guards, file_fingerprint, fingerprint, module_entries
+import generate_recovery
+from source_parity import GitSource, check_guards, file_fingerprint, fingerprint, loaded_gitlinks, module_entries
 
 ROOT = Path(__file__).resolve().parents[1]
 PIN_LINE = re.compile(r"^REF = '([0-9a-f]{40})'(?=\r?$)", re.M)
-DATA_FILES = ('cadence/data/phoenix_modifiers.lua', 'cadence/data/phoenix_effects.lua')
+DATA_FILES = ('cadence/data/phoenix_modifiers.lua', 'cadence/data/phoenix_effects.lua', 'cadence/data/phoenix_recovery.lua')
 UPDATE_FILES = (*DATA_FILES, 'tools/generate_modifiers.py', 'tools/source_guards.json',
                 'cadence/cadence.lua', 'CHANGELOG.md')
 SQL_DATA = frozenset('sql/' + name + '.sql' for name in (
     'item_basic', 'item_equipment', 'item_mods', 'item_latents', 'traits', 'blue_traits',
-    'spell_list', 'blue_spell_list', 'blue_spell_mods', 'augments'))
+    'spell_list', 'blue_spell_list', 'blue_spell_mods', 'augments', 'item_usable'))
 
 
 def plain(value):
@@ -76,8 +77,12 @@ def check_module_changes(reviewed, candidate):
         return
     if len(changes) % 2:
         raise RuntimeError('Cannot read changed Phoenix module paths.')
+    gitlinks = set(loaded_gitlinks(reviewed)) | set(loaded_gitlinks(candidate))
     unsupported = []
     for status, path in zip(changes[::2], changes[1::2]):
+        if path in gitlinks:
+            unsupported.append(path)
+            continue
         if not path.endswith(('.lua', '.cpp', '.h', '.hpp', '.sql', '.yaml', '.yml')):
             continue
         if not any(path == entry or path.startswith(entry + '/') for entry in entries):
@@ -147,7 +152,7 @@ def report_changes(old_tables, new_tables, old_ref, new_ref):
              'Only generated data changes are included. Source rules and the configured profile still match the reviewed guards.',
              '', '| Data | Added | Removed | Changed |', '| --- | ---: | ---: | ---: |']
     bullets, details = [], []
-    for label, old, new in zip(('Modifiers', 'Enemy timing'), old_tables, new_tables):
+    for label, old, new in zip(('Modifiers', 'Enemy timing', 'Action recovery'), old_tables, new_tables):
         for key, added, removed, updated in differences(semantic(old), semantic(new)):
             lines.append('| %s: %s | %d | %d | %d |' % (label, escape(key), len(added), len(removed), len(updated)))
             if key != 'coverage':
@@ -206,7 +211,7 @@ def prepare(server, ref, root=ROOT):
         return result, 'Phoenix live already matches the reviewed data revision. No update is needed.\n'
     reviewed = GitSource(server, reviewed_ref)
     check_module_changes(reviewed, candidate)
-    generators = (generate_modifiers.generate, generate_effects.generate)
+    generators = (generate_modifiers.generate, generate_effects.generate, generate_recovery.generate)
     for path, generate in zip(DATA_FILES, generators):
         if generate(server, reviewed.ref) != originals[path].replace('\r\n', '\n'):
             raise RuntimeError('Checked-in data does not match the reviewed source: ' + path)

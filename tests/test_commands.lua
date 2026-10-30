@@ -66,8 +66,19 @@ end
 
 -- Every on/off box, as what you type, its section and key, what the window calls it and its checkbox label.
 local TIMER = { attack = ' for the auto attack timer', resting = ' for the resting timer',
-    enemy = ' for the enemy attack timer', style = '' };
+    enemy = ' for the enemy attack timer', recovery = ' for the action recovery timer',
+    enemycast = ' for the enemy cast timer', style = '' };
 local SWITCHES = {
+    { 'enemycast attach', 'enemycast', 'attached', 'Attach under enemy attack', 'Attach under enemy attack##enemycast' },
+    { 'enemycast seconds', 'enemycast', 'show_value', 'Seconds left', 'Seconds left##enemycast' },
+    { 'enemycast spell', 'enemycast', 'show_spell', 'Spell name', 'Spell name##enemycast' },
+    { 'enemycast numbers', 'enemycast', 'numbers_only', 'Text only', 'Text only##enemycast' },
+    { 'enemycast label', 'enemycast', 'show_label', 'Show its name', '##show_label_enemycast' },
+    { 'recovery attach', 'recovery', 'attached', 'Attach under auto attack', 'Attach under auto attack##recovery' },
+    { 'recovery seconds', 'recovery', 'show_value', 'Seconds left', 'Seconds left##recovery' },
+    { 'recovery source', 'recovery', 'show_source', 'Action source', 'Action source##recovery' },
+    { 'recovery numbers', 'recovery', 'numbers_only', 'Text only', 'Text only##recovery' },
+    { 'recovery label', 'recovery', 'show_label', 'Show its name', '##show_label_recovery' },
     { 'tips', 'style', 'hover_tips', 'Timer hover help', 'Timer hover help' },
     { 'attack seconds',    'attack',  'show_value',         'Seconds left',             'Seconds left##attack' },
     { 'attack delay',      'attack',  'show_delay',         'Weapon delay',             'Weapon delay##attack' },
@@ -160,8 +171,8 @@ check('every saved box has a command and temporary filters are accounted for', #
 -- Each job link's list is named by its job after ##, like ##BLM. /cadence joblink sets them.
 local job_lists = {};
 for _, job in ipairs(defaults.JOBS) do table.insert(job_lists, '##' .. job); end
-check('the dropdowns cover timer goals, appearance, preview state and each job link', table.concat(combos, ',')
-    == 'TP goal##attack,Sound##resting,Follows##enemy,State##inline_preview,Preset,Font,Font##window,Tag brackets,Tag word,Replies,'
+check('the dropdowns cover timer goals, visibility, appearance, preview state and each job link', table.concat(combos, ',')
+    == 'TP goal##attack,Full-screen chat log##visibility,Other menus##visibility,Sound##resting,Follows##enemy,State##inline_preview,Preset,Font,Font##window,Tag brackets,Tag word,Replies,'
     .. 'Timer##preview,State##preview,Resource##goal,Measure##goal,Starter layout,' .. table.concat(job_lists, ','), table.concat(combos, ','));
 
 -- Switches ---------------------------------------------------------------------------------------------
@@ -235,6 +246,20 @@ check('/cadence attack off still turns the timer off', answers('/cadence attack 
 check('/cadence attack on', answers('/cadence attack on', 'The auto attack timer is on.') and s.attack.enabled);
 check('/cadence attack flips it', answers('/cadence attack', 'The auto attack timer is off.') and not s.attack.enabled);
 MOCK.fire('command', { command = '/cadence attack on' });
+check('/cadence recovery starts disabled', s.recovery.enabled == false);
+check('/cadence recovery on', answers('/cadence recovery on', 'The action recovery timer is on.') and s.recovery.enabled);
+check('/cadence recovery toggles without a value', answers('/cadence recovery', 'The action recovery timer is off.')
+    and not s.recovery.enabled);
+check('/cadence recovery off stays off', answers('/cadence recovery off', 'The action recovery timer is off.')
+    and not s.recovery.enabled);
+check('attaching keeps recovery disabled and saves normally', answers('/cadence recovery attach on',
+    'Attach under auto attack is on for the action recovery timer.') and s.recovery.attached and not s.recovery.enabled);
+check('undo restores the attachment choice without enabling recovery', answers('/cadence undo',
+    'Undid Command: recovery attach on.') and not s.recovery.attached and not s.recovery.enabled);
+check('/cadence enemycast starts disabled', s.enemycast.enabled == false);
+check('/cadence enemycast on', answers('/cadence enemycast on', 'The enemy cast timer is on.') and s.enemycast.enabled);
+check('/cadence enemycast toggles without a value', answers('/cadence enemycast', 'The enemy cast timer is off.')
+    and not s.enemycast.enabled);
 local ATTACK_USAGE = 'Type /cadence attack on|off, /cadence attack goal 1000|2000|3000, /cadence attack <part> on|off, /cadence attack <slider> <number> '
     .. 'or /cadence attack labeltext <text>. The parts are seconds, delay, reengage, tp, time, hits, rounds, numbers, mark, almost, range, '
     .. 'why and label. The sliders are width, height, barheight and almostat.';
@@ -286,7 +311,7 @@ for _, words in ipairs({ 'enemy waiting', 'pause', 'resume', 'resting full', 'au
     check('preview ' .. words .. ' stays temporary', #lines == 0 and blocked and MOCK.saved == saves
         and json.encode(s) == before and require('ui.settings_window').is_open());
 end
-ok, detail = refuses('/cadence preview enemy invalid', 'Preview states are normal, blocked, waiting and full.');
+ok, detail = refuses('/cadence preview enemy invalid', 'Choose a preview state available for this timer in the settings window.');
 check('an invalid preview state keeps settings intact', ok, detail);
 require('ui.settings_window').set_open(false);
 
@@ -468,13 +493,13 @@ local function under(text, from, to)
     local at = line_with(text);
     return at ~= nil and at > from and at < (to or #help + 1);
 end
-check('Timers tab lines', under('/cadence attack|resting <part> [on|off]', timers, enemy)
+check('Timers tab lines', under('/cadence attack|resting|recovery <part> [on|off]', timers, enemy)
     and under('/cadence hideevents|hidemap|hideui [on|off]  sets Hide during events, Hide on the map or Hide with '
         .. 'the game UI.', timers, enemy));
 check('Enemy tab lines', under('/cadence enemy follow first|target|hits  sets Follows to My target first, My target '
     .. 'only or Whoever hits me.', enemy, look) and under('/cadence enemy <part> [on|off]', enemy, look));
 check('Appearance tab lines', under('/cadence preset phoenix|classic|minimal|contrast|ember|mint|lavender|colorblind', look)
-    and under('/cadence font <name>', look) and under('/cadence attack|resting|enemy label [on|off]', look)
+    and under('/cadence font <name>', look) and under('/cadence attack|resting|enemy|recovery|enemycast label [on|off]', look)
     and under('/cadence tips|record|windowlook|labels|background|border|accent|outline|shadow|drain|onespot|onelayout|peek [on|off]  '
         .. 'sets Timer hover help, Record timing details, Window matches the look, Show labels, Background, Border, '
         .. 'Accent stripe, Text outline, Text shadow, '
@@ -482,12 +507,12 @@ check('Appearance tab lines', under('/cadence preset phoenix|classic|minimal|con
 check('commands that aren\'t on a tab come before the tabs', line_with('/cadence hide|show') < timers
     and line_with('/cadence info') < timers and line_with('/cadence help attack') < timers);
 check('so does turning a timer on or off, since each timer\'s chip is on its own tab',
-    line_with('/cadence attack|resting|enemy [on|off]  turns a timer on or off.') < timers);
-check('the name switch says what it does', under('/cadence attack|resting|enemy label [on|off]  shows or hides that '
+    line_with('/cadence attack|resting|enemy|recovery|enemycast [on|off]  turns a timer on or off.') < timers);
+check('the name switch says what it does', under('/cadence attack|resting|enemy|recovery|enemycast label [on|off]  shows or hides that '
     .. 'timer\'s name.', look));
 check('help lists lock, hide and reset', line_with('/cadence lock|unlock') and line_with('/cadence hide|show')
     and line_with('/cadence reset [look|all]  puts every timer back at its default position'));
-check('it says where to find more', line_with('/cadence help attack|resting|enemy|appearance|colors|preset|font|reset|'
+check('it says where to find more', line_with('/cadence help attack|resting|enemy|recovery|enemycast|appearance|colors|preset|font|reset|'
     .. 'chatcolors|profiles|preview|details|ui  tells you more about one of them.'));
 check('it stays short enough to read in the chat log', #help <= 20, #help);
 
@@ -517,7 +542,7 @@ lines = said('/cadence help enemy');
 check('help enemy has Follows', #lines == 9 and lines[2]:find('/cadence enemy follow first|target|hits', 1, true) == 1);
 lines = said('/cadence help preview');
 check('preview help explains temporary samples and goal controls', #lines == 7
-    and lines[1]:find('/cadence preview auto|attack|resting|enemy', 1, true) == 1
+    and lines[1]:find('/cadence preview auto|attack|resting|enemy|recovery|enemycast', 1, true) == 1
     and lines[5]:find('/cadence resting goal hp|mp|both percent|amount', 1, true) == 1
     and lines[7]:find('/cadence relearn attack|tp|enemy', 1, true) == 1);
 check('Details help includes the same relearning controls', table.concat(said('/cadence help details'), '|') == table.concat(lines, '|'));

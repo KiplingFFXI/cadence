@@ -1,4 +1,5 @@
-"""Check Cadence's TP, recovery, attack and re-engage rules against reviewed Phoenix source."""
+"""Check Cadence's TP, resting, attack and action timing against reviewed Phoenix source."""
+import csv
 import hashlib
 import itertools
 import json
@@ -22,6 +23,10 @@ MODULE_RULES = (r'STORETP|HPHEAL|MPHEAL|CLEAR_MIND|MARTIAL_ARTS|DUAL_WIELD|HASTE
                 r'xi\.(spells|magic)\.(enfeebling|enhancing)|xi\.aftermath|'
                 r'xi\.combat\.tp|xi\.effects\.(healing|slow|haste|elegy|march|hundred_fists|hasso)|'
                 r'EngageLockout|setEngageLockedUntil|m_engageLockedUntil|CheckLatentsWeaponDraw|OnDisengage|'
+                r'canAct|LastSpellFinished|m_spellFinishedTime|OnCastFinished|MagicParalyzed|MagicIntimidated|'
+                r'weapon_skills|animation_locks|animationTime|[` ]spell_list[` ]|item_usable|[` ]abilities[` ]|'
+                r'setAnimation\(|setCastTime|castTime|untargetableAndUnactionable|'
+                r'CItemState|CRangeState|CAbilityState|OnItemFinish|ITEM_START|ITEM_USE|ITEM_STATE_EXIT|'
                 r'item_mods|item_latents|blue_spell_mods|blue_traits|traits|augments|merits')
 FILES = [TP, ERA_TP, HEALING, 'src/map/ai/states/attack_state.cpp', 'src/map/map_constants.h',
          'src/map/utils/blueutils.cpp', 'scripts/effects/haste.lua', 'scripts/effects/slow.lua',
@@ -36,7 +41,10 @@ FILES = [TP, ERA_TP, HEALING, 'src/map/ai/states/attack_state.cpp', 'src/map/map
          'scripts/globals/job_utils/dragoon.lua', 'scripts/globals/job_utils/samurai.lua',
          'scripts/globals/job_utils/dancer.lua', 'scripts/globals/aftermath.lua',
          'scripts/globals/gear_sets.lua', 'scripts/globals/item_utils.lua',
-         'scripts/enum/item.lua', 'scripts/enum/weaponskill.lua',
+         'scripts/enum/item.lua', 'data/weapon_skills.yaml', 'data/animation_locks.yaml', 'data/enums/region.yaml',
+         'src/map/data/yaml/merge.cpp', 'src/map/data/datasets/weapon_skills/dataset.cpp',
+         'src/map/data/datasets/weapon_skills/yaml.h', 'src/map/data/datasets/animation_locks/dataset.h',
+         'src/map/data/datasets/animation_locks/dataset.cpp', 'src/map/data/datasets/animation_locks/yaml.h',
          'scripts/effects/food.lua', 'scripts/effects/samurai_roll.lua', 'scripts/effects/healers_roll.lua',
          'scripts/effects/store_tp.lua', 'scripts/effects/bust.lua', 'scripts/effects/inhibit_tp.lua',
          'scripts/effects/arcane_crest.lua', 'scripts/effects/dragon_breaker.lua', 'scripts/effects/sepulcher.lua',
@@ -44,18 +52,46 @@ FILES = [TP, ERA_TP, HEALING, 'src/map/ai/states/attack_state.cpp', 'src/map/map
          'src/map/items/item_equipment.cpp', 'src/map/latent_effect_container.cpp',
          'src/map/utils/battleutils.cpp', 'src/map/utils/charutils.cpp',
          'src/map/utils/zoneutils.cpp', 'src/map/zone.h', 'src/common/vana_time.h',
-         'src/map/packets/char_status.cpp']
+         'src/map/packets/char_status.cpp', 'src/map/action/interrupts.cpp',
+         'src/map/enums/msg_basic.h', 'src/map/enums/action/category.h',
+         'sql/abilities.sql', 'src/map/ai/states/range_state.h', 'src/map/enums/four_cc.h',
+         'scripts/globals/job_utils/ranger.lua', 'scripts/globals/job_utils/thief.lua',
+         'scripts/globals/job_utils/rune_fencer.lua']
+# Dispatch scripts can introduce a new helper or action lock without changing a SQL signature.
+TREE_GUARDS = ('scripts/actions/abilities', 'scripts/actions/weaponskills', 'scripts/globals/job_utils')
 FUNCTIONS = {
     'src/map/ai/ai_container.cpp': ['CAIContainer::Internal_Engage', 'CAIContainer::Internal_ChangeTarget',
                                   'CAIContainer::Internal_Disengage', 'CAIContainer::Tick',
                                   'CAIContainer::finishCurrentState', 'CAIContainer::CheckCompletedStates',
-                                  'CAIContainer::Reset'],
-    'src/map/ai/controllers/player_controller.cpp': ['CPlayerController::Engage', 'CPlayerController::setEngageLockedUntil'],
-    'src/map/ai/states/range_state.cpp': ['CRangeState::CanUseRangedAttack'],
-    'src/map/entities/battle_entity.cpp': ['CBattleEntity::GetWeaponDelay', 'CBattleEntity::OnDisengage'],
-    'src/map/entities/char_entity.cpp': ['CCharEntity::OnDisengage'],
+                                  'CAIContainer::Reset', 'CAIContainer::CanChangeState'],
+    'src/map/ai/controllers/player_controller.cpp': ['CPlayerController::Engage', 'CPlayerController::setEngageLockedUntil',
+                                                  'CPlayerController::Cast', 'CPlayerController::canAct',
+                                                  'CPlayerController::getLastSpellFinishedTime',
+                                                  'CPlayerController::setLastSpellFinishedTime'],
+    'src/map/ai/states/magic_state.cpp': ['CMagicState::Update', 'CMagicState::CanChangeState'],
+    'src/map/ai/states/weaponskill_state.cpp': ['CWeaponSkillState::Update', 'CWeaponSkillState::CanChangeState'],
+    'src/map/ai/states/range_state.cpp': ['CRangeState::CanUseRangedAttack', 'CRangeState::init',
+                                        'CRangeState::Update', 'CRangeState::CanChangeState'],
+    'src/map/ai/states/ability_state.cpp': ['CAbilityState::init', 'CAbilityState::Update',
+                                          'CAbilityState::CanChangeState', 'CAbilityState::Cleanup'],
+    'src/map/ai/states/item_state.cpp': ['CItemState::init', 'CItemState::Update', 'CItemState::Cleanup',
+                                       'CItemState::CanChangeState', 'CItemState::TryInterrupt', 'CItemState::FinishItem'],
+    'src/map/ai/states/inactive_state.cpp': ['CInactiveState::init', 'CInactiveState::Update', 'CInactiveState::CanChangeState'],
+    'src/map/entities/battle_entity.cpp': ['CBattleEntity::GetWeaponDelay', 'CBattleEntity::OnDisengage',
+                                          'CBattleEntity::OnWeaponSkillFinished'],
+    'src/map/entities/char_entity.cpp': ['CCharEntity::OnDisengage', 'CCharEntity::OnCastFinished',
+                                       'CCharEntity::OnAbility', 'CCharEntity::OnItemFinish', 'CCharEntity::OnWeaponSkillFinished'],
     'src/map/items/item_weapon.cpp': ['CItemWeapon::setDelay'],
     'src/map/status_effect_container.cpp': ['CStatusEffectContainer::TickEffects', 'CStatusEffectContainer::TickRegen'],
+    'src/map/weapon_skill.cpp': ['CWeaponSkill::getAnimationTime', 'CWeaponSkill::setAnimationTime'],
+    'src/map/items/item_usable.cpp': ['CItemUsable::getAnimationTime', 'CItemUsable::setAnimationTime',
+                                     'CItemUsable::getActivationTime', 'CItemUsable::setActivationTime'],
+    'src/map/utils/itemutils.cpp': ['LoadItemList'],
+    'src/map/spell.cpp': ['LoadSpellList', 'CSpell::getCastTime', 'CSpell::setCastTime'],
+    'src/map/ability.cpp': ['LoadAbilitiesList'],
+    'src/map/action/action.cpp': ['action_t::normalize'],
+    'src/map/packets/s2c/0x028_battle2.cpp': ['GP_SERV_COMMAND_BATTLE2::pack'],
+    'src/map/lua/lua_base_entity.cpp': ['CLuaBaseEntity::untargetableAndUnactionable'],
 }
 
 
@@ -72,6 +108,9 @@ class GitSource:
         if path not in self.cache:
             self.cache[path] = self.git('show', self.ref + ':' + path)
         return self.cache[path]
+
+    def tree_digest(self, path):
+        return self.git('rev-parse', self.ref + ':' + path).strip()
 
     def candidates(self):
         result = subprocess.run(['git', '-C', self.repository, 'grep', '-Il', '-i', '-E', MODULE_RULES,
@@ -142,8 +181,25 @@ def loaded_modules(source):
                   and any(path == entry or path.startswith(entry + '/') for entry in entries))
 
 
+def loaded_gitlinks(source):
+    """Read enabled submodule revisions from Git objects without checking out private content."""
+    entries = module_entries(source)
+    links = {}
+    for row in source.git('ls-tree', '-rz', source.ref, '--', 'modules').split('\0'):
+        if not row:
+            continue
+        metadata, path = row.split('\t', 1)
+        mode, kind, revision = metadata.split()
+        if mode == '160000' and kind == 'commit' and any(
+                path == entry or path.startswith(entry + '/') or entry.startswith(path + '/') for entry in entries):
+            links[path] = revision
+    return links
+
+
 def observed_guards(source):
     result = {path: file_fingerprint(source, path) for path in FILES}
+    result.update({path + ':tree': source.tree_digest(path) for path in TREE_GUARDS})
+    result.update({path + ':gitlink': revision for path, revision in loaded_gitlinks(source).items()})
     for path, functions in FUNCTIONS.items():
         for name in functions:
             result[path + ':' + name] = fingerprint(function_body(source.read(path), name), 'cpp')
@@ -162,6 +218,10 @@ def check_guards(source, manifest=None):
             raise RuntimeError('Source review required for %s:\n  %s' % (group, '\n  '.join(changed)))
     if actual['load_order'] != manifest.get('load_order'):
         raise RuntimeError('Source review required for modules/init.txt load order.')
+    spell_recovery_reference(source)
+    # Quarantine and accepted duration rules also apply before a refresh can decide it is unchanged.
+    from generate_recovery import build
+    build(source)
     return manifest
 
 
@@ -332,9 +392,126 @@ def check_reengage(source, addon=ROOT / 'cadence'):
     return count
 
 
+def animation_rows(source, table, id_column):
+    text = source.read('sql/' + table + '.sql')
+    schema = re.search(r'CREATE TABLE `' + re.escape(table) + r'` \((.*?)\) ENGINE=', text, re.S)
+    columns = re.findall(r'^\s*`([^`]+)`', schema[1], re.M) if schema else []
+    if 'animationTime' not in columns or id_column not in columns:
+        raise RuntimeError('Source review required for ' + table + ' animation columns.')
+    ids = set()
+    for line in text.splitlines():
+        if not re.match(r'\s*(?:INSERT|REPLACE|UPDATE|DELETE)\b', line, re.I):
+            continue
+        match = re.fullmatch(r'\s*INSERT INTO `' + re.escape(table) + r'` VALUES\s*\((.*)\);\s*(?:--.*)?', line)
+        if not match:
+            raise RuntimeError('Source review required for ' + table + ' animation rows.')
+        try:
+            row = next(csv.reader([match[1]], quotechar="'", escapechar='\\', skipinitialspace=True, strict=True))
+            if len(row) != len(columns):
+                raise ValueError('column count')
+            action_id = int(row[columns.index(id_column)])
+            seconds = int(row[columns.index('animationTime')]) / 1000
+        except (csv.Error, ValueError) as error:
+            raise RuntimeError('Source review required for ' + table + ' animation values.') from error
+        if action_id in ids or seconds < 0:
+            raise RuntimeError('Source review required for ' + table + ' animation values.')
+        ids.add(action_id)
+        yield action_id, seconds
+    if not ids:
+        raise RuntimeError('Source review required: no ' + table + ' animation rows.')
+
+
+def spell_recovery_reference(source):
+    gate = function_body(source.read('src/map/ai/controllers/player_controller.cpp'), 'CPlayerController::canAct')
+    match = re.search(r'return\s+timeSinceLastSpell\s*>\s*(\d+(?:\.\d+)?)(ms|s)\s*;', gate)
+    if not match:
+        raise RuntimeError('Source review required for the spell recovery gate.')
+    spell_seconds = float(match[1]) / (1000 if match[2] == 'ms' else 1)
+    count = 0
+    # Also checked before an automatic refresh decides there are no relevant data changes.
+    for spell_id, seconds in animation_rows(source, 'spell_list', 'spellid'):
+        if spell_id < 768:
+            if seconds > spell_seconds:
+                raise RuntimeError('Source review required for spell animation exceeding recovery gate: ' + str(spell_id))
+            count += 1
+    if not count:
+        raise RuntimeError('Source review required: no supported spell animation rows.')
+    return spell_seconds, count
+
+
+def check_action_recovery(source, addon=ROOT / 'cadence'):
+    spell_seconds, spells = spell_recovery_reference(source)
+    runtime = lua_runtime(addon)
+    recovery = runtime.eval("require('core.recovery')")
+    recovery.reset()
+    recovery.on_spell(0, 1)
+    view = recovery.progress(0)
+    same(view.duration, spell_seconds, 'spell recovery duration')
+    same(view.left, spell_seconds, 'spell recovery countdown')
+    count = 1 + spells
+    from generate_recovery import build
+    expected = build(source)
+    for skill_id, seconds in expected['weaponskill_seconds'].items():
+        recovery.reset()
+        recovery.on_weaponskill(0, skill_id)
+        view = recovery.progress(0)
+        if seconds > 0:
+            same(view.duration, seconds, 'weapon skill recovery duration ' + str(skill_id))
+            same(view.left, seconds, 'weapon skill recovery countdown ' + str(skill_id))
+        count += 1
+    actual = runtime.eval("require('data.phoenix_recovery')")
+
+    def constants(value):
+        if luajit21.lua_type(value) == 'table':
+            return {key: constants(item) for key, item in value.items()}
+        return value
+
+    for key, value in expected.items():
+        if constants(actual[key]) != value:
+            raise RuntimeError('Source parity failed for action recovery data: ' + key)
+    for id, animations in expected['weaponskills'].items():
+        seconds = expected['weaponskill_seconds'][id]
+        ability = expected['abilities'].get(id, {})
+        for animation in animations:
+            ambiguous = ability.get('category') == 3 and animation in ability.get('animations', {})
+            wanted = ('unknown', None, 'unknown') if ambiguous else (
+                'weaponskill', seconds, 'timed' if seconds > 0 else 'none')
+            if recovery.classify(3, id, animation) != wanted:
+                raise RuntimeError('Source parity failed for weapon skill signature: ' + str(id))
+            count += 1
+    for id, seconds in expected['spell_attack_seconds'].items():
+        if recovery.classify(4, id, 0) != ('spell', max(spell_seconds, seconds), 'timed'):
+            raise RuntimeError('Source parity failed for spell recovery: ' + str(id))
+        count += 1
+    match = re.search(r'm_returnWeaponDelay\s*=\s*(\d+)ms', source.read('src/map/ai/states/range_state.h'))
+    if not match:
+        raise RuntimeError('Source review required for ranged recovery duration.')
+    same(recovery.classify(2, 0, 0)[1], int(match[1]) / 1000, 'ranged recovery duration')
+    count += 1
+    for id, row in expected['abilities'].items():
+        for animation in row['animations']:
+            ambiguous = row['category'] == 3 and animation in expected['weaponskills'].get(id, {})
+            wanted = ('unknown', None, 'unknown') if ambiguous else (
+                row['kind'], row['seconds'], 'timed' if row['seconds'] > 0 else 'none')
+            if recovery.classify(row['category'], id, animation) != wanted:
+                raise RuntimeError('Source parity failed for ability signature: ' + str(id))
+            count += 1
+    for id, seconds in expected['items'].items():
+        if recovery.classify(5, id, 0) != ('item', seconds, 'timed' if seconds > 0 else 'none'):
+            raise RuntimeError('Source parity failed for item recovery: ' + str(id))
+        count += 1
+    for id in expected['quarantined_items']:
+        if recovery.classify(5, id, 0) != ('item', None, 'unknown'):
+            raise RuntimeError('Source parity failed for quarantined item: ' + str(id))
+        count += 1
+    count += len(expected['spell_casts'])
+    return count
+
+
 def check(source, addon=ROOT / 'cadence'):
     manifest = check_guards(source)
     counts = {'tp': check_tp(source, addon), 'recovery': check_recovery(source, addon),
               'delay': check_delay(addon, manifest['profile']['delay_reduction_cap']),
-              'reengage': check_reengage(source, addon)}
+              'reengage': check_reengage(source, addon),
+              'action_recovery': check_action_recovery(source, addon)}
     return counts

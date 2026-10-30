@@ -255,7 +255,7 @@ drawn(0.5, 1.5);
 check('locked has no grips', next(grips()) == nil);
 s.style.locked = false;
 
--- The attached enemy strip follows the card above it, so it has no grips of its own.
+-- The attached enemy strip shares its width and keeps its own height grip.
 s.enemy.enabled, s.enemy.attached = true, true;
 hud.refresh(s);
 MOCK.imgui_calls = {};
@@ -267,10 +267,11 @@ hud.draw_enemy({ fill = 0.3, left = 2.0, delay = 4.0, learned = true, waiting = 
 hud.end_frame();
 MOCK.record_imgui = false;
 ids = grips();
-check('the attached strip has no grips', ids['##grip_width_attack'] and not ids['##grip_width_enemy']);
+check('the attached strip resizes only its own height', ids['##grip_width_attack'] and ids['##grip_height_enemy']
+    and not ids['##grip_width_enemy'] and not ids['##grip_corner_enemy']);
 
 -- With the mouse on the joined card, Shift outlines all of it. Between fights the auto attack card is
--- gone and the strip stays where it hangs. It can't be dragged there, so it gets no outline.
+-- gone and the strip stays where it hangs. It still moves the shared anchor.
 local OUTLINE = theme.u32(theme.with_alpha(theme.palette.ember, 0.85));
 local function outlines()
     local n = 0;
@@ -295,12 +296,11 @@ hud.join_below(true);
 hud.draw_enemy(strip);
 hud.end_frame();
 MOCK.record_imgui = false;
-check('with the card gone, the strip has no outline', outlines() == 0, outlines());
+check('with the card gone, the movable strip has an outline', outlines() == 1, outlines());
 rawset(imgui, 'IsWindowHovered', nil);
 s.enemy.enabled, s.enemy.attached = false, false;
 
--- With the auto attack timer off, the attached strip sits at its own spot. It takes the auto attack
--- timer's width, so only its bottom edge can be dragged.
+-- With the auto attack timer off, the enemy card uses its own spot, width and resize grips.
 s.attack.enabled = false;
 s.enemy.enabled, s.enemy.attached = true, true;
 hud.refresh(s);
@@ -312,8 +312,8 @@ hud.draw_enemy({ fill = 0.3, left = 2.0, delay = 4.0, learned = true, waiting = 
 hud.end_frame();
 MOCK.record_imgui = false;
 ids = grips();
-check('a strip on its own gets only its bottom edge', ids['##grip_height_enemy'] and not ids['##grip_width_enemy']
-    and not ids['##grip_corner_enemy']);
+check('the enemy card with its host off gets every resize grip', ids['##grip_height_enemy'] and ids['##grip_width_enemy']
+    and ids['##grip_corner_enemy']);
 s.attack.enabled = true;
 s.enemy.enabled, s.enemy.attached = false, false;
 

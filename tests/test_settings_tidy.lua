@@ -15,6 +15,11 @@ MOCK.player.equipment[0] = 16535;
 dofile(ADDON_DIR .. '/cadence.lua');
 MOCK.fire('load');
 local s = MOCK.settings.current;
+check('action recovery starts off', not s.recovery.enabled);
+check('enemy casting starts off independently', not s.enemycast.enabled);
+-- Keep the new card on while isolating each existing timer's off state below.
+s.recovery.enabled = true;
+s.enemycast.enabled = true;
 local imgui = require('imgui');
 
 local OFF_NOTE = 'This timer is off, so it isn\'t on screen.';
@@ -132,7 +137,7 @@ for _, e in ipairs(seen) do
     if (e.label == 'Fill' and e.name == 'TextUnformatted') then plain = plain + 1; end
     if (e.label == 'Fill' and e.name == 'TextColored') then muted = muted + 1; end
 end
-check('Fill is plain text on all three bars', plain == 3 and muted == 0, plain .. ' plain, ' .. muted .. ' colored');
+check('Fill is plain text on all five bars', plain == 5 and muted == 0, plain .. ' plain, ' .. muted .. ' colored');
 
 -- A timer that's off --------------------------------------------------------------------------------
 -- The enemy timer is off by default. Both of its sections are faint, with one line under its heading.
@@ -164,6 +169,12 @@ s.enemy.enabled = true;
 seen = walk(frames(1));
 check('turned on, the enemy settings are full strength', find(seen, 'BeginCombo', 'Follows##enemy').alpha == 1
     and find(seen, 'SliderFloat', 'Almost ready at##enemy').alpha == 1 and notes(seen) == 0);
+s.enemycast.enabled = false;
+seen = walk(frames(1));
+check('casting off has its own faint controls and one independent note', find(seen, 'Checkbox', 'Spell name##enemycast').alpha < 1
+    and find(seen, 'Checkbox', 'Seconds left##enemycast').alpha < 1 and notes(seen) == 1
+    and find(seen, 'BeginCombo', 'Follows##enemy').alpha == 1);
+s.enemycast.enabled = true;
 
 s.attack.enabled = false;
 local calls = frames(1);

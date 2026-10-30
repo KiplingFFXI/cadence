@@ -14,7 +14,7 @@ from pathlib import Path
 
 from source_parity import GitSource, check_guards
 
-REF = '9a4494d5056429d0e75922dc9fa47d419142cf68'
+REF = 'ed41f351f63b24e015059c5a58f1c29eb3f198ac'
 MODS = {71: 'mp_heal', 72: 'hp_heal', 73: 'store_tp', 173: 'martial_arts',
         259: 'dual_wield', 295: 'clear_mind', 380: 'delay_percent', 488: 'inhibit_tp',
         167: 'haste_magic', 171: 'delay_flat', 217: 'twohand_haste_ability', 383: 'haste_ability', 384: 'haste_gear', 906: 'desperate_blows',
@@ -26,6 +26,11 @@ MODS = {71: 'mp_heal', 72: 'hp_heal', 73: 'store_tp', 173: 'martial_arts',
 MODS.update({id: 'weapon_skill_' + str(id - 79) for id in range(80, 92)})
 ERA_TAGS = {'NULL', 'ROTZ', 'COP', 'TOAU'}
 SQL_COLUMNS = {
+    'abilities': ('abilityId', 'name', 'job', 'level', 'validTarget', 'recastTime', 'recastId',
+                  'message1', 'message2', 'animation', 'animationTime', 'castTime', 'actionType',
+                  'range', 'isAOE', 'radius', 'CE', 'VE', 'meritModID', 'addType', 'content_tag'),
+    'item_usable': ('itemid', 'name', 'validTargets', 'activation', 'animation', 'animationTime',
+                    'maxCharges', 'useDelay', 'reuseDelay', 'aoe'),
     'augments': ('augmentId', 'multiplier', 'modId', 'value', 'isPet', 'petType'),
     'blue_spell_list': ('spellid', 'mob_skill_id', 'set_points', 'trait_category', 'trait_category_weight',
                         'primary_sc', 'secondary_sc', 'tertiary_sc', 'knockback'),
@@ -269,8 +274,8 @@ def generate(server, ref=REF):
                  'scripts/effects/haste.lua', 'scripts/effects/slow.lua', 'scripts/effects/elegy.lua',
                  'scripts/effects/march.lua', 'scripts/effects/regen.lua', 'scripts/effects/refresh.lua'):
         source(path)
-    weaponskills = {int(m[2]): m[1].lower() for m in re.finditer(
-        r'^\s*(\w+)\s*=\s*(\d+),', source('scripts/enum/weaponskill.lua'), re.M)}
+    import source_yaml
+    weaponskills = {row['id']: name for name, row in source_yaml.weapon_skills(snapshot).items()}
     relic_effects = {}
     for match in re.finditer(r'^    \[(\d+)\]\s*= \{ mods = \{ (.*?) \}, duration = getTier1RelicDuration',
                              source('scripts/globals/aftermath.lua'), re.M):
@@ -288,17 +293,17 @@ def generate(server, ref=REF):
                                     'slot': 0 if slot[1] == 'MAIN' else 2, 'duration_per_tp': 0.02}
     zones = {re.sub(r'[^a-z0-9]', '', m[1].lower()): int(m[2])
              for m in re.finditer(r'^  (\w+):\s*(\d+)', source('data/enums/zone.yaml'), re.M)}
-    region_enum = source('src/map/zone.h').split('enum class REGION_TYPE', 1)[1].split('};', 1)[0]
-    regions = {m[1]: int(m[2]) for m in re.finditer(r'^\s*(\w+)\s*=\s*(\d+)', region_enum, re.M)}
+    regions = {re.sub(r'[^a-z0-9]', '', name): value for name, value in
+               source_yaml.read(snapshot, 'data/enums/region.yaml')['values'].items()}
     region_code = source('src/map/utils/zoneutils.cpp').split('auto GetCurrentRegion(', 1)[1].split('auto GetCurrentContinent(', 1)[0]
-    zone_regions = {id: regions['UNKNOWN'] for id in zones.values()}
+    zone_regions = {id: regions['unknown'] for id in zones.values()}
     pending = []
-    for match in re.finditer(r'case xi::ZoneId::(\w+):|return REGION_TYPE::(\w+);', region_code):
+    for match in re.finditer(r'case xi::ZoneId::(\w+):|return xi::Region::(\w+);', region_code):
         if match[1]:
             pending.append(zones[re.sub(r'[^a-z0-9]', '', match[1].lower())])
         else:
             for id in pending:
-                zone_regions[id] = regions[match[2]]
+                zone_regions[id] = regions[re.sub(r'[^a-z0-9]', '', match[2].lower())]
             pending = []
     zone_assault, zone_dynamis = {}, {}
     for path in git('ls-tree', '-r', '--name-only', ref, 'data/zones').splitlines():

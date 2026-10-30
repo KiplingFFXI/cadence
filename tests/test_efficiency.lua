@@ -137,6 +137,11 @@ check('the window makes no garbage each frame', two_columns < 8, ('%.1f bytes a 
 rawset(imgui, 'GetWindowSize', function () return 600, 650; end);
 local one_column = bytes_per_draw();
 check('nor in one column', one_column < 8, ('%.1f bytes a frame'):format(one_column));
+s.visibility.chat, s.visibility.menus = 'selected', 'selected';
+local selected_visibility = bytes_per_draw();
+check('nor with both menu conditions selecting individual timers', selected_visibility < 8,
+    ('%.1f bytes a frame'):format(selected_visibility));
+s.visibility.chat, s.visibility.menus = 'all', 'all';
 require('ui.presets').apply(s, 'Classic FFXI');
 local other_look = bytes_per_draw();
 check('nor in another preset\'s colors', other_look < 8, ('%.1f bytes a frame'):format(other_look));

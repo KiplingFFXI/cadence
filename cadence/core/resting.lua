@@ -9,7 +9,8 @@
     The first HP/MP tick lands 20 to 23 s after you sit down.
 
     cadence counts down to the first tick. After that it watches your HP, MP and TP for each real
-    tick and predicts the next one from the 9, 9, 12 pattern.
+    tick and predicts the next one from the 9, 9, 12 pattern. Loading while already resting waits for
+    a real tick, since neither the sit time nor the earlier tick count is known.
     A flat 10 s countdown drifts up to 2 s off.
 
     Disease, plague and the curse that stops healing (Curse II on the server) make a tick restore
@@ -63,6 +64,8 @@ local BUFF_LAG = 0.5;
 local state = {
     active         = false,
     started_at     = nil,    -- When resting showed up on your character.
+    started_known  = true,
+    phase_unknown  = false,
     last_tick      = nil,
     last_evidence  = nil,    -- How the last tick was found. It is 'sure', 'maybe' or 'assumed'.
     next_tick      = nil,
@@ -130,7 +133,7 @@ local passive_rate;
 local last_change = {};
 local phase_before = {};
 local PHASE_FIELDS = { 'last_tick', 'last_evidence', 'next_tick', 'next_gap', 'gap_last', 'gap_before',
-    'ticks', 'seen_at', 'hidden', 'lost', 'skipped', 'gained_hp', 'gained_mp', 'accepted' };
+    'ticks', 'seen_at', 'hidden', 'lost', 'skipped', 'gained_hp', 'gained_mp', 'accepted', 'phase_unknown' };
 
 local function finite(value)
     return type(value) == 'number' and value == value and math.abs(value) < math.huge;
@@ -201,6 +204,7 @@ local function modeled_gain(stat, tick)
         local confidence = (sample.step ~= nil or model[stat .. '_known']) and 'observed' or 'estimated';
         return math.max(0, sample.gain + (tick - sample.tick) * step), step, confidence;
     end
+    if (not state.started_known) then return nil; end
     return model[stat .. '_base'] + (tick - 1) * step, step,
         model[stat .. '_known'] and 'known' or 'estimated';
 end
@@ -232,6 +236,7 @@ local function predict_gap(tick_time)
     if (state.gap_last == LONG_GAP) then
         return SHORT_GAP;
     end
+    if (not state.started_known) then return LONG_GAP; end
 
     -- Too little history. A tick that landed well after its 10 s mark comes before a short gap.
     -- Ticks land 0 to 3.2 s after a mark. A value past 5 s means the next mark is under 5 s away.
@@ -275,6 +280,7 @@ local function record_tick(when, evidence)
     end
 
     state.ticks         = state.ticks + 1;
+    state.phase_unknown = false;
     state.last_tick     = when;
     state.last_evidence = evidence;
     state.next_gap      = predict_gap(when);
@@ -284,7 +290,7 @@ end
 --[[
     Decides what a change in your HP, MP or TP says about a resting tick.
     'sure' means only a tick could cause it. 'maybe' means a cure or a buff wearing off could look the
-    same. A 'maybe' only counts near the predicted time.
+    same. A 'maybe' only counts near the predicted time once the resting phase is known.
 ]]
 local function tick_evidence(hp_gain, mp_gain, tp_gain, mp_missing, hp_max)
     if ((mp_gain ~= nil and mp_gain >= TICK_MP) or (tp_gain ~= nil and tp_gain < 0)) then
@@ -314,6 +320,7 @@ local function is_tick(now, evidence)
     if (evidence == nil) then
         return false;
     end
+    if (state.phase_unknown) then return true; end
 
     if (state.ticks == 0) then
         local since_sit = now - state.started_at;
@@ -329,6 +336,10 @@ local function is_tick(now, evidence)
         -- A sure tick too soon after the last one means the last one was a wrong guess.
         return state.last_evidence ~= 'sure' or now - state.last_tick >= MIN_TICK_GAP;
     end
+    if (not state.started_known and not resting.pattern_known()) then
+        local gap = now - state.last_tick;
+        return gap >= MIN_TICK_GAP and gap <= LONG_GAP + LOOSE_WINDOW;
+    end
 
     -- Once the pattern is known the prediction is good to a few tenths. A looser match is a cure.
     local window = resting.pattern_known() and TIGHT_WINDOW or LOOSE_WINDOW;
@@ -343,12 +354,15 @@ local function is_tick(now, evidence)
     return math.abs(now - state.next_tick) <= window;
 end
 
-function resting.start(now)
+-- An ongoing rest has no first-tick countdown or absolute tick count to borrow from the load time.
+function resting.start(now, joined_late)
     state.active        = true;
     state.started_at    = now;
+    state.started_known = joined_late ~= true;
+    state.phase_unknown = joined_late == true;
     state.last_tick     = nil;
     state.last_evidence = nil;
-    state.next_tick     = now + FIRST_TICK_SECONDS;
+    state.next_tick     = state.started_known and now + FIRST_TICK_SECONDS or nil;
     state.next_gap      = nil;
     state.ticks         = 0;
     state.accepted, state.rejected, state.last_decision = 0, 0, nil;
@@ -636,6 +650,7 @@ function resting.update(now)
         return;
     end
     settle_pass(now, 'hp'); settle_pass(now, 'mp');
+    if (state.phase_unknown) then return; end
 
     -- Under disease, plague or the curse no tick can show up, so each one is taken to land on time. It
     -- healed nothing, so the step between the ticks before it says nothing about the next one.
@@ -689,6 +704,7 @@ function resting.progress(now)
     if (not state.active) then
         return nil;
     end
+    if (state.phase_unknown) then return 0, nil, 0, 0, 0, state.full, true; end
 
     local from = state.last_tick or state.started_at;
     local span = state.next_tick - from;
@@ -723,6 +739,7 @@ local function step_between(last, before)
 end
 
 local function next_gain(stat)
+    if (state.phase_unknown) then return nil, nil, 'unknown'; end
     local gain, step, confidence = modeled_gain(stat, state.ticks + 1);
     if (gain ~= nil) then return gain, step, confidence; end
     local last = state['heal_' .. stat];
@@ -803,6 +820,10 @@ local function full_estimate(now, targets)
     if (hp.value >= hp.target and mp.value >= mp.target) then
         meta.full_in, meta.ticks, meta.confidence = 0, 0, 'known';
         return 0, 0, meta;
+    end
+    if (state.phase_unknown) then
+        meta.confidence = 'unknown';
+        return hp.full_at, mp.full_at, meta;
     end
     if (stopped) then
         meta.confidence = blocked_confidence;
@@ -901,7 +922,7 @@ end
 function resting.info(now)
     local seconds, meta = resting.until_full(now);
     local hp, mp, confidence = resting.next_gains();
-    return { active = state.active, ticks = state.ticks, pattern_known = resting.pattern_known(),
+    return { active = state.active, ticks = state.ticks, phase_unknown = state.phase_unknown, pattern_known = resting.pattern_known(),
         last_tick = state.seen_at, next_tick = state.next_tick, blocked = state.blocked,
         accepted = state.accepted, rejected = state.rejected, last_decision = state.last_decision,
         next_hp = hp, next_mp = mp, gain_confidence = confidence, full_in = seconds, full = meta,
@@ -921,6 +942,7 @@ end
 -- Forgets your last vitals, for example after a zone change.
 function resting.reset()
     state.active = false;
+    state.started_known, state.phase_unknown = true, false;
     state.hp, state.mp, state.tp = nil, nil, nil;
     state.model = nil;
     state.model_pending = false;

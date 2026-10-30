@@ -2,8 +2,8 @@
     Saved profiles. A profile is a named copy of your cadence settings, the timers' spots included.
 
     Every character shares the profiles in config\addons\cadence\profiles.json. The file is read
-    again before each change and written only when a profile changes, so two game windows don't undo
-    each other's work. A file that can't be read is never written over.
+    again under a shared file lock before each change. A competing save asks you to retry rather than
+    replacing another window's work. A file that can't be read is never written over.
 
     Job links stay with each character, in its own settings. A link names the profile that loads
     when you change to that main job and zone.
@@ -18,6 +18,7 @@ local layouts  = require('ui.layouts');
 local store = require('core.file_store');
 local profiles = {};
 local deleted, overwritten;
+local last_problem;
 local revision = 0;
 local statuses = setmetatable({}, { __mode = 'k' });
 local baselines = {};
@@ -181,6 +182,8 @@ end
 
 -- What went wrong with profiles.json when a save, rename or delete didn't work.
 function profiles.problem()
+    if (last_problem == 'busy') then return 'Another game window is saving profiles. Try again.'; end
+    if (last_problem == 'exists') then return 'A profile with that name already exists. Refresh the list or choose another name.'; end
     if (not profiles.file_ok()) then
         return UNREADABLE;
     end
@@ -188,12 +191,13 @@ function profiles.problem()
 end
 
 -- Saves `settings` as the named profile, new or over an old one. A new one can't be called None or (none).
-function profiles.save(settings, name)
+function profiles.save(settings, name, create_only)
     name = profiles.clean_name(name);
     if (name == '') then
         return false;
     end
     read();
+    if (create_only and profiles.find(name) ~= nil) then return false, 'exists'; end
     local old = saved[name];
     if (old == nil and profiles.no_link_word(name)) then
         return false;
@@ -418,6 +422,18 @@ function profiles.undo_delete(settings)
     local name = deleted.name;
     deleted = nil;
     return true, name, linked;
+end
+
+-- Every window rereads the latest profiles while it owns the same file lock.
+for _, method in ipairs({ 'save', 'rename', 'delete', 'undo_delete', 'undo_overwrite' }) do
+    local action = profiles[method];
+    profiles[method] = function (...)
+        last_problem = nil;
+        ashita.fs.create_dir(FOLDER);
+        local ok, second, third = store.with_lock(FILE, action, ...);
+        if (not ok) then last_problem = second; end
+        return ok, second, third;
+    end;
 end
 
 return profiles;

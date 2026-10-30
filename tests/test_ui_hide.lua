@@ -14,6 +14,7 @@ MOCK.player.equipment[0] = 16535;
 dofile(ADDON_DIR .. '/cadence.lua');
 MOCK.fire('load');
 local s = MOCK.settings.current;
+s.visibility.chat, s.visibility.menus = 'off', 'off';
 local player = require('core.player');
 
 local function frames(n)

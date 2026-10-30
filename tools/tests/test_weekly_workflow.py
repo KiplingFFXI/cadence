@@ -16,6 +16,7 @@ FILES = (
     'cadence/cadence.lua',
     'cadence/data/phoenix_effects.lua',
     'cadence/data/phoenix_modifiers.lua',
+    'cadence/data/phoenix_recovery.lua',
     'tools/generate_modifiers.py',
     'tools/source_guards.json',
 )
@@ -143,6 +144,7 @@ class WeeklyWorkflowTests(unittest.TestCase):
             'python tools/check_source.py',
             'python tools/generate_modifiers.py',
             'python tools/generate_effects.py',
+            'python tools/generate_recovery.py',
             "python -m unittest discover -s tools/tests -p 'test_*.py'",
             'python tests/run.py',
             'python tests/test_release.py',
@@ -204,7 +206,7 @@ class WeeklyWorkflowTests(unittest.TestCase):
             with self.subTest(changed=changed):
                 result, outputs = self.run_step(STUB_CHANGED=changed)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn('six allowed', result.stdout)
+                self.assertIn('seven allowed', result.stdout)
                 self.assertFalse(any(line.startswith(('switch ', 'add ', 'commit ', '-c '))
                                      for line in outputs['git.txt']))
                 self.assertFalse(outputs['created.txt'])

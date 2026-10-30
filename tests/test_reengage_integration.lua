@@ -103,7 +103,7 @@ server(1, 40); round(43); server(2, 44);
 check('death clears instead of retaining a cooldown', attack.reengage_progress(44) == nil);
 
 server(0, 50); server(1, 51); round(54);
-for _, flag in ipairs({ 'blocked', 'injected', 'is_injected', 'blocked_original' }) do
+for _, flag in ipairs({ 'blocked', 'injected' }) do
     local event = MOCK.status_packet(1001, 0); event[flag] = true;
     incoming(event, 54.1);
 end

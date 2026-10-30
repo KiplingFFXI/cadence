@@ -22,6 +22,7 @@ local defaults = {};
 defaults.WIDTH      = { 120, 640 };
 defaults.BAR_HEIGHT = { 2, 32 };
 defaults.HEIGHT_SCALE = { 0.5, 2.5 };
+defaults.VISIBILITY_MODES = { { 'off', 'Off' }, { 'all', 'All timers' }, { 'selected', 'Selected timers' } };
 
 -- The size of the timer names, like AUTO ATTACK, and of the small text next to them and under the
 -- bars. Below the smallest it's auto, which follows the text size.
@@ -36,6 +37,8 @@ defaults.RANGES = {
         almost_seconds = ALMOST_SECONDS },
     resting = { width = defaults.WIDTH, height_scale = defaults.HEIGHT_SCALE, bar_height = defaults.BAR_HEIGHT, flash_seconds = { 0.2, 1.5 },
         sound_volume = { 0, 100 } },
+    recovery = { width = defaults.WIDTH, height_scale = defaults.HEIGHT_SCALE, bar_height = defaults.BAR_HEIGHT },
+    enemycast = { width = defaults.WIDTH, height_scale = defaults.HEIGHT_SCALE, bar_height = defaults.BAR_HEIGHT },
     enemy   = { width = defaults.WIDTH, height_scale = defaults.HEIGHT_SCALE, bar_height = defaults.BAR_HEIGHT, almost_seconds = ALMOST_SECONDS },
     style   = {
         scale       = { 0.5, 2.5 },
@@ -115,6 +118,38 @@ function defaults.make()
             show_reason    = true,
             show_why       = true,
         },
+        recovery = T{
+            enabled        = false,
+            attached       = false,
+            x              = 780,
+            y              = 576,
+            width          = 240,
+            height_scale   = 1.0,
+            bar_height     = 5,
+            show_value     = true,
+            show_source    = true,
+            numbers_only   = false,
+            label_text     = '',
+            show_label     = true,
+            fill_start     = color(P.royal),
+            fill_end       = color(P.ember),
+        },
+        enemycast = T{
+            enabled        = false,
+            attached       = false,
+            x              = 780,
+            y              = 780,
+            width          = 240,
+            height_scale   = 1.0,
+            bar_height     = 5,
+            show_value     = true,
+            show_spell     = true,
+            numbers_only   = false,
+            label_text     = '',
+            show_label     = true,
+            fill_start     = color(P.royal),
+            fill_end       = color(P.ember),
+        },
         resting = T{
             enabled         = true,
             x               = 780,
@@ -178,6 +213,20 @@ function defaults.make()
             -- The timer's own name, like ENEMY ATTACK. show_name is the monster's name in the small text.
             show_label     = true,
         },
+        visibility = T{
+            chat = 'all',
+            menus = 'all',
+            chat_attack = true,
+            chat_resting = true,
+            chat_enemy = true,
+            chat_recovery = true,
+            chat_enemycast = true,
+            menus_attack = true,
+            menus_resting = true,
+            menus_enemy = true,
+            menus_recovery = true,
+            menus_enemycast = true,
+        },
         window = T{
             x      = 120,
             y      = 10,
@@ -240,7 +289,7 @@ function defaults.make()
     };
 end
 
-local TIMERS = { 'attack', 'resting', 'enemy' };
+local TIMERS = { 'attack', 'resting', 'enemy', 'recovery', 'enemycast' };
 
 -- Like type(), but 0/0 gets its own name. Lua counts it as a number. It's no use as a setting, and
 -- Ashita's settings file can hold one.
@@ -341,6 +390,12 @@ function defaults.tidy(settings)
     end
     settings.resting.sound_file = tidy_sound_file(settings.resting.sound_file);
     settings.attack.linger_seconds = settings.attack.linger_seconds > 0 and 1 or 0;
+    for _, context in ipairs({ 'chat', 'menus' }) do
+        local mode = settings.visibility[context];
+        if (mode ~= 'off' and mode ~= 'all' and mode ~= 'selected') then
+            settings.visibility[context] = fresh.visibility[context];
+        end
+    end
     if (settings.resting.goal_stat ~= 'hp' and settings.resting.goal_stat ~= 'mp' and settings.resting.goal_stat ~= 'both') then
         settings.resting.goal_stat = fresh.resting.goal_stat;
     end

@@ -13,8 +13,8 @@ def main():
     args = parser.parse_args()
     source = GitSource(args.server, args.ref)
     counts = check(source)
-    print('Source parity passed at %s: %d TP, %d recovery, %d delay and %d re-engage cases.'
-          % (source.ref, counts['tp'], counts['recovery'], counts['delay'], counts['reengage']))
+    print('Source parity passed at %s: %d TP, %d recovery, %d delay, %d re-engage and %d action recovery cases.'
+          % (source.ref, counts['tp'], counts['recovery'], counts['delay'], counts['reengage'], counts['action_recovery']))
     print('The delay profile uses 0.93; this checks source and offline calculations, not deployed settings or gameplay.')
 
 

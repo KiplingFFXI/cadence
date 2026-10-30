@@ -198,8 +198,8 @@ frames(2);
 MOCK.key_shift, MOCK.mouse_down = true, true;
 s.attack.enabled = false;
 frames(1);
-check('let go of the card mid drag, the strip goes to its own spot', win[ENEMY].x == 780
-    and win[ENEMY].y == 720 - strip_height, at(ENEMY));
+check('disable the host mid drag, the enemy card goes to its own spot', win[ENEMY].x == 780
+    and win[ENEMY].y == 720 - select(2, hud.element_size('enemy')), at(ENEMY));
 check('and its spot stays as it is', s.enemy.x == 780 and s.enemy.y == 724, spots());
 MOCK.key_shift, MOCK.mouse_down = false, false;
 s.attack.enabled = true;
@@ -294,19 +294,29 @@ MOCK.fire('command', { command = '/cadence reset' });
 check('reset on a big screen gives the default stack', spots() == '780,620 780,664 780,724', spots());
 MOCK.screen = { 1024, 768 };
 MOCK.fire('command', { command = '/cadence reset' });
-check('and at 1024x768 too, where it just fits', spots() == '780,620 780,664 780,724', spots());
+local recovery_height = select(2, hud.element_size('recovery'));
+local cast_height = select(2, hud.element_size('enemycast'));
+check('at 1024x768 the five-timer stack fits', s.enemycast.y + cast_height + 6 == 768
+    and s.enemycast.y == s.recovery.y + recovery_height + 6
+    and s.recovery.y == s.enemy.y + enemy_height + 6, spots());
 -- ImGui's display size is -1 by -1 until its first frame.
 MOCK.screen = { -1, -1 };
 MOCK.fire('command', { command = '/cadence reset' });
 check('before ImGui knows the screen, the default stack', spots() == '780,620 780,664 780,724', spots());
 MOCK.screen = { 1280, 720 };
 MOCK.fire('command', { command = '/cadence reset' });
-check('at 1280x720 the stack starts higher', s.enemy.y + enemy_height + 6 == 720
-    and s.attack.y == s.resting.y + resting_height + 6 and s.enemy.y == s.attack.y + attack_height + 6, spots());
+check('at 1280x720 the five-timer stack starts higher', s.enemycast.y + cast_height + 6 == 720
+    and s.enemycast.y == s.recovery.y + recovery_height + 6
+    and s.recovery.y == s.enemy.y + enemy_height + 6 and s.attack.y == s.resting.y + resting_height + 6
+    and s.enemy.y == s.attack.y + attack_height + 6, spots());
+MOCK.fire('command', { command = '/cadence recovery on' });
+MOCK.fire('command', { command = '/cadence enemycast on' });
 MOCK.fire('command', { command = '/cadence' });
 frames(2);
 check('and each timer is drawn right at its spot', win[RESTING].y == s.resting.y and win[ATTACK].y == s.attack.y
-    and win[ENEMY].y == s.enemy.y and fits(ENEMY), at(RESTING) .. '  ' .. at(ATTACK) .. '  ' .. at(ENEMY));
+    and win[ENEMY].y == s.enemy.y and fits(ENEMY) and win['##cadence_recovery'].y == s.recovery.y
+    and fits('##cadence_recovery') and win['##cadence_enemycast'].y == s.enemycast.y and fits('##cadence_enemycast'),
+    at(RESTING) .. '  ' .. at(ATTACK) .. '  ' .. at(ENEMY) .. '  ' .. at('##cadence_enemycast'));
 
 local errors = nil;
 for _, line in ipairs(MOCK.printed) do if (line:find('Drawing stopped')) then errors = line; end end
