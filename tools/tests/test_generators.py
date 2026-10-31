@@ -67,6 +67,36 @@ class SQLParserTests(unittest.TestCase):
                                        'INSERT INTO `item_mods` VALUES (1,73,7);']))
 
 
+class FoodParserTests(unittest.TestCase):
+    def parse(self, body):
+        indented = '\n'.join('    ' + line for line in body.splitlines())
+        return modifiers.food_modifiers('itemObject.onEffectGain = function(target, effect)\n' + indented + '\nend',
+                                        {'DEX': 9, 'STORETP': 73}, {'HUME_M': 1, 'ELVAAN_M': 3, 'ELVAAN_F': 4})
+
+    def test_fixed_bonus_calls_add_instead_of_overwriting(self):
+        self.assertEqual(self.parse('effect:addMod(xi.mod.DEX, 2)\neffect:addMod(xi.mod.DEX, 3)'),
+                         ({9: 5}, {}, {}))
+
+    def test_unreviewed_conditional_is_unknown_instead_of_last_branch_winning(self):
+        self.assertEqual(self.parse('if target:getMainLvl() > 30 then\n'
+                                    'effect:addMod(xi.mod.STORETP, 5)\nelse\n'
+                                    'effect:addMod(xi.mod.STORETP, 10)\nend'), ({}, {}, {73: True}))
+
+    def test_dynamic_bonus_is_unknown_instead_of_silently_zero(self):
+        self.assertEqual(self.parse('effect:addMod(xi.mod.STORETP, target:getMainLvl())'), ({}, {}, {73: True}))
+
+    def test_one_sided_race_condition_keeps_the_other_race_bonus_zero(self):
+        fixed, races, unknown = self.parse('local race = target:getRace()\nif race == xi.race.ELVAAN_M or '
+                                          'race == xi.race.ELVAAN_F then\neffect:addMod(xi.mod.DEX, 2)\nelse\nend')
+        self.assertEqual((fixed, races, unknown), ({}, {1: {9: 0}, 3: {9: 2}, 4: {9: 2}}, {}))
+
+    def test_branch_with_extra_behavior_is_not_treated_as_a_literal_race_bonus(self):
+        fixed, races, unknown = self.parse('local race = target:getRace()\nif race == xi.race.ELVAAN_M then\n'
+                                          'effect:addMod(xi.mod.DEX, 2)\nhelper(effect)\nelse\n'
+                                          'effect:addMod(xi.mod.DEX, 3)\nend')
+        self.assertEqual((fixed, races, unknown), ({}, {}, {9: True}))
+
+
 class GeneratorCLITests(unittest.TestCase):
     def test_output_and_check_use_the_resolved_revision(self):
         for module in (modifiers, effects):
@@ -127,6 +157,27 @@ class ReviewedGeneratorTests(unittest.TestCase):
         self.assertTrue(any(latent['mod'] == 25 and latent['value'] == 20 and
                             latent['condition'] == 13 and latent['param'] == 406
                             for _, latent in latents.items()))
+
+    def test_racial_food_bonuses_match_executed_phoenix_source_for_every_race(self):
+        runtime = luajit21.LuaRuntime()
+        data = runtime.execute(self.outputs[modifiers.__name__])
+        source = modifiers.DataSource(REPOSITORY, modifiers.REF)
+        runtime.execute('xi = { mod = setmetatable({ DEX = 9 }, { __index = function(_, key) return key end }) }')
+        runtime.execute(source.read('scripts/enum/race.lua'))
+        for item_id, name in ((4331, 'imperial_omelette'), (4564, 'royal_omelette')):
+            food = runtime.execute(source.read('scripts/items/' + name + '.lua'))
+            for race in range(1, 9):
+                runtime.globals().race = race
+                runtime.execute('actual = {}; target = { getRace = function() return race end }; '
+                                'effect = { addMod = function(_, id, value) actual[id] = (actual[id] or 0) + value end }')
+                food.onEffectGain(runtime.globals().target, runtime.globals().effect)
+                record = data['foods'][item_id]
+                expected = runtime.globals().actual[9]
+                actual = record['mods'][9] or 0
+                if record['race_mods']:
+                    actual += record['race_mods'][race][9] or 0
+                with self.subTest(food=name, race=race):
+                    self.assertEqual(actual, expected)
 
 
 if __name__ == '__main__':

@@ -93,15 +93,18 @@ local function latent_active(latent, snapshot, buffs, sub_job, slot)
     local condition, param = latent.condition, latent.param;
     local flags = snapshot.flags or {};
     if (condition >= 0 and condition <= 3) then
+        if (condition >= 2 and snapshot.tp == nil) then return nil; end
+        if (condition >= 2 and snapshot.tp >= 1000) then return false; end
+        -- Rounded packet percentages cannot settle fractional latent thresholds.
+        if (snapshot.max_hp_estimated or snapshot.max_hp_unknown) then return nil; end
         local percent = snapshot.hp_percent;
         if (snapshot.hp ~= nil and snapshot.max_hp ~= nil and snapshot.max_hp > 0) then
             percent = snapshot.hp * 100 / snapshot.max_hp;
         end
         if (percent == nil) then return nil; end
-        if (condition >= 2 and snapshot.tp == nil) then return nil; end
-        if (condition >= 2 and snapshot.tp >= 1000) then return false; end
         return (condition % 2 == 0 and percent <= param) or (condition % 2 == 1 and percent >= param);
     elseif (condition == 4) then
+        if (snapshot.max_mp_estimated or snapshot.max_mp_unknown) then return nil; end
         if (snapshot.mp == nil or snapshot.max_mp == nil) then return nil; end
         return snapshot.max_mp > 0 and snapshot.mp * 100 / snapshot.max_mp <= param;
     elseif (condition == 5) then
@@ -465,6 +468,18 @@ function modifiers.calculate(snapshot)
             end
         else
             add_mods(record.mods);
+            if (record.race_mods) then
+                local racial = food.race and record.race_mods[food.race];
+                if (racial) then
+                    add_mods(racial);
+                else
+                    local _, conditional = next(record.race_mods);
+                    for mod in pairs(conditional or {}) do
+                        missing(mod, 'food race unavailable', tostring(food.id));
+                    end
+                end
+            end
+            for mod in pairs(record.unknown_mods or {}) do missing(mod, 'food condition unavailable', tostring(food.id)); end
             for mod, values in pairs(record.party_mods) do
                 if (food.party_size == nil) then
                     missing(mod, 'food party size unavailable', tostring(food.id));
@@ -605,6 +620,7 @@ function modifiers.calculate(snapshot)
             missing(72, 'maximum HP unavailable');
         else
             result.hp_step = 1 + math.floor(snapshot.max_hp / 300);
+            if (snapshot.max_hp_estimated) then missing(72, 'maximum HP estimated'); end
         end
     end
     result.signet_recovery = boosted;

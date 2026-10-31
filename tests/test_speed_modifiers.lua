@@ -189,7 +189,9 @@ for mod, expected in pairs(data.coverage) do
     end
     for _, set in ipairs(data.sets) do if (set.mods[mod] ~= nil) then actual.sets = actual.sets + 1; end end
     for _, food in pairs(data.foods) do
-        if (food.mods[mod] ~= nil or food.party_mods[mod] ~= nil) then actual.foods = actual.foods + 1; end
+        local present = food.mods[mod] ~= nil or food.party_mods[mod] ~= nil or (food.unknown_mods or {})[mod] ~= nil;
+        for _, values in pairs(food.race_mods or {}) do if (values[mod] ~= nil) then present = true; end end
+        if (present) then actual.foods = actual.foods + 1; end
     end
     for _, item in pairs(data.activated_items) do if (item.mods[mod] ~= nil) then actual.activated = actual.activated + 1; end end
     for _, spell in pairs(data.blue_spells) do if (spell.mods[mod] ~= nil) then actual.blue_spells = actual.blue_spells + 1; end end

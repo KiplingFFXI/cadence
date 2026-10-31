@@ -67,8 +67,9 @@ if (focus_slot ~= 0 and focus_slot ~= interface + FOCUS_OFFSET) then
 end
 local hidden_flag = (interface ~= 0) and (interface + HIDDEN_OFFSET) or 0;
 
--- Typing and the native macro palettes leave the timers visible. Action menus are ordinary menus.
-local INPUT_MENUS = { inline = true, chatctrl = true,
+-- Typing, the combat command panel and native macro palettes leave the timers visible.
+-- Spell and ability lists are ordinary menus.
+local INPUT_MENUS = { inline = true, chatctrl = true, playermo = true,
     mcr1pall = true, mcr2pall = true, mcr1long = true, mcr2long = true };
 local last_name_low, last_name_high, last_chat, last_menu;
 
@@ -228,9 +229,92 @@ function player.main_job()
     return stats:GetMainJob();
 end
 
--- Your max HP and MP.
+-- Exact status packets are not sent for every cap change. Current HP/MP and their server percentages
+-- can disprove an old cap, including after Weakness ends while native memory still has the old value.
+local hp_cap, mp_cap = {}, {};
+local function valid_cap(value, zero)
+    return type(value) == 'number' and value == math.floor(value) and value >= (zero and 0 or 1) and value <= 0x7FFFFFFF;
+end
+
+local function coherent_cap(record, cap)
+    local value, percent = record.current, record.percent;
+    if (record.last_current ~= nil and cap < record.last_current) then return false; end
+    if (value == nil or percent == nil or percent == 0) then return true; end
+    if (cap < value or cap <= 0) then return false; end
+    if (cap == value) then return percent == 100; end
+    if (percent == 100) then return cap == value; end
+    local ratio = value * 100 / cap;
+    -- The server calculates this percentage with float precision. Allow rounding at an integer edge.
+    return percent == math.max(1, math.floor(ratio + 0.00001))
+        or percent == math.max(1, math.floor(ratio - 0.00001));
+end
+
+local function observe_vital(record, value, percent)
+    if (not valid_cap(value, true)) then return; end
+    record.last_current = value;
+    if (record.value ~= nil and record.value < value) then record.value = nil; end
+    if (record.native ~= nil and record.native < value) then record.rejected_native = record.native; end
+    if (not valid_cap(percent, true) or percent > 100
+        or (percent == 0 and value > 0) or (percent > 0 and value == 0)) then return; end
+    record.current, record.percent, record.pinned = value, percent, false;
+    if (record.native ~= nil and not coherent_cap(record, record.native)) then record.rejected_native = record.native; end
+    if (record.value ~= nil and not coherent_cap(record, record.value)) then record.value = nil; end
+    if (percent == 100) then
+        record.value, record.quality = value, false;
+    elseif (record.value == nil and percent > 0) then
+        if (percent == 1) then
+            -- One percent also represents values below one percent, so it supplies no upper bound.
+            record.value, record.quality = math.floor(value * 100 / 2) + 1, 'unknown';
+        else
+            record.value, record.quality = math.floor(value * 100 / percent), true;
+        end
+    elseif (record.quality == 'unknown' and percent > 1) then
+        record.quality = true;
+    end
+end
+
+local function read_cap(record, native, zero)
+    local previous = record.native;
+    local changed = native ~= previous;
+    record.native = native;
+    if (not record.pinned and changed and valid_cap(previous, zero) and valid_cap(native, zero)
+        and (record.percent == nil or record.percent == 0)) then
+        -- A new native cap can clamp current vitals before their next packet. Without a percentage
+        -- snapshot to contradict it, old current values cannot keep that new cap from taking effect.
+        record.current, record.percent, record.last_current, record.rejected_native = nil, nil, nil, nil;
+        record.value, record.quality = native, false;
+    elseif (not record.pinned and (changed or record.value == nil) and valid_cap(native, zero)
+        and native ~= record.rejected_native and coherent_cap(record, native)) then
+        record.value, record.quality = native, false;
+    end
+    if (record.value == nil) then return math.max(1, (record.last_current or 0) + 1), 'unknown'; end
+    return record.value, record.quality;
+end
+
+-- Quality is false for a current exact source, true for an estimate, or 'unknown' for an open bound.
+-- Keep a still-consistent estimate stable so ordinary recovery ticks do not restart potency learning.
 function player.max_vitals()
-    return stats:GetHPMax(), stats:GetMPMax();
+    local hp, hp_quality = read_cap(hp_cap, stats:GetHPMax(), false);
+    local mp, mp_quality = read_cap(mp_cap, stats:GetMPMax(), true);
+    return hp, mp, hp_quality, mp_quality;
+end
+
+function player.on_vitals(hp, mp, hp_percent, mp_percent)
+    observe_vital(hp_cap, hp, hp_percent);
+    observe_vital(mp_cap, mp, mp_percent);
+end
+
+function player.on_max_vitals(hp, mp)
+    if (not valid_cap(hp, false) or not valid_cap(mp, true)) then return; end
+    hp_cap.current, hp_cap.percent, hp_cap.rejected_native, hp_cap.last_current = nil, nil, nil, nil;
+    mp_cap.current, mp_cap.percent, mp_cap.rejected_native, mp_cap.last_current = nil, nil, nil, nil;
+    hp_cap.value, hp_cap.quality, hp_cap.pinned, hp_cap.native = hp, false, true, stats:GetHPMax();
+    mp_cap.value, mp_cap.quality, mp_cap.pinned, mp_cap.native = mp, false, true, stats:GetMPMax();
+end
+
+function player.reset_vitals()
+    for key in pairs(hp_cap) do hp_cap[key] = nil; end
+    for key in pairs(mp_cap) do mp_cap[key] = nil; end
 end
 
 --[[

@@ -8,7 +8,7 @@ mock_ashita.lua, loading the real addon from ../cadence.
 A test fails when it raises an error or prints a line like "2 FAILED". The exit code is 1 when any
 test failed.
 
-json.lua comes from the Phoenix install's Ashita libs. Settings and imgui are mocked in
+json.lua and sugar/math.lua come from the Phoenix install's Ashita libs. Settings and imgui are mocked in
 mock_ashita.lua. Set ASHITA_LIBS to point somewhere else.
 """
 import glob
@@ -40,6 +40,7 @@ def runtime(install):
     L.globals().MOCK_INSTALL_PATH = install
     L.globals().ADDON_DIR = lua_path(ADDON)
     L.execute(open(os.path.join(HERE, 'mock_ashita.lua'), encoding='utf-8').read())
+    L.execute("require('sugar.math')")
     return L
 
 

@@ -980,7 +980,12 @@ end
 -- nothing on the right.
 local function draw_footer(list, timer, left, top, bar_width, metrics)
     local footer, right = timer.footer, timer.footer_right;
-    local room = bar_width - text_width(footer, metrics.detail_px) - size.spacing;
+    local footer_width = text_width(footer, metrics.detail_px);
+    if (right == nil and footer_width > bar_width and timer.footer_left_short ~= nil) then
+        footer = timer.footer_left_short;
+        footer_width = text_width(footer, metrics.detail_px);
+    end
+    local room = bar_width - footer_width - size.spacing;
     local right_width = right and text_width(right, metrics.detail_px) or 0;
     if (right ~= nil and right_width > room) then
         footer = timer.footer_left_short or footer;

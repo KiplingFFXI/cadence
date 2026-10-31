@@ -14,6 +14,7 @@ packets.ID = {
     MESSAGE = 0x029,
     STATUS  = 0x037,
     ASSIST  = 0x058,
+    STATS   = 0x061,
     VITALS  = 0x0DF,
 };
 
@@ -161,7 +162,8 @@ local function result_fields(action)
 end
 
 local MINIMUM = { [packets.ID.ZONE_IN] = 8, [packets.ID.ENTITY] = 11,
-    [packets.ID.MESSAGE] = 26, [packets.ID.STATUS] = 49, [packets.ID.ASSIST] = 12, [packets.ID.VITALS] = 20 };
+    [packets.ID.MESSAGE] = 26, [packets.ID.STATUS] = 49, [packets.ID.ASSIST] = 12,
+    [packets.ID.STATS] = 12, [packets.ID.VITALS] = 20 };
 
 -- Call before a packet can change any timer or observed input.
 function packets.valid(e)
@@ -279,6 +281,21 @@ function packets.vitals(e)
     local mp = struct.unpack('L', data, 0x0C + 1);
     local tp = struct.unpack('L', data, 0x10 + 1);
     return hp, mp, tp;
+end
+
+-- These rounded percentages describe the same HP/MP snapshot, even when no new stats packet follows.
+function packets.vitals_percent(e)
+    if (byte_count(e) < 24) then return nil; end
+    local hp, mp = e.data:byte(0x16 + 1, 0x17 + 1);
+    return hp <= 100 and hp or nil, mp <= 100 and mp or nil;
+end
+
+-- 0x061 contains your own maximum HP and MP as signed 32-bit values, after the packet header.
+function packets.max_vitals(e)
+    if (byte_count(e) < 12) then return nil; end
+    local hp, mp = struct.unpack('L', e.data, 5), struct.unpack('L', e.data, 9);
+    if (hp <= 0 or hp > 0x7FFFFFFF or mp > 0x7FFFFFFF) then return nil; end
+    return hp, mp;
 end
 
 -- 0x058 assist. Returns whose it is and the server id of the monster they're on. The server sends it

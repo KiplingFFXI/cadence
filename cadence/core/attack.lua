@@ -296,19 +296,32 @@ function attack.on_round(now, estimate, loadout_key, sampled_known, transition)
     state.reason  = nil;
 end
 
+-- An accepted action can arrive before the next buff poll notices that a disable ended.
+-- Carry its paused swing time forward before another action changes the deadline.
+local function resume_disabled(now)
+    if (state.disabled_since == nil) then return; end
+    if (state.active and state.held_since == nil and not state.unknown_action_hold) then
+        state.next_attack = now + math.max(state.next_attack - state.disabled_since, 0);
+    end
+    state.disabled_since, state.disabled_by = nil, nil;
+end
+
 -- A job ability or weapon skill went off. False means its attack hold is unknown.
-function attack.on_ability(now, seconds)
+-- Only an accepted result proves that an earlier disable has ended.
+function attack.on_ability(now, seconds, accepted)
     if (not state.active) then
         return;
     end
 
-    local remaining = state.unknown_action_hold and state.unknown_remaining or math.max(state.next_attack - now, 0);
+    if (accepted) then resume_disabled(now); end
+    local clock = state.disabled_since or now;
+    local remaining = state.unknown_action_hold and state.unknown_remaining or math.max(state.next_attack - clock, 0);
     seconds = action_seconds(seconds, ABILITY_HOLD_SECONDS);
     if (seconds == false) then
         state.unknown_action_hold, state.unknown_remaining = true, remaining;
     else
         clear_unknown_hold();
-        state.next_attack = now + remaining + seconds;
+        state.next_attack = clock + remaining + seconds;
     end
     state.clean       = false;
     state.reason      = nil;
@@ -354,6 +367,7 @@ function attack.on_cast_begin(now, kind)
         return;
     end
 
+    resume_disabled(now);
     if (state.unknown_action_hold) then
         state.next_attack = now + state.unknown_remaining;
         clear_unknown_hold();
@@ -411,13 +425,7 @@ end
 
 -- None of those are on you anymore. The time that was left carries on from here.
 function attack.on_enabled(now)
-    if (state.disabled_since == nil) then
-        return;
-    end
-    if (state.active and state.held_since == nil) then
-        state.next_attack = now + math.max(state.next_attack - state.disabled_since, 0);
-    end
-    state.disabled_since = nil;
+    resume_disabled(now);
 end
 
 --[[

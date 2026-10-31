@@ -568,7 +568,7 @@ local function settle_held(now)
 end
 
 -- Your HP, MP or TP changed. The server sends this for you every time one of them moves.
-function resting.on_vitals(now, hp, mp, tp, hp_max, mp_max)
+function resting.on_vitals(now, hp, mp, tp, hp_max, mp_max, hp_quality, mp_quality)
     settle_pass(now, 'hp'); settle_pass(now, 'mp');
     local known = state.hp ~= nil;
     local before_hp, before_mp = state.hp, state.mp;
@@ -580,6 +580,7 @@ function resting.on_vitals(now, hp, mp, tp, hp_max, mp_max)
 
     state.hp, state.mp, state.tp = hp, mp, tp;
     state.hp_max, state.mp_max = hp_max, mp_max;
+    state.hp_max_quality, state.mp_max_quality = hp_quality, mp_quality;
     state.full = hp >= hp_max and mp >= mp_max;
 
     if (not state.active or not known) then
@@ -619,11 +620,13 @@ function resting.on_vitals(now, hp, mp, tp, hp_max, mp_max)
         direct_hp, direct_mp, direct_tp, pass_hp, pass_mp, before_hp, before_mp);
 end
 
--- Maximum HP or MP can change without another vitals packet. Keep the last packet's current values.
-function resting.on_max_vitals(now, hp_max, mp_max)
-    if (state.hp == nil or not finite(hp_max) or hp_max <= 0 or not finite(mp_max) or mp_max < 0
-        or (hp_max == state.hp_max and mp_max == state.mp_max)) then return; end
-    resting.on_vitals(now, state.hp, state.mp, state.tp, hp_max, mp_max);
+-- Maximum changes can arrive without current vitals. A lower cap also clamps current HP or MP.
+function resting.on_max_vitals(now, hp_max, mp_max, hp_quality, mp_quality)
+    if (state.hp == nil or not finite(hp_max) or hp_max <= 0 or not finite(mp_max) or mp_max < 0) then return; end
+    state.hp_max_quality, state.mp_max_quality = hp_quality, mp_quality;
+    if (hp_max == state.hp_max and mp_max == state.mp_max) then return; end
+    resting.on_vitals(now, math.min(state.hp, hp_max), math.min(state.mp, mp_max), state.tp,
+        hp_max, mp_max, hp_quality, mp_quality);
 end
 
 -- Your buffs, read five times a second. Notes whether disease, plague or the curse is on you.
@@ -774,6 +777,10 @@ function resting.next_gains()
     elseif (hp ~= nil) then hp = math.min(hp, hp_missing); end
     if (mp_missing == 0) then mp = 0;
     elseif (mp ~= nil) then mp = math.min(mp, mp_missing); end
+    if (state.hp_max_quality) then confidence.hp = 'estimated'; end
+    if (state.mp_max_quality) then confidence.mp = 'estimated'; end
+    if (state.hp_max_quality == 'unknown') then hp, confidence.hp = nil, 'unknown'; end
+    if (state.mp_max_quality == 'unknown') then mp, confidence.mp = nil, 'unknown'; end
     return hp, mp, confidence;
 end
 
@@ -796,6 +803,8 @@ local function full_estimate(now, targets)
             or (model and not model[name .. '_known'] and not observed)) then confidence = 'estimated'; end
         if (rate ~= 0 and state.regen_at == nil and state.seen_at == nil) then confidence = 'estimated'; end
         local current, maximum = state[stat], state[stat .. '_max'];
+        local maximum_quality = state[stat .. '_max_quality'];
+        if (maximum_quality) then confidence = 'estimated'; end
         local target = targets and targets[stat] or maximum;
         local full = current >= target;
         if (target == 0) then gain, step, rate, confidence = 0, 0, 0, 'known'; end
@@ -807,6 +816,8 @@ local function full_estimate(now, targets)
             -- A known passive gain can fill this stat even before resting potency is known.
             gain, step, confidence, predictable = 0, 0, 'estimated', true;
         end
+        -- An unknown maximum is still a lower bound for a requested absolute goal.
+        if (maximum_quality == 'unknown' and (targets == nil or target > maximum)) then predictable = false; end
         if (not predictable) then confidence = 'unknown'; end
         local record = stats[stat];
         record.value, record.maximum, record.target = current, maximum, target;
@@ -903,17 +914,21 @@ function resting.goal_progress(now, stat, mode, value)
     if (not finite(now) or not finite(value) or state.hp == nil
         or (stat ~= 'hp' and stat ~= 'mp' and stat ~= 'both')
         or (mode ~= 'percent' and mode ~= 'amount')) then return nil; end
-    local targets = {};
+    local targets, unknown_target = {}, false;
     for _, name in ipairs(STATS) do
         local maximum = state[name .. '_max'];
+        local selected = stat == name or stat == 'both';
+        local unknown_maximum = state[name .. '_max_quality'] == 'unknown';
         local amount = mode == 'percent' and maximum * math.max(0, math.min(100, value)) / 100 or value;
-        targets[name] = (stat == name or stat == 'both') and math.max(0, math.min(maximum, math.ceil(amount))) or 0;
+        if (selected and unknown_maximum and mode == 'percent' and value > 0) then unknown_target = true; end
+        targets[name] = selected and math.max(0,
+            math.min(unknown_maximum and mode == 'amount' and math.huge or maximum, math.ceil(amount))) or 0;
     end
-    local reached = state.hp >= targets.hp and state.mp >= targets.mp;
+    local reached = not unknown_target and state.hp >= targets.hp and state.mp >= targets.mp;
     local result = { reached = reached, target_hp = targets.hp, target_mp = targets.mp,
         confidence = reached and 'known' or 'unknown' };
     if (reached) then result.seconds, result.ticks = 0, 0; return result; end
-    if (not state.active) then return result; end
+    if (not state.active or unknown_target) then return result; end
     local _, _, meta = full_estimate(now, targets);
     result.seconds, result.ticks, result.confidence = meta.full_in, meta.ticks, meta.confidence;
     return result;
@@ -944,6 +959,9 @@ function resting.reset()
     state.active = false;
     state.started_known, state.phase_unknown = true, false;
     state.hp, state.mp, state.tp = nil, nil, nil;
+    state.hp_max, state.mp_max = nil, nil;
+    state.hp_max_quality, state.mp_max_quality = nil, nil;
+    state.full, state.blocked = false, nil;
     state.model = nil;
     state.model_pending = false;
     state.direct_hp, state.direct_mp, state.direct_tp = nil, nil, nil;

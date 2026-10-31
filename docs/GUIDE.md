@@ -35,7 +35,7 @@ Its starting estimates use Phoenix's timing rules and the bonuses your game can 
 - **Enemy cast bar (off by default).** Shows the followed monster's spell and estimated cast time. Place it freely or attach it below enemy attack. It waits for an observed finish or interruption after the estimate runs out.
 - **Full look controls.** Start from one of eight skins: Phoenix, Classic FFXI, Minimal, High contrast, Ember, Mint, Lavender and Colorblind safe. Then change any color, the corner roundness, the font, the overall size and the size of the numbers, names and small text. Add a text shadow or outline, and choose the card's background, border and accent stripe. Set each timer's width, overall height and bar thickness. Hide a timer's name, or type your own. Bars can fill or drain, or you can keep only the text. The default look matches the Phoenix site and launcher.
 - **Extras you can switch on or off.** An "almost ready" color for the last moment before an attack, with a mark on the bar where it starts. A flash on each resting tick. A sound once resting fills your HP and MP, one of the two that come with cadence or an .mp3 or .wav of your own. Time until full on the resting timer, like "full in 28s", or when your HP and MP will each be full. Hiding the resting timer once you're full. A shared spot so both timers use one place on screen. Hiding during cutscenes and NPC conversations, while the map is open or while you've hidden the game's interface.
-- **Menu visibility.** Hide all or selected timers for the full-screen chat log and other menus, with a separate choice for each. Timers keep tracking while hidden. Ordinary typing and macro palettes leave them visible.
+- **Menu visibility.** Hide all or selected timers for the full-screen chat log and other menus, with a separate choice for each. Timers keep tracking while hidden. Ordinary typing, the combat command panel and macro palettes leave them visible.
 - **Settings for each character, or one layout for all.** Ashita saves your settings for each character. Tick "One layout for all characters" and every character uses the same setup.
 - **Profiles and starter layouts.** Save your setup under a name, like "Solo BLM", and load it again on any character. Link a profile to a main job and it loads when you change to that job. Or preview a Minimal, Melee / TP, Resting or Enemy tracking starter layout before applying it. Using and Modified from show which setup you started with. Undo delete and Undo overwrite can recover your last saved-profile change during this session.
 - **Settings Undo.** Undo last change keeps up to eight recent settings edits, including timer moves, colors, profile loads, starter layouts and section resets. One continuous drag is one change.
@@ -173,7 +173,7 @@ Readouts use compact rows. Enabled only hides unchecked rows from the list witho
 | Why it stopped | On by default. While a spell, ranged attack or item holds your auto attack, the bar dims and says "casting", "ranged" or "item" instead of the seconds. Sleep, stun and the like do the same with "asleep", "stunned", "petrified", "terrified" or "penalty". It counts again once that ends. |
 | Next tick gains | Off by default. Shows the HP and MP your next resting tick should restore, before Regen or Refresh. It says "est." when a bonus is unknown. Last tick gains still shows what actually healed you. |
 | Time until full | On by default. Shows "full in 28s" on the resting timer. Known bonuses give an estimate before your first tick, then actual gains refine it. |
-| Full times | Adds a line under the resting bar that says when your HP and your MP will each be full. |
+| Full times | Adds a line under the resting bar that says when your HP and your MP will each be full. Narrow cards use shorter labels, such as "HP 28s", including on jobs with no MP. |
 | Ticks until full | Off by default. Shows the resting ticks remaining, with a tilde while estimated. |
 | Hide once full | Hides the resting timer once your HP and MP are full. |
 | Flash on each tick | On by default. The resting timer flashes when a tick lands. You can pick its color, and Flash length sets how long it lasts. |
@@ -188,7 +188,7 @@ Readouts use compact rows. Enabled only hides unchecked rows from the list witho
 
 Under **Timers > ALL TIMERS > Menu visibility**, set **Full-screen chat log** and **Other menus** independently to **Off**, **All timers**, or **Selected timers**. Both start at All timers. Selected timers lets you choose Auto attack, Resting, Enemy attack, Action recovery and Enemy cast separately. Selecting none leaves every timer visible. Reset menu visibility restores both conditions to All timers; Undo can restore your choices.
 
-Other menus includes inventory, equipment, and magic or ability menus. Ordinary chat typing, the chat-mode selector and macro palettes do not trigger these rules. Maps still follow Hide on the map; cutscenes and NPC conversations follow Hide during events. Those existing global switches take priority. If menu detection is unavailable, these controls are greyed out and leave timers visible.
+Other menus includes inventory, equipment, and magic or ability menus. Ordinary chat typing, the chat-mode selector, the combat command panel and macro palettes do not trigger these rules. Maps still follow Hide on the map; cutscenes and NPC conversations follow Hide during events. Those existing global switches take priority. If menu detection is unavailable, these controls are greyed out and leave timers visible.
 
 Only the chosen timer displays hide. Their observations, countdowns and resting completion sound keep running, and the bars return when the menu closes. Attached timers have independent hide choices, so hiding a parent does not hide an unselected child. The settings window stays available while changing these menu rules. Choices are saved with profiles and shared layouts.
 
@@ -207,7 +207,7 @@ Enemy attack and Enemy cast have separate toggles and options. Both use Follows 
 
 ### Appearance tab
 
-Timer styling, Window and Window colors are together here. Inline preview shows a static sample of each enabled timer and your chat colors inside Appearance while you edit. Pick Normal, Blocked, Waiting or Full to inspect that state. It changes no live estimate or observation and plays no sound.
+Timer styling, Window and Window colors are together here. Inline preview shows a static sample of each enabled timer and your chat colors inside Appearance while you edit. Pick Normal, Blocked, Waiting or Full to inspect that state. Timer commands update these samples too. It changes no live estimate or observation and plays no sound.
 
 TABS lets you hide optional settings tabs, and Restore all tabs brings them back. Hidden tabs keep their features running. Appearance always remains available. Show hidden matches reveals tabs found by a search, and a Details shortcut reveals Details when needed.
 
@@ -281,7 +281,7 @@ Recovery offers Normal and Unknown; enemy cast offers Normal and Waiting. Changi
 
 Time to TP goal adds an approximate number of seconds to your selected TP goal. It appears once attack timing and recent hit rates have enough evidence. Casting, disabling effects, range or facing problems, overdue attacks and changing equipment can make it unavailable. The row stays in place while the estimate is hidden.
 
-Recovery goal can use HP, MP or both, as a percentage or an amount. It shows time to that target and says reached once you have enough. An amount above your maximum is capped at your current maximum. This does not replace full HP/MP, Hide once full or the existing full-recovery sound. Alignment guides can be switched on here too.
+Recovery goal can use HP, MP or both, as a percentage or an amount. It shows time to that target and says reached once you have enough. An amount above a known maximum is capped at that maximum. If a maximum is unknown, percentage goals wait for more information and amount goals keep the amount you requested. HP and MP remain independent when only one is selected. This does not replace full HP/MP, Hide once full or the existing full-recovery sound. Alignment guides can be switched on here too.
 
 ### Details tab
 
@@ -348,6 +348,8 @@ Weapon skills hold the timer for their Phoenix animation duration, and most job 
 
 Sleep, Lullaby, stun, petrification, terror and a penalty stop the timer. The bar stops where it is and carries on from the same spot once they wear off, the way the server's timer does. cadence leaves any gap they interrupted out of what it learns. While a spell, item or ranged attack runs, or one of those effects is on you, the bar dims and says why in place of the seconds, like "casting" or "asleep".
 
+Starting a spell or completing an ability as a disabling effect ends keeps the paused swing time and applies the action's own hold once. A later effect update does not add the old pause again.
+
 If cadence loads while you're already fighting, it can't know when your next attack is due. It shows "--" until that attack lands.
 
 While you're engaged, the bar says "too far" or "not facing" and dims as soon as you step out of reach or turn away from the monster you're fighting. The server makes the same check before each attack. cadence checks facing first, then range. You face a monster while it's less than 45 degrees to either side of the way you face. Your reach is 2 yalms plus your size and the monster's, height included.
@@ -382,7 +384,11 @@ cadence uses your job's Clear Mind, eligible Signet bonuses, known gear and augm
 
 Turn on Next tick gains in the Timers tab, or type `/cadence resting nextgains on`, to show the next expected HP and MP gain. Food eaten before cadence loaded, unread merits or an unavailable blue spell list, and effects whose strength the client does not know stay estimated. `/cadence info` lists what is known and what is still missing.
 
+Equipment bonuses that require an exact HP or MP percentage also stay uncertain when the maximum is estimated. Other known bonuses still count.
+
 Time until full follows the learned 9, 9, 12 pattern and accounts for Regen and Refresh on their separate three-second passes. Ticks until full adds the number of resting ticks remaining. If passive recovery will finish before another resting tick, it says "full before next tick". A tilde marks uncertain times and counts. Signed recovery bonuses can reduce recovery; gear that drains HP and forces you to stand suppresses the full-time estimate. Your actual max HP and MP already include your gear.
+
+When Weakness wears off or your maximum HP or MP changes, cadence updates fullness from your current values, percentages and available maximums. A resting timer hidden at full returns when recovery is needed. These changes keep the existing tick schedule. If the available information leaves the maximum uncertain, the full time stays estimated or unknown until normal updates clarify it. Lowering and restoring a maximum does not restore HP or MP you lost, and zoning clears the previous full status while new vitals are arriving.
 
 When you're at full HP and MP under Signet, ticks don't change anything, so there's nothing to watch. cadence keeps following the pattern and shows "full".
 
@@ -446,6 +452,8 @@ Besides Ashita's normal per-character settings file, cadence keeps shared layout
 
 Record timing details is off by default. Turning it on keeps only the latest 256 relevant timing events in memory. Save timing report, or `/cadence report`, writes a snapshot of your bonuses, equipment IDs, known conditions and timing evidence to `config\addons\cadence\reports\`. It sends nothing anywhere and includes no chat or raw packets. A report can be saved with recording off too.
 
+If drawing stops after an error, the report also includes the Lua files and line numbers involved. Save it before reloading cadence or changing characters. Recording can stay off. If the timing snapshot is unavailable, the report still saves the error locations.
+
 | Source | What it's used for |
 |---|---|
 | Your character's status in memory | Knowing when you're engaged or resting. |
@@ -457,11 +465,12 @@ Record timing details is off by default. Turning it on keeps only the latest 256
 | Packet 0x029 (battle messages) | Messages saying an attack can't happen, like "out of range", and direct recovery that must be kept separate from resting ticks. With either enemy bar on, your own observed effects wearing off a monster, and a monster being defeated. |
 | Packet 0x00E (entity update) | Dropping a monster's current clock and effects when it leaves sight, before that identity can be reused. Learned speeds kept by name and zone stay. |
 | Packet 0x058 (assist) | Which monster your attacks moved to, so "too far" and "not facing" check that one. The server sends it when you engage, when you switch monsters mid-fight and when you /assist. |
-| Packet 0x0DF (HP, MP and TP) | Spotting each resting tick, how much TP each of your rounds gave, and how much more came in from anything else between your rounds. One comes for each party member. Only yours is read past whose it is. |
+| Packet 0x0DF (HP, MP, TP and HP/MP percentages) | Spotting each resting tick, checking whether cached maximums still agree with your current values, how much TP each of your rounds gave, and how much more came in from anything else between your rounds. Inconsistent maximums stay estimated or unknown. One comes for each party member. Only yours is read past whose it is. |
+| Packet 0x061 (character stats) | Exact maximum HP and MP when this normal update arrives. Phoenix does not send it for every maximum change, so current values and percentages also inform resting fullness. |
 | Your server id, entity index and TP from the party list in memory | Your server id is read once when cadence loads, to pick out your own packets. After that 0x00A gives it. Your entity index finds where you stand. Your TP is the TP line. |
 | Packet 0x00A (zoning) | Your server id, resetting the timers when you change zones, and reading your main job again for job links. The delay, TP per hit and monster speeds cadence learned stay. |
 | Your main job in memory, read once after each zone | Loading the profile linked to a new main job. |
-| Your equipment and augment bytes, job, level, max HP and MP, party, zone and buffs in memory | Working out your weapon delay, TP per hit and resting bonuses, seeing March, Slow or Elegy wear off, skipping rounds under Regain or Meikyo Shisui, spotting when you're full while resting, and seeing disease, plague or the curse that keeps resting ticks from healing you. |
+| Your equipment and augment bytes, job, level, max HP and MP, party, zone and buffs in memory; race when eating supported food | Working out your weapon delay, TP per hit and resting bonuses, including known racial food bonuses, seeing March, Slow or Elegy wear off, skipping rounds under Regain or Meikyo Shisui, spotting when you're full while resting, and seeing disease, plague or the curse that keeps resting ticks from healing you. |
 | Weapon delay and skill from the game's item data | The starting delay and TP per hit estimates. |
 | Available blue spell set and buff timers in client memory | Recognizing refreshed effects and reporting a possible starting spell set. A blue spell set read from memory stays provisional until a normal server update confirms it. Unavailable or invalid details stay unknown. |
 | Whether Shift is held (checked each frame a timer has something to show or the settings window is open) | Letting you drag the timers, and Peek with Shift. |

@@ -174,6 +174,7 @@ def step_script(name):
 
 # Stand-ins for gh and git. gh lists the releases in STUB_RELEASES and keeps what a release create was given.
 # git fetch works only when STUB_OLD_VERSION is set, and git show gives a cadence.lua with that version.
+# git ls-remote returns only the supplied tag fixture, or a simulated lookup error. No command reaches GitHub.
 # Git for Windows' awk drops the \r at the end of each line it reads. GitHub's keeps it, and BINMODE=3 makes
 # this one keep it too. Other awks ignore it.
 STUBS = r'''
@@ -189,6 +190,8 @@ git() {
     case "$1" in
         fetch) [ -n "$STUB_OLD_VERSION" ] ;;
         show) printf "addon.version = '%s';\n" "$STUB_OLD_VERSION" ;;
+        ls-remote) printf '%s' "$STUB_TAG_REFS"; return "$STUB_TAG_STATUS" ;;
+        *) return 99 ;;
     esac
 }
 '''
@@ -208,6 +211,8 @@ def run_step(bash, name, folder, scratch, **env):
         'STUB_DIR': stub_dir.replace(os.sep, '/'),
         'STUB_RELEASES': '',
         'STUB_OLD_VERSION': '',
+        'STUB_TAG_REFS': '',
+        'STUB_TAG_STATUS': '0',
         'BEFORE': '',
     })
     environ.update(env)
@@ -466,6 +471,42 @@ def test_job(scratch, bumped_copy, crlf_copy, new):
                                          GITHUB_SHA='deadbeef')
     check('a version with no CHANGELOG.md section stops the job before it drafts anything',
           code != 0 and created is None and ('CHANGELOG.md has no section for %s' % other) in said, (code, said))
+
+    # An existing tag wins over gh release create --target. Only the exact built commit is safe.
+    built, older, tag_object = 'a' * 40, 'b' * 40, 'c' * 40
+    ref = 'refs/tags/v' + version
+    fixtures = (
+        ('an absent tag may be created at the build commit', '', '0', True),
+        ('a matching lightweight tag is accepted', built + '\t' + ref + '\n', '0', True),
+        ('a mismatched lightweight tag blocks the draft', older + '\t' + ref + '\n', '0', False),
+        ('a matching annotated tag uses its peeled commit',
+         tag_object + '\t' + ref + '\n' + built + '\t' + ref + '^{}\n', '0', True),
+        ('an annotated tag with a different peeled commit blocks the draft',
+         built + '\t' + ref + '\n' + older + '\t' + ref + '^{}\n', '0', False),
+        ('a lookup error cannot be mistaken for an absent tag', '', '128', False),
+        ('partial matching output with a lookup error blocks the draft', built + '\t' + ref + '\n', '128', False),
+        ('a malformed lookup response blocks the draft', 'not-a-hash\t' + ref + '\n', '0', False),
+        ('an unexpected reference blocks the draft', built + '\t' + ref + '-other\n', '0', False),
+        ('a peeled result without its tag reference blocks the draft', built + '\t' + ref + '^{}\n', '0', False),
+        ('duplicate tag references block the draft', (built + '\t' + ref + '\n') * 2, '0', False),
+    )
+    for label, refs, status, allowed in fixtures:
+        runner = tempfile.mkdtemp(dir=scratch).replace(os.sep, '/')
+        code, said, _, created, commands = run_step(bash, 'Draft the release', copy, scratch, VERSION=version,
+            RUNNER_TEMP=runner, GITHUB_SHA=built, STUB_TAG_REFS=refs, STUB_TAG_STATUS=status)
+        check(label, (code == 0 and created is not None and created[created.index('--target') + 1] == built)
+              if allowed else (code != 0 and created is None), (code, said, created))
+        check('the final draft step only reads the exact remote tag: ' + label,
+              commands == ['ls-remote --tags origin ' + ref + ' ' + ref + '^{}'], commands)
+
+    code, _, outputs, _, commands = check_version()
+    check('the early version check does not substitute a stale tag lookup for the final check',
+          code == 0 and outputs.get('draft') == 'true' and not commands)
+    code, said, _, created, _ = run_step(bash, 'Draft the release', copy, scratch, VERSION=version,
+        RUNNER_TEMP=tempfile.mkdtemp(dir=scratch).replace(os.sep, '/'), GITHUB_SHA=built,
+        STUB_TAG_REFS=older + '\t' + ref + '\n')
+    check('a conflicting tag introduced after the version check still blocks the final draft',
+          code != 0 and created is None and 'this zip was built from' in said, (code, said, created))
 
 
 def main():

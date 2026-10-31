@@ -24268,7 +24268,7 @@ return {
         [4328] = { name = 'loaf_of_hobgoblin_bread', mods = { [72] = 2 }, party_mods = {  }, duration = 3600 },
         [4329] = { name = 'serving_of_newt_flambe', mods = { [9] = 4 }, party_mods = {  }, duration = 14400 },
         [4330] = { name = 'plate_of_witch_risotto', mods = { [71] = 2 }, party_mods = {  }, duration = 14400 },
-        [4331] = { name = 'imperial_omelette', mods = { [9] = 3 }, party_mods = {  }, duration = 14400 },
+        [4331] = { name = 'imperial_omelette', mods = {  }, party_mods = {  }, duration = 14400, race_mods = { [1] = { [9] = 3 }, [2] = { [9] = 3 }, [3] = { [9] = 2 }, [4] = { [9] = 2 }, [5] = { [9] = 3 }, [6] = { [9] = 3 }, [7] = { [9] = 3 }, [8] = { [9] = 3 } } },
         [4332] = { name = 'orange_kuchen_+1', mods = { [71] = 1 }, party_mods = {  }, duration = 3600 },
         [4333] = { name = 'bowl_of_witch_soup', mods = { [71] = 1 }, party_mods = {  }, duration = 14400 },
         [4334] = { name = 'ear_of_grilled_corn', mods = { [72] = 1 }, party_mods = {  }, duration = 3600 },
@@ -25492,6 +25492,7 @@ return {
         ['scripts/effects/weakness.lua'] = '82ec0ef9a4bbf3aad5149e4793f676cc67508436234674dfa15781e541098cd0',
         ['scripts/effects/yonin.lua'] = '82f9dbb193a863e863200afdbd68c9199a2301117261236a58113c76c02f069e',
         ['scripts/enum/item.lua'] = 'eac1fcd27735bc9a20c7fa66be79505c6ecd8ef594e940bd61daad7cb3c34c97',
+        ['scripts/enum/race.lua'] = '8c95a03302b555ef3ea0d54183326f54fbfa7c0fe6c3bdad90d784a4114f0859',
         ['scripts/globals/aftermath.lua'] = '421dfc3437a43ed61730a831d10c4b982a1a2af10f9f0180070b331c2292c978',
         ['scripts/globals/gear_sets.lua'] = '1d7883217b099ca863956d535a453b606ee230263a6f6a9b2373dec0a5c61190',
         ['scripts/globals/job_utils/corsair.lua'] = '5f9e922314d2fc9b4423daffce013d4bb24b0ccf91cf94b4f86724480ebf4841',
@@ -26322,5 +26323,5 @@ return {
         ['src/map/utils/charutils.cpp'] = 'a0ec77205b973305afc68a3fc2e02ab741fa78aecafab1ad92d14f9a9173c8ff',
         ['src/map/utils/zoneutils.cpp'] = '97935710489d1ff8325131faa57fedf63080d3d8ed476a9d06954e3bec1cd063',
     },
-    coverage_notes = { included = { 'signed fixed item modifiers', 'conditional item latents', 'player augments', 'equipment sets', 'observed item enchantments', 'observed relic aftermath', 'era job and blue traits', 'eligible set Blue Magic spell modifiers', 'food modifiers' }, indirect = { 'Caster Regen and Refresh potency, song instruments and ability enhancements change received effect power; unknown power remains uncertain.', 'Current maximum HP and MP come from client totals, including gear and effects.', 'Weapon base delay and weapon identity come from equipped client resources.' }, excluded = { 'Pet modifiers and pet augment rows do not modify the player.', 'Ranged delay, Snapshot, ability recast, spell recast and movement speed are outside the melee interval.', 'Haste Samba, Dancer, Scholar, geomancy and post-75 traits are outside the configured TOAU profile.' }, uncertain = { 'Unseen latent conditions and unsupported augment formats remain unknown.', 'Food identity, received spell or roll power and existing enchantments cannot be reconstructed from icons alone.', 'Avatar perpetuation and unidentified passive effects require observed net recovery.', 'All item rows are retained for equipped IDs; level and source presence do not establish era acquisition.' } },
+    coverage_notes = { included = { 'signed fixed item modifiers', 'conditional item latents', 'player augments', 'equipment sets', 'observed item enchantments', 'observed relic aftermath', 'era job and blue traits', 'eligible set Blue Magic spell modifiers', 'food modifiers including observed racial conditions' }, indirect = { 'Caster Regen and Refresh potency, song instruments and ability enhancements change received effect power; unknown power remains uncertain.', 'Current maximum HP and MP come from client totals, including gear and effects.', 'Weapon base delay and weapon identity come from equipped client resources.' }, excluded = { 'Pet modifiers and pet augment rows do not modify the player.', 'Ranged delay, Snapshot, ability recast, spell recast and movement speed are outside the melee interval.', 'Haste Samba, Dancer, Scholar, geomancy and post-75 traits are outside the configured TOAU profile.' }, uncertain = { 'Unseen latent conditions and unsupported augment formats remain unknown.', 'Food identity, received spell or roll power and existing enchantments cannot be reconstructed from icons alone.', 'Avatar perpetuation and unidentified passive effects require observed net recovery.', 'All item rows are retained for equipped IDs; level and source presence do not establish era acquisition.' } },
 };

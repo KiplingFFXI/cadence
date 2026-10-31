@@ -210,6 +210,45 @@ do
 end
 
 do
+    local p = player(12);
+    p.equipment[0] = { id = 18445 };
+    p.hp, p.max_hp, p.max_hp_estimated = 300, 600, true;
+    local r = modifiers.calculate(p);
+    check('Amakura with an estimated maximum does not claim its Store TP latent', r.store_tp == 25 and not r.tp_known);
+    check('uncertain HP latent leaves unrelated recovery and speed models known', r.hp_known and r.mp_known and r.delay_known);
+    p.max_hp_estimated, p.max_hp_unknown = false, true;
+    check('an unbounded HP maximum also leaves percentage latents unknown', not modifiers.calculate(p).tp_known);
+    p.max_hp_unknown, p.max_hp = false, 589;
+    r = modifiers.calculate(p);
+    check('an exact cap above the latent fraction removes its bonus', r.store_tp == 25 and r.tp_known);
+    p.max_hp = 600;
+    r = modifiers.calculate(p);
+    check('an exact cap at the latent threshold restores its known bonus', r.store_tp == 35 and r.tp_known);
+
+    p = player();
+    p.equipment[13] = { id = 13298 };
+    p.max_hp_estimated, p.tp = true, 1000;
+    check('known TP can disprove an HP-and-TP latent despite an estimated HP cap', modifiers.calculate(p).delay_known);
+    p.tp = 999;
+    check('an eligible TP value cannot settle the uncertain HP condition', not modifiers.calculate(p).delay_known);
+
+    p = player(1, 99);
+    p.equipment[1] = { id = 18811 };
+    p.mp, p.max_mp, p.max_mp_estimated = 300, 400, true;
+    r = modifiers.calculate(p);
+    check('an estimated MP cap leaves Oneiros Grip Refresh latent unknown', not r.refresh_known and r.refresh == 0);
+    check('uncertain MP latent preserves fixed Regen and unrelated recovery models', r.regen_known and r.regen == 1 and r.hp_known and r.mp_known);
+    p.max_mp_estimated, p.max_mp_unknown = false, true;
+    check('an unbounded MP maximum also leaves percentage latents unknown', not modifiers.calculate(p).refresh_known);
+    p.max_mp_unknown, p.max_mp = false, 399;
+    r = modifiers.calculate(p);
+    check('an exact MP cap above the latent fraction leaves Refresh off', r.refresh_known and r.refresh == 0);
+    p.max_mp = 400;
+    r = modifiers.calculate(p);
+    check('an exact MP cap at the latent threshold restores known Refresh', r.refresh_known and r.refresh == 1);
+end
+
+do
     local p = player();
     p.buffs[effect.food] = true;
     p.food = { id = 5758, party_size = 4 };
@@ -227,6 +266,31 @@ do
     check('unidentified Food icon does not assume a potency', not r.hp_known and not r.mp_known and not r.tp_known);
     p.buffs = {};
     check('worn-off food clears uncertainty', modifiers.calculate(p).tp_known);
+end
+
+do
+    local p = player();
+    p.buffs[effect.food] = true;
+    p.food = { id = 4331, race = 3 };
+    p.merits[data.merit_ids.double_attack] = 0;
+    local r = modifiers.calculate(p);
+    check('Elvaan Imperial Omelette uses source DEX2', r.dexterity == 2 and r.rounds_known);
+    p.food.race = 4;
+    check('both Elvaan races share the food branch', modifiers.calculate(p).dexterity == 2);
+    p.food.race = 1;
+    r = modifiers.calculate(p);
+    check('other races use source Imperial Omelette DEX3', r.dexterity == 3 and r.rounds_known);
+    p.food.race = nil;
+    r = modifiers.calculate(p);
+    check('missing food race marks only the conditional stat unknown', r.dexterity == 0 and not r.rounds_known
+        and r.tp_known and r.hp_known and r.mp_known);
+    p.food.race = 255;
+    check('unrecognized food race does not choose a default branch', not modifiers.calculate(p).rounds_known);
+    data.foods[99999] = { mods = { [71] = 2 }, party_mods = {}, unknown_mods = { [73] = true } };
+    p.food = { id = 99999 };
+    r = modifiers.calculate(p);
+    check('unsupported food conditions preserve fixed bonuses and their uncertainty', r.mp_heal == 2 and r.mp_known and not r.tp_known);
+    data.foods[99999] = nil;
 end
 
 do

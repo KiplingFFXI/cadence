@@ -1,6 +1,6 @@
 addon.name    = 'cadence';
 addon.author  = 'Kipling';
-addon.version = '1.4.0';
+addon.version = '1.4.1';
 addon.desc    = 'Attack, resting, enemy casting and action recovery timers for Phoenix.';
 addon.link    = 'https://github.com/KiplingFFXI/cadence';
 
@@ -229,6 +229,10 @@ end
 -- loadout they came from.
 local function read_inputs()
     local loadout = player.read_loadout();
+    local hp_quality, mp_quality;
+    loadout.max_hp, loadout.max_mp, hp_quality, mp_quality = player.max_vitals();
+    loadout.max_hp_estimated, loadout.max_mp_estimated = not not hp_quality, not not mp_quality;
+    loadout.max_hp_unknown, loadout.max_mp_unknown = hp_quality == 'unknown', mp_quality == 'unknown';
     local entity = player.entity();
     local status = cadence.server_status;
     if (status == nil and entity) then status = entity.Status; end
@@ -288,7 +292,9 @@ local function check_modifiers(now)
     cadence.buffs, cadence.buffs_known = loadout.buffs, loadout.buffs_known;
     resting.on_model(loadout.modifiers);
     if (loadout.resting) then
-        resting.on_max_vitals(now, player.max_vitals());
+        resting.on_max_vitals(now, loadout.max_hp, loadout.max_mp,
+            loadout.max_hp_unknown and 'unknown' or loadout.max_hp_estimated,
+            loadout.max_mp_unknown and 'unknown' or loadout.max_mp_estimated);
     end
     if (tracking_tp()) then
         tp.on_loadout(loadout);
@@ -1844,7 +1850,7 @@ local function print_help(word)
     elseif (word == 'visibility') then
         say('/cadence visibility chat|menus off|all|selected  chooses when timers hide.');
         say('/cadence visibility chat|menus attack|resting|enemy|recovery|enemycast on|off  chooses a timer and switches to Selected timers.');
-        say('Chat means the full-screen chat log. Other menus excludes maps, typing and macro palettes. Hidden timers keep tracking.');
+        say('Chat means the full-screen chat log. Other menus excludes maps, typing, the combat command panel and macro palettes. Hidden timers keep tracking.');
         return;
     elseif (word == 'ui' or word == 'layout' or word == 'tabs' or word == 'resetsection') then
         say('/cadence layout minimal|melee|resting|enemy  picks timer readouts and keeps your look and positions.');
@@ -2038,7 +2044,11 @@ report_snapshot = function (now)
 end
 
 save_report = function ()
-    local path, problem = diagnostics.save(report_snapshot(os.clock()));
+    local ok, snapshot = pcall(report_snapshot, os.clock());
+    if (not ok) then
+        snapshot = { addon = { name = addon.name, version = addon.version }, snapshot_unavailable = true };
+    end
+    local path, problem = diagnostics.save(snapshot);
     if (path) then
         say('Timing report saved to ' .. path);
     else
@@ -2642,6 +2652,7 @@ local function set_timer(key, word)
     end
     if (key == 'recovery' and not timer.enabled) then cadence.recovery.reset(); end
     if (key == 'enemycast' and not timer.enabled) then cadence.enemy_cast.reset(); end
+    settings_window.invalidate_preview();
     save_settings();
     say(('%s is %s.'):format(TIMER_NAMES[key], timer.enabled and 'on' or 'off'));
 end
@@ -2950,7 +2961,7 @@ local function on_my_action(e, category, now)
         if (status ~= 'ignored') then
             local ability = cadence.recovery_data.abilities[param];
             local tail = kind == 'weaponskill' and seconds or status ~= 'unknown' and ability and ability.attack_seconds;
-            attack.on_ability(now, tail or false);
+            attack.on_ability(now, tail or false, true);
         end
     elseif (CAST_KIND[category] ~= nil) then
         local param = packets.action_param(e);
@@ -3164,17 +3175,20 @@ local function on_vitals(e)
     end
     local now = os.clock();
     local hp, mp, tp_value = packets.vitals(e);
-    local hp_max, mp_max = player.max_vitals();
-    stat_state.on_vitals(now, hp, mp, tp_value, hp_max, mp_max);
+    local hp_percent, mp_percent = packets.vitals_percent(e);
+    player.on_vitals(hp, mp, hp_percent, mp_percent);
+    local hp_max, mp_max, hp_quality, mp_quality = player.max_vitals();
+    stat_state.on_vitals(now, hp, mp, tp_value, hp_max, mp_max, hp_quality, mp_quality);
     if (cadence.needs_modifiers()) then
         local loadout = read_loadout(now);
         resting.on_model(loadout.modifiers);
         if (tracking_tp()) then tp.on_loadout(loadout); end
     end
-    resting.on_vitals(now, hp, mp, tp_value, hp_max, mp_max);
+    resting.on_vitals(now, hp, mp, tp_value, hp_max, mp_max, hp_quality, mp_quality);
     tp.on_vitals(now, tp_value);
     if (diagnostics.is_enabled()) then
         diagnostics.record('vitals', now, { hp = hp, mp = mp, tp = tp_value, hp_max = hp_max, mp_max = mp_max,
+            hp_max_quality = hp_quality, mp_max_quality = mp_quality,
             attack = attack.info(now), tp_result = tp.info(now), resting = resting.info and resting.info(now) or nil });
     end
 end
@@ -3182,6 +3196,7 @@ end
 -- You zoned or logged in. The packet carries your server id.
 local function on_zone_in(e)
     cadence.my_id = packets.zone_in(e);
+    player.reset_vitals();
     cadence.last_status, cadence.attack_status, cadence.server_status = nil, nil, nil;
     attack.reset();
     cadence.recovery.reset(); cadence.enemy_cast.reset();
@@ -3211,6 +3226,13 @@ ashita.events.register('packet_in', 'cadence_packet_in', function (e)
         on_status(e);
     elseif (id == packets.ID.VITALS) then
         on_vitals(e);
+    elseif (id == packets.ID.STATS) then
+        local hp, mp = packets.max_vitals(e);
+        if (hp ~= nil) then
+            player.on_max_vitals(hp, mp);
+            resting.on_max_vitals(os.clock(), hp, mp);
+            cadence.modifiers_at = -1;
+        end
     elseif (id == packets.ID.ZONE_IN) then
         on_zone_in(e);
     elseif (id == packets.ID.ENTITY) then
@@ -3234,15 +3256,16 @@ ashita.events.register('d3d_present', 'cadence_present', function ()
     if (cadence.broken) then
         return;
     end
-    local ok, err = pcall(render);
+    local ok, err = xpcall(render, diagnostics.capture_drawing_error);
     if (not ok) then
         cadence.broken = true;
-        say(('Drawing stopped after an error: %s. Type /cadence to try again.'):format(tostring(err)));
+        say(('Drawing stopped after an error: %s. Type /cadence report to save details, or /cadence to try again.'):format(tostring(err)));
     end
 end);
 
 -- Picking the settings opens your sound file, if the sound is on.
 ashita.events.register('load', 'cadence_load', function ()
+    player.reset_vitals();
     stat_state.reset();
     cadence.loadout, cadence.delay_estimate, cadence.delay_key = nil, nil, nil;
     hud.load_fonts();

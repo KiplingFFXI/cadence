@@ -93,6 +93,55 @@ def display_name(value):
                     for word in value.replace('_', ' ').split())
 
 
+def food_modifiers(text, mod_by_name, races):
+    """Read fixed bonuses and the reviewed race branch; other conditions stay unknown."""
+    match = re.search(r'itemObject\.onEffectGain\s*=\s*function\([^)]*\)(.*?)\nend', text, re.S)
+    if not match:
+        return {}, {}, {}
+    body = re.sub(r'--\[\[.*?\]\]|--[^\n]*', '', match[1], flags=re.S)
+    literal = r'effect:addMod\(xi\.mod\.(\w+),\s*(-?\d+)\)'
+    mentioned = {mod_by_name[name] for name in re.findall(r'effect:addMod\(xi\.mod\.(\w+)', body)
+                 if name in mod_by_name}
+
+    def read_literals(section):
+        result = {}
+        for name, value in re.findall(literal, section):
+            if name in mod_by_name:
+                mod = mod_by_name[name]
+                result[mod] = result.get(mod, 0) + int(value)
+        return result
+
+    # The source records the bonus when food is consumed, before any later model/race change.
+    branch = re.fullmatch(r'\s*local\s+(\w+)\s*=\s*target:getRace\(\)\s*if\s+(.*?)\s*then\s*'
+                          r'(.*?)\s*else\s*(.*?)\s*end\s*', body, re.S)
+    if branch:
+        variable, condition, yes, no = branch.groups()
+        comparison = re.escape(variable) + r'\s*==\s*xi\.race\.(\w+)'
+        names = re.findall(comparison, condition)
+        condition_shape = re.sub(comparison, 'RACE', condition)
+        branches_are_literals = not re.sub(literal, '', yes).strip() and not re.sub(literal, '', no).strip()
+        if (names and all(name in races for name in names) and
+                re.fullmatch(r'RACE(?:\s+or\s+RACE)*', condition_shape.strip()) and branches_are_literals):
+            selected = {races[name] for name in names}
+            yes_mods, no_mods = read_literals(yes), read_literals(no)
+            fixed, conditional = {}, {}
+            for mod in sorted(set(yes_mods) | set(no_mods)):
+                if yes_mods.get(mod, 0) == no_mods.get(mod, 0):
+                    fixed[mod] = yes_mods.get(mod, 0)
+                else:
+                    for race in sorted(set(races.values())):
+                        conditional.setdefault(race, {})[mod] = (yes_mods if race in selected else no_mods).get(mod, 0)
+            return fixed, conditional, {}
+    if re.search(r'\b(?:if|for|while|repeat)\b', body):
+        return {}, {}, {mod: True for mod in sorted(mentioned)}
+    fixed = read_literals(body)
+    # A named modifier with an expression instead of a literal cannot be assumed to be zero.
+    remaining = re.sub(literal, '', body)
+    unknown = {mod_by_name[name]: True for name in re.findall(r'effect:addMod\(xi\.mod\.(\w+)', remaining)
+               if name in mod_by_name}
+    return {mod: value for mod, value in fixed.items() if mod not in unknown}, {}, unknown
+
+
 def lua(value):
     if value is None:
         return 'nil'
@@ -193,6 +242,7 @@ def generate(server, ref=REF):
     effect_ids = {k: effect_ids[k] for k in wanted_effects}
 
     foods, activated = {}, {}
+    races = {name: int(value) for name, value in re.findall(r'^\s*(\w+)\s*=\s*(\d+),', source('scripts/enum/race.lua'), re.M)}
     mod_by_name = {m[1].upper(): int(m[2]) for m in re.finditer(r'^  (\w+):\s+(\d+)', source('data/enums/mod.yaml'), re.M)
                    if int(m[2]) in MODS}
     if set(mod_by_name.values()) != set(MODS):
@@ -232,6 +282,11 @@ def generate(server, ref=REF):
         record = {'name': name, 'mods': mods, 'party_mods': party_mods,
                   'duration': int(duration[1]) if duration else 0}
         if 'xi.effect.FOOD' in text:
+            record['mods'], race_mods, unknown_mods = food_modifiers(text, mod_by_name, races)
+            if race_mods:
+                record['race_mods'] = race_mods
+            if unknown_mods:
+                record['unknown_mods'] = unknown_mods
             foods[id] = record
         elif mods and 'xi.effect.ENCHANTMENT' in text:
             record['remove_on_unequip'] = 'onItemUnequip' in text
@@ -324,7 +379,8 @@ def generate(server, ref=REF):
                          'latents': sum(sum(l['mod'] == mod for l in i['latents']) for i in items.values()),
                          'augments': sum(any(a['mod'] == mod for a in rows) for rows in augments.values()),
                          'sets': sum(mod in s['mods'] for s in sets),
-                         'foods': sum(mod in f['mods'] or mod in f['party_mods'] for f in foods.values()),
+                         'foods': sum(mod in f['mods'] or mod in f['party_mods'] or mod in f.get('unknown_mods', {})
+                                      or any(mod in values for values in f.get('race_mods', {}).values()) for f in foods.values()),
                          'activated': sum(mod in a['mods'] for a in activated.values()),
                          'blue_spells': sum(mod in s['mods'] for s in blue_spells.values())}
     data = {
@@ -348,7 +404,7 @@ def generate(server, ref=REF):
         'coverage_notes': {
             'included': ['signed fixed item modifiers', 'conditional item latents', 'player augments', 'equipment sets',
                          'observed item enchantments', 'observed relic aftermath', 'era job and blue traits',
-                         'eligible set Blue Magic spell modifiers', 'food modifiers'],
+                         'eligible set Blue Magic spell modifiers', 'food modifiers including observed racial conditions'],
             'indirect': ['Caster Regen and Refresh potency, song instruments and ability enhancements change received effect power; unknown power remains uncertain.',
                          'Current maximum HP and MP come from client totals, including gear and effects.',
                          'Weapon base delay and weapon identity come from equipped client resources.'],

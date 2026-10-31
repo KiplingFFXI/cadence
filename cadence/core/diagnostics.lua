@@ -1,8 +1,40 @@
--- Local timing details are kept only while you ask for them. A report is written only on request.
+-- Timing events are opt-in. The last drawing fault stays in memory. Reports are written on request.
 local json = require('json');
 local diagnostics = {};
 local LIMIT = 256;
 local enabled, events, first, count = false, {}, 1, 0;
+local drawing_error;
+
+-- Keep only loaded module names. Absolute paths and dynamic chunk text never enter a report.
+local function frame_source(info)
+    if (info.what == 'C') then return '[C]'; end
+    if (type(info.source) ~= 'string' or info.source:sub(1, 1) ~= '@') then return '[string]'; end
+    local path = info.source:sub(2):gsub('\\', '/');
+    local file = path:match('^.*/cadence/(.+)$') or path:match('^cadence/(.+)$');
+    if (file == 'cadence.lua') then return 'cadence/cadence.lua'; end
+    if (file) then
+        local group, name = file:match('^(%a+)/([%w_]+)%.lua$');
+        if ((group == 'core' or group == 'ui' or group == 'data') and package.loaded[group .. '.' .. name]) then
+            return 'cadence/' .. file;
+        end
+    end
+    file = path:match('^.*/addons/libs/([%w_/]+%.lua)$');
+    if (file and package.loaded[(file:gsub('%.lua$', ''):gsub('/', '.'))]) then return 'libs/' .. file; end
+    return '[external]';
+end
+
+-- xpcall calls this before the failing stack unwinds. Successful frames never inspect the stack.
+function diagnostics.capture_drawing_error(err)
+    local frames = {};
+    for level = 2, 33 do
+        local info = debug.getinfo(level, 'Sl');
+        if (not info) then break; end
+        frames[#frames + 1] = { source = frame_source(info), line = info.currentline };
+    end
+    -- Error text can contain player names or paths. Chat keeps it; reports keep only these locations.
+    drawing_error = { at = os.clock(), value_type = type(err), frames = frames };
+    return err;
+end
 
 -- JSON arrays must be dense. Buff ids, equipment slots and merit ids are object keys.
 local function json_keys(value)
@@ -52,11 +84,12 @@ end
 
 function diagnostics.reset()
     events, first, count = {}, 1, 0;
+    drawing_error = nil;
 end
 
 function diagnostics.enable(on)
     on = on == true;
-    if (on and not enabled) then diagnostics.reset(); end
+    if (on and not enabled) then events, first, count = {}, 1, 0; end
     enabled = on;
 end
 
@@ -79,7 +112,8 @@ end
 function diagnostics.report(snapshot)
     local rows = {};
     for i = 0, count - 1 do rows[#rows + 1] = copy(events[(first + i - 1) % LIMIT + 1], 0); end
-    return { schema = 1, recorded_events = count, recording = enabled, snapshot = copy(snapshot, 0), events = rows };
+    return { schema = 1, recorded_events = count, recording = enabled, snapshot = copy(snapshot, 0), events = rows,
+        drawing_error = copy(drawing_error, 0) };
 end
 
 function diagnostics.save(snapshot)

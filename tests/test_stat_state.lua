@@ -10,6 +10,7 @@ local equipped, items, buffs = {}, {}, {};
 local party_ids, party_jobs = { [0] = 1001, [1] = 1002 }, { [0] = 12, [1] = 3 };
 local live, unloaded_slot = true, nil;
 local cold_icons, cold_timers;
+local race = 3;
 local zero = string.rep('\0', 24);
 local inv = {
     GetEquippedItem = function (_, slot)
@@ -38,6 +39,7 @@ local stats = {
     end,
 };
 local group = {
+    GetMemberTargetIndex = function () return 1; end,
     GetMemberIsActive = function (_, i) return party_ids[i] ~= nil; end,
     GetMemberServerId = function (_, i) return party_ids[i] or 0; end,
     GetMemberMainJob = function (_, i) return party_jobs[i]; end,
@@ -54,6 +56,7 @@ AshitaCore.GetMemoryManager = function ()
         GetPlayer = function () return live and stats or nil; end,
         GetInventory = function () return live and inv or nil; end,
         GetParty = function () return live and group or nil; end,
+        GetEntity = function () return live and { GetRace = function () return race; end } or nil; end,
     };
 end;
 AshitaCore.GetChatManager = function () commands = commands + 1; error('No commands belong here'); end;
@@ -62,7 +65,8 @@ package.loaded['data.phoenix_modifiers'] = {
     zone_regions = { [100] = 4 },
     zone_assault = { [100] = false, [69] = true },
     valid_blue_spells = { [545] = true, [640] = true },
-    foods = { [4510] = { mods = { [71] = 3 }, duration = 180 } },
+    foods = { [4510] = { mods = { [71] = 3 }, duration = 180,
+        race_mods = { [3] = { [9] = 2 }, [1] = { [9] = 3 } } } },
     activated_items = {
         [15889] = { mods = { [72] = 2 }, duration = 1800, remove_on_unequip = true },
         [15290] = { mods = { [384] = 1000 }, duration = 180, effect = 33, remove_on_unequip = true },
@@ -154,11 +158,14 @@ check('failed or other-target items are ignored', last.food == nil);
 observer.on_packet(MOCK.action_packet(1001, 5, 4510, 1001, { { message = 0 } }), 1.31, 1001);
 update(1.6);
 check('successful food remembers party size at consumption', last.food and last.food.id == 4510 and last.food.party_size == 2);
+check('racial food records client race at consumption', last.food.race == 3);
+race = 1;
 observer.update(1.81, { main_job = 12, main_level = 75, sub_job = 1, sub_level = 37, buffs = {}, buffs_known = false });
 check('unavailable loadout buffs retain observed food as uncertain', last.buffs_known == false and last.food and last.food.id == 4510 and last.buffs[251]);
 party_ids[1] = nil;
 update(2.02);
 check('later party changes do not rewrite food strength', last.food.party_size == 2 and last.party_size == 1);
+check('later race changes do not rewrite an existing food bonus', last.food.race == 3);
 buffs[251] = nil;
 update(2.23);
 check('food wearoff removes its identity', last.food == nil and last.food_known);
@@ -418,6 +425,13 @@ update(51.9);
 check('a settled equipment change rebuilds the model',calculations==count_before+1 and not observer.info().transition);
 count_before=calculations;party_jobs[1]=4;update(52.2);
 check('party composition invalidates cached conditions',calculations==count_before+1);
+
+observer.reset(); buffs = {}; race = 0;
+update(53);
+observer.on_packet(MOCK.action_packet(1001, 5, 4510, 1001, { { message = 0 } }), 53.1, 1001);
+buffs[251] = true;
+update(53.4);
+check('unavailable race retains food identity without guessing its branch', last.food and last.food.id == 4510 and last.food.race == nil);
 
 live = false;
 package.loaded['core.stat_state'] = nil;

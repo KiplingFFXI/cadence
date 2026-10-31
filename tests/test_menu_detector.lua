@@ -21,10 +21,10 @@ expect(nil, false, false, false);
 expect('fulllog ', true, false, false);
 expect('fulllog\0', true, false, false);
 expect('fulllog ', false, false, false, false, true, true);
-for _, name in ipairs({ 'inline  ', 'inline\0\0', 'chatctrl', 'mcr1pall', 'mcr2pall', 'mcr1long', 'mcr2long' }) do
+for _, name in ipairs({ 'inline  ', 'inline\0\0', 'chatctrl', 'playermo', 'mcr1pall', 'mcr2pall', 'mcr1long', 'mcr2long' }) do
     expect(name, false, false, false);
 end
-for _, name in ipairs({ 'equip   ', 'scanlist', 'magic   ', 'magselec', 'ability ', 'abiselec', 'playermo', 'mount   ', 'newmenu ' }) do
+for _, name in ipairs({ 'equip   ', 'scanlist', 'magic   ', 'magselec', 'ability ', 'abiselec', 'mount   ', 'newmenu ' }) do
     expect(name, false, true, false);
 end
 expect('equip   ', false, false, false, true, false, true);
@@ -113,6 +113,8 @@ local function attack_windows(name)
 end
 check('the real main callback hides full-screen chat and returns after typing or closing',
     attack_windows(nil) == 1 and attack_windows('fulllog') == 0 and attack_windows('inline') == 1 and attack_windows(nil) == 1);
+check('combat commands keep the attack timer visible before and after typing',
+    attack_windows('playermo') == 1 and attack_windows('inline') == 1 and attack_windows('playermo') == 1);
 check('the real main callback hides equipment while leaving macro palettes visible',
     attack_windows('equip') == 0 and attack_windows('mcr1pall') == 1);
 MOCK.settings.current.visibility.chat, MOCK.settings.current.visibility.chat_attack = 'selected', false;

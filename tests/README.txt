@@ -14,7 +14,8 @@ You need Python 3.12. Run these from this folder.
   python -m venv .venv
   .venv\Scripts\python -m pip install -r requirements.txt
 
-The tests read one file from Ashita's libs, json.lua, from C:/Games/PhoenixXI/addons/libs. Settings
+The tests read json.lua and sugar/math.lua from C:/Games/PhoenixXI/addons/libs. Sugar keeps numeric
+indexing and missing math members consistent with Ashita, including its error behavior. Settings
 and imgui are mocked in mock_ashita.lua. Set ASHITA_LIBS to use a different Ashita install.
 
 
@@ -98,6 +99,7 @@ What's here
                           picked, its list open or a note about a sound that won't play
   test_frame_inputs.lua   TP-time input polling, immediate attack-packet refresh and zone invalidation
   test_hud_efficiency.lua steady-frame allocations for separate timers and the attached enemy strip
+  test_hud_full_times.lua compact HP-only full times, estimate markers and unchanged dual-resource fallbacks
   test_player_inputs.lua each equipped weapon slot read once, including shields and missing resources
   test_tp_lifecycle.lua  character changes drop pending samples and zone changes clear fight evidence
   test_enemy.lua          the enemy attack timer's clocks on their own, then the whole addon with
@@ -152,9 +154,11 @@ What's here
   test_layout_lifecycle.lua  interrupted drags across character changes and Reset all
   test_goals_relearn.lua  recovery targets, guarded TP ETA and selective relearning
   test_diagnostics.lua   bounded timing capture, sparse game-state reports and exclusion of unrelated chat
+  test_drawing_error.lua  bounded error locations, private-data exclusion, paused drawing and report fallback
   test_tp_context.lua    successful-hit goals and separate target/set versus TP-per-hit learning
   test_speed_modifiers.lua  signed haste, delay, passive recovery and generated coverage
-  test_modifiers.lua     Phoenix modifier rules, conditional gear, negative Store TP, food and augments
+  test_modifiers.lua     Phoenix modifier rules, conditional gear, negative Store TP, food and augments,
+                         including Imperial Omelette's race-dependent DEX and an unavailable consumption race
   test_stat_state.lua    passive packet and memory observations, uncertainty and equipment transitions
   test_stat_integration.lua  normal observations through the whole addon into TP and resting predictions
   test_tp_modifiers.lua  TP rounding boundaries, delay modifiers and learned-gain invalidation
@@ -202,7 +206,8 @@ What's here
   test_release.py         the release tools. The zip with and without the sounds holding just the files
                           it should, each the same as the project's, bump_version.py changing
                           cadence.lua and CHANGELOG.md and nothing else, and the draft release job's
-                          steps run with stand-ins for git and gh
+                          steps run with stand-ins for git and gh, including existing lightweight and
+                          annotated tags, mismatched commits, malformed responses and lookup failures
   test_resting_sim.lua    a simulation of the server's resting ticks, printing how close the resting
                           timer's predictions land (a table, not pass or fail)
   test_resting_sound.lua  the resting sound, with a stand-in for winmm that keeps each MCI command and
@@ -376,6 +381,8 @@ test_ui_discovery.lua and test_timer_hover.lua cover search, navigation, copy an
 
 test_attached_editing.lua covers idle attachment hosts, shared movement and child height controls.
 test_attack_action_tails.lua covers known, zero and unknown attack holds.
+test_attack_disable_order.lua covers spell and ability results arriving before a disable clears,
+paused swing preservation, overlapping effects, failed actions and unknown interruption recovery.
 test_item_effect_identity.lua covers stacked item effects, timer-list changes and recasts.
 test_packet_event_cache.lua covers event-scoped decoding, reused events and empty/truncated actions.
 test_preview_states.lua covers relevant sample states and label-control shortcuts.
@@ -436,6 +443,8 @@ Undo and reset actions, compact readouts, Enabled only, contextual Details, inde
 window color folds and profile status in the toolbar.
 test_inline_preview.lua checks sample clipping, ready-state fill with draining bars,
 readout choices and preservation of saved settings.
+test_command_preview_cache.lua checks enable, disable and toggle commands against warm inline
+and starter-layout preview caches, including the recovery and enemy cast choices layouts preserve.
 test_ui_pending_saves.lua checks unfinished edits when closing settings, unloading,
 switching characters or changing shared-layout mode, plus failed-save retries across
 character changes without carrying over character-owned tabs, links or Undo history.
@@ -449,6 +458,18 @@ test_resting_independent_full.lua keeps a valid HP or MP full time when the othe
 stat is unknown, without claiming a combined full time before both can be estimated.
 test_resting_max_vitals.lua checks HP and MP maximum changes after Weakness ends without
 another vitals packet, preserving tick timing and restoring forecasts, goals and sound readiness.
+test_resting_max_clamp.lua checks lower and restored HP/MP caps without a current-vitals update,
+MP reaching zero, observed phase preservation, subsequent real gains, current packets arriving
+before increased caps, hidden-card recovery and completion sounds.
+test_resting_reset.lua checks that zoning clears old fullness, maximums and blocking effects,
+keeps the resting card visible with unknown current vitals, and cannot invent a completion sound.
+test_resting_stat_packets.lua checks authoritative 0x061 maximums while native memory lags,
+percentage-only Weakness expiry, HP-only and MP recovery, phase and sound preservation,
+estimated and unknown caps, 100-percent confirmation, malformed/blocked/injected packets and zone reset.
+test_player_vitals_sources.lua checks coherent native and packet caps, percentage-derived bounds,
+stale-source rejection, float rounding, zero MP, unavailable stats, lifecycle reset and steady-read allocations.
+test_resting_max_quality.lua checks unknown-cap percentage and amount goals, safe amount forecasts,
+independent HP/MP goals and next gains, and unchanged zero-MP and standing behavior.
 test_resting_boundaries.lua checks capped Refresh, drains at zero MP and estimated timing before an observed tick.
 test_resting_held.lua keeps recovery through duplicate vitals when a blocking effect wears off.
 test_resting_hidden_buffs.lua keeps blocking effects current with the timer disabled or hidden at full.

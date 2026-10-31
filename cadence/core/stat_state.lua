@@ -31,6 +31,7 @@ local memory = call(AshitaCore, 'GetMemoryManager');
 local player = call(memory, 'GetPlayer');
 local inventory = call(memory, 'GetInventory');
 local party = call(memory, 'GetParty');
+local entities = call(memory, 'GetEntity');
 
 local snapshot, model, model_inputs, sampled_at, gear_due, effect_due, changed;
 local merit_batches, pending_food, pending_items, pending_effects, rows;
@@ -505,9 +506,16 @@ local function read_character(loadout, now)
     if (snapshot.main_level == 0) then snapshot.main_level = nil; end
     snapshot.sub_job = loadout.sub_job or call(player, 'GetSubJob');
     snapshot.sub_level = loadout.sub_level or call(player, 'GetSubJobLevel');
-    if (vitals_until == nil or now >= vitals_until) then
+    local read_vitals = vitals_until == nil or now >= vitals_until;
+    if (loadout.max_hp ~= nil or read_vitals) then
         snapshot.max_hp = loadout.max_hp or call(player, 'GetHPMax');
+        snapshot.max_hp_estimated, snapshot.max_hp_unknown = loadout.max_hp_estimated, loadout.max_hp_unknown;
+    end
+    if (loadout.max_mp ~= nil or read_vitals) then
         snapshot.max_mp = loadout.max_mp or call(player, 'GetMPMax');
+        snapshot.max_mp_estimated, snapshot.max_mp_unknown = loadout.max_mp_estimated, loadout.max_mp_unknown;
+    end
+    if (read_vitals) then
         snapshot.hp = loadout.hp or call(party, 'GetMemberHP', 0);
         snapshot.mp = loadout.mp or call(party, 'GetMemberMP', 0);
         snapshot.tp = loadout.tp or call(party, 'GetMemberTP', 0);
@@ -645,10 +653,12 @@ function state.effect_context(now, loadout)
 end
 
 -- The main packet handler already decoded these values. Use them before client memory catches up.
-function state.on_vitals(now, hp, mp, tp, max_hp, max_mp)
+function state.on_vitals(now, hp, mp, tp, max_hp, max_mp, hp_quality, mp_quality)
     snapshot.hp, snapshot.mp, snapshot.tp = hp, mp, tp;
     if (max_hp ~= nil) then snapshot.max_hp = max_hp; end
     if (max_mp ~= nil) then snapshot.max_mp = max_mp; end
+    snapshot.max_hp_estimated, snapshot.max_mp_estimated = not not hp_quality, not not mp_quality;
+    snapshot.max_hp_unknown, snapshot.max_mp_unknown = hp_quality == 'unknown', mp_quality == 'unknown';
     snapshot.hp_percent = snapshot.max_hp and snapshot.max_hp > 0 and math.floor(hp * 100 / snapshot.max_hp) or nil;
     vitals_until = now + PERIOD;
     evidence.vitals_seen_at = now;
@@ -659,6 +669,12 @@ local function item_finished(item_id, now)
     if ((data.foods or {})[item_id]) then
         read_party();
         pending_food = { id = item_id, party_size = snapshot.party_size_known and snapshot.party_size or nil, seen_at = now };
+        if (data.foods[item_id].race_mods) then
+            local index = call(party, 'GetMemberTargetIndex', 0);
+            local race = type(index) == 'number' and index > 0 and index < 0x900 and index == math.floor(index)
+                and call(entities, 'GetRace', index) or nil;
+            if (type(race) == 'number' and data.foods[item_id].race_mods[race] ~= nil) then pending_food.race = race; end
+        end
         effect_due = now + PERIOD;
         evidence.food_seen_at = now;
         note('food', now, { item = item_id, party_size = pending_food.party_size });
@@ -817,6 +833,7 @@ function state.snapshot()
     local result = {};
     for _, key in ipairs({ 'main_job', 'main_level', 'sub_job', 'sub_level', 'zone', 'region', 'nation',
         'weather', 'day', 'hour', 'engaged', 'resting', 'pet_present', 'hp', 'mp', 'tp', 'max_hp', 'max_mp', 'hp_percent',
+        'max_hp_estimated', 'max_mp_estimated', 'max_hp_unknown', 'max_mp_unknown',
         'buffs', 'buff_counts', 'buffs_known', 'equipment_known', 'merits', 'merits_known',
         'blue_spells', 'blue_spells_known', 'food', 'food_known', 'activated_items',
         'activated_items_known', 'activated_item_effects_known', 'effects', 'effect_epochs',

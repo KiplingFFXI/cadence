@@ -25,7 +25,7 @@ Type `/cadence` to open settings. Auto attack and resting timers start enabled. 
 - **Preview** shows sample states for arranging the timers, including unknown recovery and waiting casts. Hold Shift and drag to move a timer; drag its right edge for width or bottom edge for overall height. Attached timers keep separate height controls.
 - **Find settings** searches controls and their help. **Details** explains estimates, observations and missing inputs, with search and copy buttons.
 - **Undo last change** restores up to eight recent settings edits. Save a profile when you have a setup you want to keep, or share one layout across characters.
-- **Timers > ALL TIMERS > Menu visibility** hides all or selected timers while the full-screen chat log or other menus are open. Both start set to All timers; ordinary typing and macro palettes leave them visible.
+- **Timers > ALL TIMERS > Menu visibility** hides all or selected timers while the full-screen chat log or other menus are open. Both start set to All timers; ordinary typing, the combat command panel and macro palettes leave them visible.
 
 ## What it shows
 
@@ -33,7 +33,7 @@ Type `/cadence` to open settings. Auto attack and resting timers start enabled. 
 - Optional re-engage estimates after combat ends. Turn on Show re-engage timer under Timers; the bar hides automatically after the estimate ends.
 - Optional Action recovery estimates after completed spells, weapon skills, ranged attacks, Super Jump and supported items. Enable it under Timers or with `/cadence recovery on`. Unverified recovery shows Unknown.
 - TP toward a goal of 1000, 2000 or 3000, with rounds, successful hits and optional time-to-goal estimates.
-- Resting ticks, HP/MP gains, time until full and optional recovery goals. Known traits, gear, food, Regen and Refresh inform the estimates.
+- Resting ticks, HP/MP gains, time until full and optional recovery goals. Known traits, gear, food, Regen and Refresh inform the estimates. Full times follow changing maximums, including Weakness wearing off.
 - Optional enemy attack timing, observed slow and haste, disabling effects, casting and TP-move holds.
 - An optional enemy cast bar with spell names and estimated time. Place it freely or attach it under enemy attack. Enable it under Enemy or with `/cadence enemycast on`.
 

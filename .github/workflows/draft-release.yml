@@ -85,5 +85,27 @@ jobs:
             echo "CHANGELOG.md has no section for $VERSION."
             exit 1
           fi
+          # --target only chooses a commit when the tag does not exist. Recheck the remote immediately
+          # before creating the draft so an existing tag cannot silently point at another build.
+          tag="refs/tags/v$VERSION"
+          if ! refs=$(git ls-remote --tags origin "$tag" "$tag^{}"); then
+            echo "Could not verify v$VERSION on origin. No release was drafted."
+            exit 1
+          fi
+          if [ -n "$refs" ]; then
+            if ! tagged_commit=$(printf '%s\n' "$refs" | awk -v tag="$tag" '
+              NF != 2 || length($1) != 40 || $1 ~ /[^0-9a-f]/ { invalid = 1; next }
+              $2 == tag { if (direct != "") invalid = 1; direct = $1; next }
+              $2 == tag "^{}" { if (peeled != "") invalid = 1; peeled = $1; next }
+              { invalid = 1 }
+              END { if (invalid || direct == "") exit 1; print peeled != "" ? peeled : direct }'); then
+              echo "Could not resolve v$VERSION to a single commit. No release was drafted."
+              exit 1
+            fi
+            if [ "$tagged_commit" != "$GITHUB_SHA" ]; then
+              echo "v$VERSION points to $tagged_commit, but this zip was built from $GITHUB_SHA. No release was drafted."
+              exit 1
+            fi
+          fi
           gh release create "v$VERSION" "$RUNNER_TEMP/cadence-$VERSION.zip" --draft --target "$GITHUB_SHA" \
             --title "cadence $VERSION" --notes-file "$RUNNER_TEMP/notes.md"

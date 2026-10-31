@@ -90,6 +90,11 @@ version.
 If that version already has a release, draft or published, it does nothing. So pushing main and its tag together
 drafts it once, and the tag GitHub makes when you publish a draft doesn't draft it again.
 
+Immediately before creating a new draft, the job checks whether v<version> already exists on origin. A
+lightweight or annotated tag must resolve to the same commit used for the archive. A different commit, an
+unreadable remote or an ambiguous tag response stops the job without creating a release. Existing tags are
+never moved to fit a new archive.
+
 The job names the branch main, so the repo's branch has to be called main. It asks for its own write access in
 its file, so there's no repo setting to change.
 
@@ -138,6 +143,10 @@ the prior; never add equipment or food a second time to a gain already observed.
 missing item, augment format, conditional state, food identity or effect power stays
 unknown. Normal packets can fill those gaps. Never request packets or use client calls
 that perform game actions to fill them.
+
+Food parsing preserves reviewed race-dependent branches, including Imperial Omelette's Elvaan DEX bonus.
+The race observed when the food was eaten determines that bonus. If it is unavailable, the affected bonus
+stays unknown. Unreviewed conditional branches are reported rather than flattened into unconditional bonuses.
 
 The coverage table in phoenix_modifiers.lua inventories every tracked modifier: fixed
 item rows, negative values, latents, augments, food, activated items and set rules. The
@@ -284,9 +293,18 @@ Release readiness
 Menu visibility uses the existing client focus pointer, with separate expanded-chat and other-menu choices.
 The primary expanded-log name reference is Mr-Sithel/infobar at
 https://github.com/Mr-Sithel/infobar/blob/5db129b6eb1d9a435934649d1e78a19cb2fc2152/infobar/modules/hide_menu.lua
-(`menu    fulllog`). Ordinary inline/chatctrl input and macro palettes are excluded; maps retain their own
+(`menu    fulllog`). Ordinary inline/chatctrl input, the playermo combat panel and macro palettes are excluded; maps retain their own
 setting. A missing signature, invalid header or unreadable menu leaves the new hide rules inactive.
 This is passive client-state detection; offline coverage does not establish a live-client result.
+
+Resting reads exact maximums from normal 0x061 character-stat updates when available. Phoenix's Weakness
+wearoff path sends 0x0DF current vitals and percentages without necessarily sending 0x061. Current values and
+percentages must therefore agree with a cached maximum before it is treated as exact. A bounded inferred
+maximum remains estimated; percentages too coarse to give a usable bound remain unknown. Maximum changes
+preserve the tick phase, and lower-cap snapshots clamp cached current values without teaching a healing gain.
+Current-vitals packets themselves are not blindly clamped against older maximums, since they may arrive first.
+Unknown caps cannot confirm percentage goals or cap a requested absolute goal. An absolute goal within a
+known lower bound can still be forecast, and an unselected resource never blocks the selected goal.
 
 Run the complete addon suite, tool tests, source and generated-data checks, release workflow fixtures and
 preview fit gate from tests\README.txt before making an archive. Keep the current version heading in the

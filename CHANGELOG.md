@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.4.1
+
+Fixed combat visibility, resting recovery and attack timing.
+
+- Timers stay visible behind the combat command panel. Full-screen chat and other menu choices still work separately.
+- Resting HP and MP follow restored maximums and reported percentages when Weakness wears off. Uncertain maximums keep full times estimated or unknown instead of leaving the timer at full. Unknown maximums also withhold unreliable next gains and percentage goals without hiding the other stat's estimates.
+- Maximum changes preserve the resting tick schedule. HP or MP removed by a lower maximum no longer appears restored when that maximum rises again.
+- Equipment bonuses that depend on an exact HP or MP percentage stay uncertain while the maximum is estimated.
+- Zoning clears the previous full status and effects that block resting recovery while new vitals are arriving.
+- Auto attack keeps its paused time when a spell or ability follows a disabling effect, without losing time or adding the pause twice.
+- Narrow HP-only resting cards use the compact full-time label when the longer one does not fit.
+- Timer commands refresh inline samples and starter-layout previews.
+- Corrected Imperial Omelette's DEX bonus for Elvaan characters.
+- Release drafts refuse a version tag that points to a different revision.
+- Drawing errors retain their file and line locations for `/cadence report`, even with recording off.
+- Reports can still save error locations if the timing snapshot is unavailable.
+
 ## 1.4.0
 
 - Added automatic hiding for the full-screen chat log and other menus. Each can hide all timers or just the ones you choose, while timing continues in the background.
