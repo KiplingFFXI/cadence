@@ -263,7 +263,7 @@ local function through_the_addon()
     MOCK.fire('load');
     -- The shared layout is on, so the timers use the shared copy.
     local s = MOCK.in_use;
-    local kept = MOCK.settings.defaults;
+    local kept = defaults.make();
 
     check('on load, a width too big comes down', s.attack.width == 640, s.attack.width);
     check('a label keeps only plain characters', s.attack.label_text == 'AA', printable(s.attack.label_text));
@@ -281,8 +281,7 @@ local function through_the_addon()
     check('and its roundness up', s.style.rounding == 0, s.style.rounding);
     check('and its bar height', s.resting.bar_height == 32, s.resting.bar_height);
     check('and its label', s.resting.label_text == 'RST', printable(s.resting.label_text));
-    check('the defaults kept for the next character are untouched',
-        kept.attack.width == 240 and kept.style.scale == 1.0);
+    check('the library holds no mutable defaults for the next character', next(MOCK.settings.defaults) == nil);
     -- Ashita writes your own settings to your file, so they get the check too.
     local own = MOCK.settings.current;
     check('your own settings are checked too', own ~= s and own.attack.width == 640 and own.enemy.which == 'target_first'

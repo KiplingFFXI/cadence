@@ -240,8 +240,14 @@ What's here
   test_settings_check.lua  the settings check on load, on login, after the shared layout and before
                           each save, the defaults and every preset coming through unchanged, and the
                           window's sliders reading the same ranges
-  test_settings_defaults.lua  a settings file with a section or color missing never shares tables
-                          with the defaults
+  test_settings_defaults.lua  missing sections and colors receive fresh defaults without sharing
+                          mutable tables between characters
+  test_settings_library.lua  the actual Ashita settings and Sugar libraries read malformed and partial
+                          files, preserve valid values and colors, save, reload, reset and switch characters
+  test_bust_modifiers.lua  dynamic Bust penalties keep affected estimates uncertain; unknown passive
+                          recovery cannot reject resting ticks or become observed resting potency
+  test_resting_capped_gains.lua  small final HP/MP gains establish timing within the resting window,
+                          preserve uncapped potency and keep passive/direct-action exclusions
   test_settings_help.lua  a (?) on every setting, what the tips say, no tip with a mark ImGui could
                           wrap onto the start of a line, and the window opening where you left it at
                           the size you left it

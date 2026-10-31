@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.2
+
+- Fixed a startup error when a saved settings section or color has the wrong type. Valid settings are kept, and malformed values use their defaults on load and character changes.
+- Bust now marks all affected attack and passive recovery bonuses as uncertain until its effects can be observed.
+- Unknown Regen or Refresh amounts no longer reject valid resting ticks or become falsely precise resting-gain samples.
+- Small final HP and MP gains at the expected resting tick now preserve timing without teaching a reduced full-tick amount.
+
 ## 1.4.1
 
 Fixed combat visibility, resting recovery and attack timing.

@@ -1,5 +1,4 @@
--- A settings file with a section or color missing. Ashita fills each one from the defaults' own table,
--- and editing it must never change the defaults kept for the next character.
+-- Cadence fills missing sections and colors without sharing defaults with another character.
 local out, fails = {}, 0;
 local function check(name, cond, detail)
     if (cond) then table.insert(out, 'ok   ' .. name);
@@ -17,7 +16,7 @@ MOCK.settings_file = { attack = { enabled = true, x = 500, y = 600 }, style = { 
 dofile(ADDON_DIR .. '/cadence.lua');
 MOCK.fire('load');
 local s = MOCK.settings.current;
-local kept = MOCK.settings.defaults;
+local kept = require('ui.defaults').make();
 local default_x = kept.resting.x;
 
 check('saved values kept', s.attack.x == 500 and s.attack.y == 600);
@@ -29,6 +28,7 @@ check('new goals and alignment guides start off in older files', not s.attack.sh
 check('older settings keep the original timer heights', s.attack.height_scale == 1 and s.resting.height_scale == 1
     and s.enemy.height_scale == 1);
 check('the recovery goal starts at full MP', s.resting.goal_stat == 'mp' and s.resting.goal_mode == 'percent' and s.resting.goal_value == 100);
+check('Ashita retains no mutable default sections', next(MOCK.settings.defaults) == nil);
 
 -- Edits the way the color picker and Shift+drag make them, in place.
 s.attack.tp_color[1] = 0.123;
@@ -39,7 +39,9 @@ check('editing never changes the defaults', kept.attack.tp_color[1] ~= 0.123 and
 -- Another character whose own file has parts missing, then one with no file at all.
 MOCK.settings.switch_character({ attack = { enabled = false } });
 local second = MOCK.settings.current;
-check('the next character gets its own tables', not rawequal(second.resting, kept.resting));
+check('the next character gets its own tables', not rawequal(second.resting, s.resting)
+    and not rawequal(second.attack.tp_color, s.attack.tp_color)
+    and not rawequal(second.resting.fill_start, s.resting.fill_start));
 second.resting.x = 7;
 MOCK.settings.switch_character(nil);
 check('a character with no file starts from the real defaults', MOCK.settings.current.resting.x == default_x,

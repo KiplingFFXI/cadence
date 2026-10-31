@@ -382,11 +382,15 @@ If cadence loads while you are already resting, it says **Observing** until a re
 
 cadence uses your job's Clear Mind, eligible Signet bonuses, known gear and augments, food and known effects to estimate recovery before the first tick. Clean, uncapped ticks then refine the amounts. Changing recovery gear updates the estimate without restarting the countdown. Regen and Refresh are counted separately.
 
+A small final gain that fills your HP or MP at the expected resting tick still supplies timing. Full tick amounts continue to come from uncapped recovery.
+
 Turn on Next tick gains in the Timers tab, or type `/cadence resting nextgains on`, to show the next expected HP and MP gain. Food eaten before cadence loaded, unread merits or an unavailable blue spell list, and effects whose strength the client does not know stay estimated. `/cadence info` lists what is known and what is still missing.
 
 Equipment bonuses that require an exact HP or MP percentage also stay uncertain when the maximum is estimated. Other known bonuses still count.
 
 Time until full follows the learned 9, 9, 12 pattern and accounts for Regen and Refresh on their separate three-second passes. Ticks until full adds the number of resting ticks remaining. If passive recovery will finish before another resting tick, it says "full before next tick". A tilde marks uncertain times and counts. Signed recovery bonuses can reduce recovery; gear that drains HP and forces you to stand suppresses the full-time estimate. Your actual max HP and MP already include your gear.
+
+Bust's shared icon does not reveal its penalty. Affected attack, Regen and Refresh amounts stay uncertain until observations clarify them. Unknown passive amounts do not become learned resting gains; the HP and MP recovery estimates remain independent.
 
 When Weakness wears off or your maximum HP or MP changes, cadence updates fullness from your current values, percentages and available maximums. A resting timer hidden at full returns when recovery is needed. These changes keep the existing tick schedule. If the available information leaves the maximum uncertain, the full time stays estimated or unknown until normal updates clarify it. Lowering and restoring a maximum does not restore HP or MP you lost, and zoning clears the previous full status while new vitals are arriving.
 
@@ -449,6 +453,8 @@ A stretch between two of your rounds doesn't count when one of your own abilitie
 cadence never sends anything to the server and never hides anything the server sends. It never writes to game memory and never sends commands to the game.
 
 Besides Ashita's normal per-character settings file, cadence keeps shared layouts and profiles in its own files. `config\addons\cadence\shared_layout.json` is written while "One layout for all characters" is on and deleted when you turn it off. While it's on, shared changes go to that file. Your job links and hidden-tab choices stay in your own character's file. `config\addons\cadence\profiles.json` is written when you save, overwrite, rename, delete or restore a profile. cadence also makes the folder `config\addons\cadence\sounds\` when it loads and each time it looks for sounds, if it isn't there.
+
+Missing settings and values of the wrong type use their defaults when cadence loads or changes characters. Valid saved choices are kept.
 
 Record timing details is off by default. Turning it on keeps only the latest 256 relevant timing events in memory. Save timing report, or `/cadence report`, writes a snapshot of your bonuses, equipment IDs, known conditions and timing evidence to `config\addons\cadence\reports\`. It sends nothing anywhere and includes no chat or raw packets. A report can be saved with recording off too.
 

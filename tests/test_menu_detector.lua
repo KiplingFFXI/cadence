@@ -115,6 +115,10 @@ check('the real main callback hides full-screen chat and returns after typing or
     attack_windows(nil) == 1 and attack_windows('fulllog') == 0 and attack_windows('inline') == 1 and attack_windows(nil) == 1);
 check('combat commands keep the attack timer visible before and after typing',
     attack_windows('playermo') == 1 and attack_windows('inline') == 1 and attack_windows('playermo') == 1);
+for _, name in ipairs({ 'mcr1pall', 'mcr2pall', 'mcr1long', 'mcr2long' }) do
+    check('holding and releasing ' .. name .. ' does not gate the combat timer',
+        attack_windows('playermo') == 1 and attack_windows(name) == 1 and attack_windows('playermo') == 1);
+end
 check('the real main callback hides equipment while leaving macro palettes visible',
     attack_windows('equip') == 0 and attack_windows('mcr1pall') == 1);
 MOCK.settings.current.visibility.chat, MOCK.settings.current.visibility.chat_attack = 'selected', false;

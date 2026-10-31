@@ -17,7 +17,11 @@ end
 
 local effect_specs = {
     { 'samurai_roll', 73, 1 }, { 'store_tp', 73, 1 }, { 'healers_roll', 71, 1 },
-    { 'aftermath', 73, nil }, { 'bust', 73, nil }, { 'inhibit_tp', 488, 1 },
+    { 'aftermath', 73, nil }, { 'inhibit_tp', 488, 1 },
+    -- Bust applies rollData.bustMod dynamically. Its shared icon does not identify the subtype.
+    -- These are the tracked subtypes in Phoenix; Healer's Bust still uses CURE_POTENCY_RCVD.
+    { 'bust', 25, nil }, { 'bust', 73, nil }, { 'bust', 288, nil },
+    { 'bust', 369, nil }, { 'bust', 370, nil }, { 'bust', 380, nil },
     { 'arcane_crest', 73, -1 }, { 'dragon_breaker', 73, -1 }, { 'sepulcher', 73, -1 },
 };
 local speed_effects = {

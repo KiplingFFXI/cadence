@@ -1,6 +1,6 @@
 addon.name    = 'cadence';
 addon.author  = 'Kipling';
-addon.version = '1.4.1';
+addon.version = '1.4.2';
 addon.desc    = 'Attack, resting, enemy casting and action recovery timers for Phoenix.';
 addon.link    = 'https://github.com/KiplingFFXI/cadence';
 
@@ -101,26 +101,22 @@ local TIMER_NAMES = {
 };
 local STACK_GAP = 6;
 
---[[
-    Ashita fills a section or color missing from your file with the same table it keeps as defaults
-    for the next character to log in. Each of those gets its own table from a fresh copy, so editing
-    it can't change the defaults.
-]]
-local function unshare(loaded, kept, fresh)
-    for key, value in pairs(kept) do
-        if (type(value) == 'table') then
-            if (rawequal(loaded[key], value)) then
-                loaded[key] = fresh[key];
-            elseif (type(loaded[key]) == 'table') then
-                unshare(loaded[key], value, fresh[key]);
-            end
+-- Read the saved values before filling defaults, so a wrong section or color type can be repaired.
+-- An empty library template also keeps later characters from sharing cadence's default tables.
+local function fill_defaults(loaded, fresh)
+    for key, value in pairs(fresh) do
+        local current = rawget(loaded, key);
+        if (current == nil) then
+            loaded[key] = value;
+        elseif (type(current) == 'table' and type(value) == 'table') then
+            fill_defaults(current, value);
         end
     end
 end
 
-local kept_defaults = defaults.make();
-local loaded_settings = settings.load(kept_defaults);
-unshare(loaded_settings, kept_defaults, defaults.make());
+local loaded_settings = settings.load(T{});
+fill_defaults(loaded_settings, defaults.make());
+defaults.tidy(loaded_settings);
 
 local cadence = {
     recovery = require('core.recovery'),
@@ -3302,7 +3298,7 @@ settings.register('settings', 'cadence_settings_update', function (s)
         end
     end
     if (s ~= nil) then
-        unshare(s, kept_defaults, defaults.make());
+        fill_defaults(s, defaults.make());
         cadence.own = s;
     end
     hud.cancel_layout_gesture();

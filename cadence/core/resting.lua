@@ -292,10 +292,13 @@ end
     'sure' means only a tick could cause it. 'maybe' means a cure or a buff wearing off could look the
     same. A 'maybe' only counts near the predicted time once the resting phase is known.
 ]]
-local function tick_evidence(hp_gain, mp_gain, tp_gain, mp_missing, hp_max)
+local function tick_evidence(hp_gain, mp_gain, tp_gain, mp_missing, hp_max, hp_missing, mp_cap_known)
     if ((mp_gain ~= nil and mp_gain >= TICK_MP) or (tp_gain ~= nil and tp_gain < 0)) then
         return 'sure';
     end
+    -- A final capped gain can be smaller than a normal tick. It supplies timing, not potency.
+    if (mp_cap_known and mp_gain ~= nil and mp_missing > 0 and mp_missing < TICK_MP
+        and mp_gain >= mp_missing) then return 'maybe'; end
     -- With 12 or more MP missing, a real tick would have restored at least 12 MP.
     if (mp_gain ~= nil and mp_missing >= TICK_MP) then
         return nil;
@@ -310,7 +313,8 @@ local function tick_evidence(hp_gain, mp_gain, tp_gain, mp_missing, hp_max)
         return nil;
     end
     -- Duplicate vitals and passive-only gains do not show a resting tick.
-    if (hp_gain ~= nil and hp_gain >= TICK_HP) then
+    local hp_minimum = hp_missing ~= nil and hp_missing > 0 and math.min(TICK_HP, hp_missing) or TICK_HP;
+    if (hp_gain ~= nil and hp_gain >= hp_minimum) then
         return 'maybe';
     end
     return nil;
@@ -441,7 +445,7 @@ function resting.on_direct_change(now, hp, mp, tp)
         local changed = (hp and last_change.hp ~= 0) or (mp and last_change.mp ~= 0)
             or (tp and last_change.tp ~= 0);
         if (last_change.accepted and changed) then
-            local independent = (not last_change.direct_mp and last_change.mp_evidence >= TICK_MP)
+            local independent = (not last_change.direct_mp and last_change.mp_tick)
                 or (not last_change.direct_tp and last_change.tp < 0)
                 or (not last_change.direct_hp and last_change.hp_tick);
             if (not independent) then
@@ -469,9 +473,11 @@ end
 
 -- Passive recovery runs before the resting gain and stops at zero or the maximum.
 local function passive_gain(stat, before)
-    local rate = passive_rate(stat);
-    if (rate >= 0) then return math.min(rate, math.max(0, state[stat .. '_max'] - before)); end
-    return math.max(rate, -before);
+    local rate, observed = passive_rate(stat);
+    local name = stat == 'hp' and 'regen' or 'refresh';
+    local known = observed or state.model == nil or state.model[name .. '_known'];
+    if (rate >= 0) then return math.min(rate, math.max(0, state[stat .. '_max'] - before)), known; end
+    return math.max(rate, -before), known;
 end
 
 -- A tick landed. Its packet also carries one pass of Regen or Refresh. Taking that off leaves the
@@ -494,19 +500,28 @@ end
 -- What a change in your HP, MP or TP at `when` was. It's a resting tick, or something between ticks.
 local function take_change(when, hp_gain, mp_gain, tp_gain, mp_missing, train_hp, train_mp,
     direct_hp, direct_mp, direct_tp, pass_hp, pass_mp, before_hp, before_mp)
-    local hp_pass, mp_pass = passive_gain('hp', before_hp), passive_gain('mp', before_mp);
+    local hp_pass, hp_pass_known = passive_gain('hp', before_hp);
+    local mp_pass, mp_pass_known = passive_gain('mp', before_mp);
     mp_missing = math.max(0, mp_missing - mp_pass);
+    local hp_missing = hp_pass_known and not state.hp_max_quality
+        and math.max(0, state.hp_max - before_hp - hp_pass) or nil;
+    local mp_cap_known = mp_pass_known and not state.mp_max_quality;
     last_change.at, last_change.hp, last_change.mp, last_change.tp = when, hp_gain, mp_gain, tp_gain;
-    last_change.mp_evidence = mp_gain - mp_pass;
-    last_change.hp_tick = is_tick(when, tick_evidence(hp_gain - hp_pass, nil, nil, 0, state.hp_max));
+    last_change.mp_tick = is_tick(when, tick_evidence(nil, mp_pass_known and mp_gain - mp_pass or nil,
+        nil, mp_missing, state.hp_max, nil, mp_cap_known));
+    local hp_evidence = hp_pass_known and hp_gain - hp_pass or hp_gain;
+    last_change.hp_tick = is_tick(when, tick_evidence(hp_evidence, nil, nil, 0, state.hp_max, hp_missing));
     last_change.direct_hp, last_change.direct_mp, last_change.direct_tp = direct_hp, direct_mp, direct_tp;
     last_change.accepted = false;
     last_change.sample_hp, last_change.sample_mp = state.sample_hp, state.sample_mp;
     local crossing = state.model_pending or (state.model ~= nil and state.model.transition);
     state.model_pending = false;
-    local evidence = tick_evidence(not direct_hp and hp_gain - hp_pass or nil,
-        not direct_mp and mp_gain - mp_pass or nil,
-        not direct_tp and tp_gain or nil, mp_missing, state.hp_max);
+    local evidence = tick_evidence(not direct_hp and hp_evidence or nil,
+        not direct_mp and mp_pass_known and mp_gain - mp_pass or nil,
+        not direct_tp and tp_gain or nil, mp_missing, state.hp_max, hp_missing, mp_cap_known);
+    -- An unknown passive rate cannot disprove a tick by reducing it below the minimum gain.
+    -- Its MP gain is only tentative evidence, so it must still fit the expected resting window.
+    if (evidence == nil and not direct_mp and not mp_pass_known and mp_gain >= TICK_MP) then evidence = 'maybe'; end
     if (crossing) then
         -- A weapon swap can remove TP. Only a positive gain near the expected tick keeps its time.
         if (hp_gain <= 0 and mp_gain <= 0) then
@@ -522,7 +537,9 @@ local function take_change(when, hp_gain, mp_gain, tp_gain, mp_missing, train_hp
         state.gained_hp = not direct_hp and math.max(hp_gain, 0) or 0;
         state.gained_mp = not direct_mp and math.max(mp_gain, 0) or 0;
         state.seen_at   = when;
-        remember_heal(when, not direct_hp and hp_gain or nil, not direct_mp and mp_gain or nil, hp_pass, mp_pass);
+        -- A guessed passive contribution cannot become an observed resting-potency sample.
+        remember_heal(when, not direct_hp and hp_pass_known and hp_gain or nil,
+            not direct_mp and mp_pass_known and mp_gain or nil, hp_pass, mp_pass);
         state.hidden    = false;
         state.lost      = false;
         state.skipped   = 0;
