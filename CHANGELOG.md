@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.3
+
+- Fixed a drawing fault in attached timer sizing. Each timer inherits its host's width while keeping its own height.
+- Drawing reports retain function locations and numeric timer sizes when an error reports line zero. Custom labels and chat text are excluded from these error details.
+
 ## 1.4.2
 
 - Fixed a startup error when a saved settings section or color has the wrong type. Valid settings are kept, and malformed values use their defaults on load and character changes.

@@ -458,7 +458,7 @@ Missing settings and values of the wrong type use their defaults when cadence lo
 
 Record timing details is off by default. Turning it on keeps only the latest 256 relevant timing events in memory. Save timing report, or `/cadence report`, writes a snapshot of your bonuses, equipment IDs, known conditions and timing evidence to `config\addons\cadence\reports\`. It sends nothing anywhere and includes no chat or raw packets. A report can be saved with recording off too.
 
-If drawing stops after an error, the report also includes the Lua files and line numbers involved. Save it before reloading cadence or changing characters. Recording can stay off. If the timing snapshot is unavailable, the report still saves the error locations.
+If drawing stops after an error, the report also includes code locations and numeric timer sizes, even when the error reports line zero. Custom labels and chat text are excluded from these error details. Save it before reloading cadence or changing characters. Recording can stay off. If the timing snapshot is unavailable, the report still saves the error details.
 
 | Source | What it's used for |
 |---|---|

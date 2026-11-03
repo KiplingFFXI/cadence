@@ -475,15 +475,16 @@ local function element_height(key, metrics)
     return metrics.pad_y * 2 + header + bar + next_line + ticks_line + goal_line + hits_line + tp_time_line + footer + gaps;
 end
 
--- Width stays independent of each timer's vertical scale.
+-- Attached timers inherit their host's width without measuring its height or recursing.
 function hud.element_size(key)
     local height = element_height(key, vertical_size(key));
     if (key == 'enemycast' and is_strip(key)) then
-        return cast_host.shown and cast_host.width or hud.element_size('enemy'), height;
+        if (cast_host.shown) then return cast_host.width, height; end
+        key = 'enemy';
     end
     if (is_strip(key)) then
-        local width = host.shown and host.width or hud.element_size('attack');
-        return width, height;
+        if (host.shown) then return host.width, height; end
+        key = 'attack';
     end
     local width = size.accent + size.pad_x * 2 + round(settings[key].width * size.width_scale);
     return width, height;

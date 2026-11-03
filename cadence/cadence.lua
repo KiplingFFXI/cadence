@@ -1,6 +1,6 @@
 addon.name    = 'cadence';
 addon.author  = 'Kipling';
-addon.version = '1.4.2';
+addon.version = '1.4.3';
 addon.desc    = 'Attack, resting, enemy casting and action recovery timers for Phoenix.';
 addon.link    = 'https://github.com/KiplingFFXI/cadence';
 

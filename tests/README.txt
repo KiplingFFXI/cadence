@@ -99,6 +99,8 @@ What's here
                           picked, its list open or a note about a sound that won't play
   test_frame_inputs.lua   TP-time input polling, immediate attack-packet refresh and zone invalidation
   test_hud_efficiency.lua steady-frame allocations for separate timers and the attached enemy strip
+  test_hud_sizing.lua     attached widths without recursive parent sizing, hidden hosts and shared resting widths
+  test_hud_diagnostics.lua fault-only numeric size evidence, missing values, line-zero locations and privacy
   test_hud_full_times.lua compact HP-only full times, estimate markers and unchanged dual-resource fallbacks
   test_player_inputs.lua each equipped weapon slot read once, including shields and missing resources
   test_tp_lifecycle.lua  character changes drop pending samples and zone changes clear fight evidence
